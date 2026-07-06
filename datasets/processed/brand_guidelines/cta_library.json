@@ -1,0 +1,97 @@
+{
+  "High-Income Store Spender": {
+    "primary_ctas": [
+      "Explore the Collection",
+      "Discover Your Selection",
+      "View Exclusive Pieces",
+      "Reserve Yours Today",
+      "Shop the Edit"
+    ],
+    "urgency_level": "Low — exclusivity over urgency",
+    "tone": "Invitation, not pressure",
+    "channel_specific": {
+      "Email": "Explore the Collection",
+      "Instagram": "Shop the Edit",
+      "Facebook": "Discover More",
+      "Web": "View Exclusive Pieces",
+      "Catalog": "Reserve Yours Today",
+      "Store": "Visit Us In-Store"
+    }
+  },
+  "Budget-Conscious Low Spender": {
+    "primary_ctas": [
+      "See Today's Deals",
+      "Find Your Savings",
+      "Shop Smart",
+      "View Best Value Picks",
+      "Get Yours Now"
+    ],
+    "urgency_level": "Medium — value-focused",
+    "tone": "Helpful and reassuring",
+    "channel_specific": {
+      "Email": "See Your Savings",
+      "Instagram": "Shop Smart",
+      "Facebook": "Find Best Value",
+      "Web": "View Best Value Picks",
+      "Catalog": "Order at Best Price",
+      "Store": "Find In-Store Deals"
+    }
+  },
+  "Web-Savvy Mid-Tier Buyer": {
+    "primary_ctas": [
+      "Shop Now",
+      "Add to Cart",
+      "Get It Today",
+      "See What's New",
+      "Start Shopping"
+    ],
+    "urgency_level": "Medium — convenience-focused",
+    "tone": "Snappy and action-driven",
+    "channel_specific": {
+      "Email": "Shop Now",
+      "Instagram": "Link in Bio",
+      "Facebook": "Shop Now",
+      "Web": "Add to Cart",
+      "Catalog": "Order Online",
+      "Store": "Find In-Store"
+    }
+  },
+  "Deal-Seeking Value Hunter": {
+    "primary_ctas": [
+      "Grab This Deal",
+      "Claim Your Discount",
+      "Shop Before It's Gone",
+      "Get [X]% Off Now",
+      "Unlock Your Offer"
+    ],
+    "urgency_level": "High — time and scarcity driven",
+    "tone": "Urgent and direct",
+    "channel_specific": {
+      "Email": "Claim Your Discount",
+      "Instagram": "Grab the Deal",
+      "Facebook": "Shop Before It's Gone",
+      "Web": "Unlock Your Offer",
+      "Catalog": "Order at Sale Price",
+      "Store": "Show This Offer In-Store"
+    }
+  },
+  "Highly Engaged Campaign Responder": {
+    "primary_ctas": [
+      "Claim Your Reward",
+      "Access Your Exclusive Offer",
+      "Thank You — Shop Now",
+      "Your Early Access Starts Here",
+      "See What We've Saved for You"
+    ],
+    "urgency_level": "Medium — loyalty and reward driven",
+    "tone": "Personal and appreciative",
+    "channel_specific": {
+      "Email": "Claim Your Reward",
+      "Instagram": "Early Access — Link in Bio",
+      "Facebook": "Access Your Exclusive Offer",
+      "Web": "See What We've Saved for You",
+      "Catalog": "Your Loyalty Offer Inside",
+      "Store": "Show This for Your Reward"
+    }
+  }
+}

@@ -1,0 +1,218 @@
+{
+  "Email": {
+    "max_subject_line_length": 50,
+    "max_preview_text_length": 100,
+    "max_body_length": 300,
+    "structure": [
+      "Subject Line",
+      "Preview Text",
+      "Greeting",
+      "Body (1-2 paragraphs)",
+      "CTA Button",
+      "Footer"
+    ],
+    "tone_guidance": "Personal, direct, one clear message per email",
+    "formatting_rules": [
+      "One primary CTA per email — never two competing actions",
+      "Subject line must not exceed 50 characters",
+      "Avoid all caps in subject lines",
+      "Personalise with first name where possible",
+      "Mobile-optimised — assume 60% of opens are on mobile"
+    ],
+    "do": [
+      "Use numbered or bulleted lists for product features",
+      "Include unsubscribe link",
+      "Test subject line A/B"
+    ],
+    "do_not": [
+      "Use spam trigger words (free, guaranteed, winner)",
+      "Attach files",
+      "Use more than 2 images"
+    ],
+    "example_structure": {
+      "subject": "[First Name], your exclusive offer is here",
+      "preview": "Specially selected for you — available today only",
+      "greeting": "Hi [First Name],",
+      "body": "[1-2 sentences on product/offer]. [1 sentence on why it's relevant to them].",
+      "cta": "Shop Now",
+      "footer": "Omnibrand Studio | Unsubscribe | Privacy Policy"
+    }
+  },
+  "Instagram": {
+    "max_caption_length": 150,
+    "max_hashtags": 5,
+    "structure": [
+      "Hook (first line)",
+      "Body",
+      "CTA",
+      "Hashtags"
+    ],
+    "tone_guidance": "Visual-first, punchy, aspirational, community-driven",
+    "formatting_rules": [
+      "First line must be a hook — it appears before 'more'",
+      "Keep caption under 150 characters for best engagement",
+      "Use 3-5 relevant hashtags — never more than 5",
+      "Emojis allowed — use sparingly (max 3 per post)",
+      "Always include one clear CTA"
+    ],
+    "do": [
+      "Use high-quality lifestyle imagery",
+      "Tag products",
+      "Use Stories for flash deals"
+    ],
+    "do_not": [
+      "Use long paragraphs",
+      "Use more than 5 hashtags",
+      "Post blurry or low-res images"
+    ],
+    "example_structure": {
+      "hook": "Your new favourite just arrived. ✨",
+      "body": "Discover [product] — crafted for [persona need].",
+      "cta": "Shop the link in bio.",
+      "hashtags": "#Omnibrand Studio #ElevateTheEveryday #[Category]"
+    }
+  },
+  "Facebook": {
+    "max_post_length": 250,
+    "structure": [
+      "Opening Statement",
+      "Body",
+      "CTA",
+      "Link Preview"
+    ],
+    "tone_guidance": "Conversational, community-oriented, slightly longer than Instagram",
+    "formatting_rules": [
+      "Keep posts under 250 characters for best organic reach",
+      "Use line breaks to improve readability",
+      "Include a link for retargeting",
+      "Emojis allowed but professional context only",
+      "Sponsored posts must include 'Sponsored' disclosure"
+    ],
+    "do": [
+      "Use video content for higher reach",
+      "Respond to comments within 24 hours",
+      "Use carousel format for multiple products"
+    ],
+    "do_not": [
+      "Post without an image or video",
+      "Use clickbait headlines",
+      "Over-post (max 1x per day)"
+    ],
+    "example_structure": {
+      "opening": "Looking for [benefit]? We've got you covered.",
+      "body": "[Product] is here — [key benefit in one sentence]. [Social proof or offer].",
+      "cta": "Shop now → [link]"
+    }
+  },
+  "LinkedIn": {
+    "max_post_length": 400,
+    "structure": [
+      "Professional Hook",
+      "Value Statement",
+      "Product/Offer Context",
+      "CTA"
+    ],
+    "tone_guidance": "Professional, thought-leadership, B2B-friendly where relevant",
+    "formatting_rules": [
+      "Lead with a professional insight or statistic",
+      "Avoid overly casual language",
+      "Use line breaks generously for readability",
+      "No more than 3 hashtags",
+      "Focus on business value and ROI language"
+    ],
+    "do": [
+      "Tag relevant industry accounts",
+      "Share data and insights",
+      "Use native documents or carousels"
+    ],
+    "do_not": [
+      "Use slang or emojis excessively",
+      "Hard-sell in first paragraph",
+      "Repost Instagram content verbatim"
+    ],
+    "example_structure": {
+      "hook": "The way [industry] approaches [topic] is changing.",
+      "value": "At Omnibrand Studio, we believe [core value statement].",
+      "context": "[Product/service] helps [target] achieve [outcome].",
+      "cta": "Learn more: [link]"
+    }
+  },
+  "Web": {
+    "max_headline_length": 60,
+    "max_subheadline_length": 100,
+    "max_body_length": 200,
+    "structure": [
+      "Headline",
+      "Subheadline",
+      "Body Copy",
+      "Primary CTA",
+      "Secondary CTA (optional)"
+    ],
+    "tone_guidance": "Clear, benefit-led, SEO-aware, scannable",
+    "formatting_rules": [
+      "Headline must communicate the core benefit in under 60 characters",
+      "Use active voice throughout",
+      "Body copy should be scannable — short paragraphs, bullet points",
+      "Primary CTA must be above the fold",
+      "Avoid jargon — write for a general audience"
+    ],
+    "do": [
+      "Use customer testimonials",
+      "Include trust signals (ratings, reviews)",
+      "A/B test CTA button copy"
+    ],
+    "do_not": [
+      "Use passive voice",
+      "Bury the CTA below the fold",
+      "Use stock imagery that looks generic"
+    ],
+    "example_structure": {
+      "headline": "[Benefit] — [Short Differentiator]",
+      "subheadline": "Discover [product] designed for [persona need].",
+      "body": "[1-2 sentences on product value]. [1 sentence on offer or proof].",
+      "primary_cta": "Shop Now",
+      "secondary_cta": "Learn More"
+    }
+  },
+  "Catalog": {
+    "max_product_description_length": 80,
+    "max_feature_bullets": 4,
+    "structure": [
+      "Product Name",
+      "Short Description",
+      "Feature Bullets",
+      "Price",
+      "CTA"
+    ],
+    "tone_guidance": "Precise, informative, benefit-led, premium feel",
+    "formatting_rules": [
+      "Product description must be under 80 words",
+      "Maximum 4 bullet points per product",
+      "Always include price prominently",
+      "Use high-resolution product photography",
+      "Consistent formatting across all product entries"
+    ],
+    "do": [
+      "Group products by category",
+      "Include product codes",
+      "Add 'Best Seller' or 'New' badges"
+    ],
+    "do_not": [
+      "Use vague descriptions",
+      "Omit pricing",
+      "Mix formatting styles across products"
+    ],
+    "example_structure": {
+      "product_name": "[Product Name] — [Variant]",
+      "description": "[One sentence on what it is and its primary benefit].",
+      "bullets": [
+        "[Feature 1]",
+        "[Feature 2]",
+        "[Feature 3]",
+        "[Feature 4]"
+      ],
+      "price": "$[XX.XX]",
+      "cta": "Order Now | Product Code: [XXX]"
+    }
+  }
+}

@@ -1,0 +1,42 @@
+# ── UI ────────────────────────────────────────────────────────────────────────
+streamlit==1.58.0
+python-dotenv==1.2.2
+
+# ── Schemas ───────────────────────────────────────────────────────────────────
+pydantic==2.13.4
+
+# ── LangChain + LangGraph ─────────────────────────────────────────────────────
+langchain-core==1.4.8
+langchain-groq==1.1.3
+langchain-openai==1.3.3
+langgraph==1.2.7
+
+# ── RAG (Phase 2) ─────────────────────────────────────────────────────────────
+chromadb==1.5.9
+sentence-transformers==5.6.0
+rank-bm25==0.2.2
+nltk==3.9.4
+scikit-learn==1.9.0
+
+# ── Data ──────────────────────────────────────────────────────────────────────
+pandas==3.0.3
+numpy==2.5.0
+matplotlib==3.11.0
+seaborn==0.13.2
+
+# ── MCP ───────────────────────────────────────────────────────────────────────
+mcp==1.28.1
+langchain-mcp-adapters==0.3.0
+
+# ── API backend (Phase 3) ─────────────────────────────────────────────────────
+fastapi==0.139.0
+uvicorn==0.50.0
+
+# ── Guardrails ────────────────────────────────────────────────────────────────
+# transformers/huggingface_hub pinned below what pip would otherwise resolve for
+# sentence-transformers — llm-guard's transformers_helpers.py imports
+# TFPreTrainedModel, which transformers>=5.0 removed. transformers==4.57.6 is
+# still within sentence-transformers==5.6.0's supported range (>=4.41.0,<6.0.0).
+transformers==4.57.6
+huggingface_hub==0.36.2
+llm-guard==0.3.10
