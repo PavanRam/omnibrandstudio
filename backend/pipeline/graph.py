@@ -1,4 +1,4 @@
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -18,7 +18,7 @@ from pipeline.agents.stubs import (
 from pipeline.state import OmniBrandState
 
 
-def build_graph(checkpointer: AsyncPostgresSaver) -> CompiledStateGraph:
+def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     g = StateGraph(OmniBrandState)
 
     g.add_node("intake_agent", intake_agent_stub)

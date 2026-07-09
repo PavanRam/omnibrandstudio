@@ -10,40 +10,12 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "python-multipart>=0.0.12",
 
-    # database
-    "sqlalchemy[asyncio]>=2.0",
-    "asyncpg>=0.30",
-    "alembic>=1.14",
-    "psycopg[binary]>=3.2",  # required by langgraph-checkpoint-postgres
-
-    # cache / queue
-    "redis[hiredis]>=5.2",
-
-    # vector store
-    "qdrant-client>=1.13",
-
-    # auth
-    "python-jose[cryptography]>=3.3",
-    "bcrypt>=4.2",
-    "passlib>=1.7",
-
     # ai / llm
     "langchain-core>=0.3",
     "langgraph>=0.2",
-    "langgraph-checkpoint-postgres>=2.0",
     "litellm>=1.55",
-    "langfuse>=2.0",
     "openai>=1.59",
     "anthropic>=0.42",
-
-    # observability
-    "prometheus-client>=0.21",
-    "opentelemetry-sdk>=1.29",
-    "opentelemetry-exporter-otlp>=1.29",
-
-    # security / pii
-    "presidio-analyzer>=2.2",
-    "presidio-anonymizer>=2.2",
 
     # config
     "pydantic>=2.10",
@@ -68,10 +40,9 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "pytest-httpx>=0.32",
+    "pytest-timeout>=2.3",
     "ruff>=0.8",
     "mypy>=1.13",
-    "types-redis>=4.6",
-    "types-passlib>=1.7",
 ]
 
 [tool.pytest.ini_options]

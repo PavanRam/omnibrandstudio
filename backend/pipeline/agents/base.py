@@ -4,19 +4,14 @@ from typing import Any
 
 import httpx
 import structlog
-
 from core.config import settings
-from core.database import get_db
-from core.langfuse import get_langfuse
-from core.metrics import llm_call_duration, llm_tokens_total
+
 from pipeline.state import OmniBrandState
-from services.audit_service import write_audit  # re-exported for agent use
 
 log = structlog.get_logger()
 
 __all__ = [
     "traced_llm_call",
-    "write_audit",
     "safe_agent_run",
     "AGENT_WRITE_PERMISSIONS",
 ]
@@ -31,13 +26,9 @@ async def traced_llm_call(
 ) -> tuple[str, dict]:
     """Wrapper for every LLM call in the system.
 
-    Calls LiteLLM via httpx, records a Langfuse trace, records Prometheus
-    metrics, and returns (content, usage_metadata).
+    Calls LiteLLM via httpx and returns (content, usage_metadata).
     """
-    campaign_id = state.get("campaign_id")
     agent = kwargs.pop("agent", task)
-    langfuse = get_langfuse()
-    trace = langfuse.trace(name=task, session_id=campaign_id, metadata={"model": model})
 
     start = time.perf_counter()
     async with httpx.AsyncClient(base_url=settings.LITELLM_BASE_URL, timeout=60) as client:
@@ -53,48 +44,18 @@ async def traced_llm_call(
     usage = payload.get("usage", {})
     input_tokens = usage.get("prompt_tokens", 0)
     output_tokens = usage.get("completion_tokens", 0)
-
-    llm_call_duration.labels(agent=agent, model=model, task=task).observe(latency_ms / 1000)
-    llm_tokens_total.labels(agent=agent, model=model, type="input").inc(input_tokens)
-    llm_tokens_total.labels(agent=agent, model=model, type="output").inc(output_tokens)
-
-    trace.update(output=content)
-    trace.end()
-
     cost = payload.get("_hidden_params", {}).get("response_cost", 0.0)
 
-    if campaign_id:
-        async with get_db() as conn:
-            from sqlalchemy import text
-
-            await conn.execute(
-                text(
-                    """
-                    INSERT INTO campaign_cost_attribution
-                        (campaign_id, org_id, brand_id, agent_name, model_alias,
-                         model_resolved, provider, input_tokens, output_tokens,
-                         total_cost_usd, latency_ms)
-                    VALUES
-                        (:campaign_id, :org_id, :brand_id, :agent_name, :model_alias,
-                         :model_resolved, :provider, :input_tokens, :output_tokens,
-                         :total_cost_usd, :latency_ms)
-                    """
-                ),
-                {
-                    "campaign_id": campaign_id,
-                    "org_id": state.get("org_id"),
-                    "brand_id": state.get("brand_id"),
-                    "agent_name": agent,
-                    "model_alias": model,
-                    "model_resolved": payload.get("model", model),
-                    "provider": payload.get("model", model).split("/")[0],
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_cost_usd": cost,
-                    "latency_ms": latency_ms,
-                },
-            )
-            await conn.commit()
+    log.info(
+        "llm_call",
+        agent=agent,
+        model=model,
+        task=task,
+        latency_ms=latency_ms,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cost=cost,
+    )
 
     return content, {
         "cost": cost,

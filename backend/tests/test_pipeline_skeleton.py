@@ -2,9 +2,7 @@ import asyncio
 import inspect
 
 import pytest
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-
-from core.config import settings
+from langgraph.checkpoint.memory import MemorySaver
 from pipeline.agents import stubs
 from pipeline.agents.base import AGENT_WRITE_PERMISSIONS
 from pipeline.graph import build_graph
@@ -131,24 +129,21 @@ def test_reflexion_router_returns_valid_label():
 async def test_fan_out_fan_in_accumulation():
     """operator.add on Annotated fan-in fields accumulates across parallel
     branches instead of overwriting."""
-    async with AsyncPostgresSaver.from_conn_string(
-        settings.POSTGRES_DSN.replace("+asyncpg", "")
-    ) as checkpointer:
-        await checkpointer.setup()
-        graph = build_graph(checkpointer)
-        nodes = set(graph.get_graph().nodes.keys())
-        expected = {
-            "__start__",
-            "__end__",
-            "intake_agent",
-            "content_generator",
-            "personalization_agent",
-            "translation_agent",
-            "judge_claude",
-            "judge_gpt4o",
-            "judge_llama",
-            "confidence_aggregator",
-            "review_gate",
-            "publishing_agent",
-        }
-        assert expected <= nodes
+    checkpointer = MemorySaver()
+    graph = build_graph(checkpointer)
+    nodes = set(graph.get_graph().nodes.keys())
+    expected = {
+        "__start__",
+        "__end__",
+        "intake_agent",
+        "content_generator",
+        "personalization_agent",
+        "translation_agent",
+        "judge_claude",
+        "judge_gpt4o",
+        "judge_llama",
+        "confidence_aggregator",
+        "review_gate",
+        "publishing_agent",
+    }
+    assert expected <= nodes

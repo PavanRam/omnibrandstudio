@@ -31,7 +31,7 @@ class ReviewDecision(BaseModel):
     edited_content: str | None = None
 
     @model_validator(mode="after")
-    def check_edited_content_present(self) -> "ReviewDecision":
+    def check_edited_content_present(self) -> ReviewDecision:
         if self.decision == "edited" and not self.edited_content:
             raise ValueError("edited_content is required when decision is 'edited'")
         if self.decision != "edited" and self.edited_content:

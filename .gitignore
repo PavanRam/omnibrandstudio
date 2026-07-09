@@ -4,3 +4,19 @@
 
 # LangGraph
 .langgraph_api/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Env / secrets
+.env
+certs/*.pem
+
+# Docker volumes / logs
+*.log
+
