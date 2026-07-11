@@ -12,6 +12,7 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException
 from langgraph.checkpoint.memory import MemorySaver
 from pipeline.graph import build_graph
+from pipeline.schemas import CreateCampaignRequest
 from pipeline.state import OmniBrandState
 
 GRAPH_STATE: dict = {}
@@ -37,7 +38,29 @@ async def liveness() -> dict:
     return {"status": "alive"}
 
 
-def _initial_state(campaign_id: str, org_id: str, brand_id: str, user_id: str) -> OmniBrandState:
+def _initial_state(
+    campaign_id: str,
+    org_id: str,
+    brand_id: str,
+    user_id: str,
+    brief_request: CreateCampaignRequest | None = None,
+) -> OmniBrandState:
+    # Populate brief raw fields from the request so intake_agent can process them.
+    brief_dict = (
+        {
+            "objective": brief_request.objective,
+            "target_audience": brief_request.target_audience,
+            "key_messages": brief_request.key_messages,
+            "tone_override": brief_request.tone_override,
+            "channels": brief_request.channels,
+            "locales": brief_request.locales,
+            "audience_segments": brief_request.audience_segments,
+            "token_budget": brief_request.token_budget,
+            "raw_text": brief_request.raw_text,
+        }
+        if brief_request is not None
+        else None
+    )
     return OmniBrandState(
         campaign_id=campaign_id,
         org_id=org_id,
@@ -47,7 +70,7 @@ def _initial_state(campaign_id: str, org_id: str, brand_id: str, user_id: str) -
         org_config={},
         brand_config={},
         model_aliases={},
-        brief=None,
+        brief=brief_dict,  # type: ignore[arg-type]
         rag_context=None,
         prior_campaigns=[],
         brief_valid=None,
@@ -70,7 +93,7 @@ def _initial_state(campaign_id: str, org_id: str, brand_id: str, user_id: str) -
 
 
 @app.post("/campaigns/{campaign_id}/run")
-async def run_campaign(campaign_id: str) -> dict:
+async def run_campaign(campaign_id: str, body: CreateCampaignRequest) -> dict:
     graph = GRAPH_STATE.get("graph")
     if graph is None:
         raise HTTPException(500, "graph not initialized")
@@ -78,8 +101,9 @@ async def run_campaign(campaign_id: str) -> dict:
     initial_state = _initial_state(
         campaign_id=campaign_id,
         org_id="local-org",
-        brand_id="local-brand",
+        brand_id=body.brand_id,
         user_id="local-user",
+        brief_request=body,
     )
     config = {"configurable": {"thread_id": campaign_id or str(uuid4())}}
     result = await graph.ainvoke(initial_state, config=config)

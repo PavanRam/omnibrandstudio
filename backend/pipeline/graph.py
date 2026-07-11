@@ -2,10 +2,10 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from pipeline.agents.intake import intake_agent
 from pipeline.agents.stubs import (
     confidence_aggregator_stub,
     content_generator_stub,
-    intake_agent_stub,
     judge_claude_stub,
     judge_gpt4o_stub,
     judge_llama_stub,
@@ -21,7 +21,7 @@ from pipeline.state import OmniBrandState
 def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     g = StateGraph(OmniBrandState)
 
-    g.add_node("intake_agent", intake_agent_stub)
+    g.add_node("intake_agent", intake_agent)
     g.add_node("content_generator", content_generator_stub)
     g.add_node("personalization_agent", personalization_agent_stub)
     g.add_node("translation_agent", translation_agent_stub)
