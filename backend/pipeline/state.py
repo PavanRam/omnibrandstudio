@@ -115,6 +115,7 @@ class OmniBrandState(TypedDict):
     org_id: str
     brand_id: str
     user_id: str
+    request_id: str   # HTTP X-Request-ID that triggered the campaign; empty string for CLI runs
     started_at: str
 
     # Configuration (immutable after intake)

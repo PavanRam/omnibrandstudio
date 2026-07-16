@@ -67,39 +67,81 @@ services:
       interval: 15s
 
   langfuse:
-    image: langfuse/langfuse:latest
+    image: langfuse/langfuse:2
     environment:
       DATABASE_URL: postgresql://omnibrand:${POSTGRES_PASSWORD}@postgres:5432/langfuse
       NEXTAUTH_SECRET: ${LANGFUSE_SECRET}
       SALT: ${LANGFUSE_SALT}
       NEXTAUTH_URL: http://localhost:3001
       TELEMETRY_ENABLED: "false"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
     ports: ["3001:3000"]
     depends_on:
       postgres: {condition: service_healthy}
+    restart: unless-stopped
 
   prometheus:
-    image: prom/prometheus:latest
-    volumes: ["./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    image: prom/prometheus:v2.52.0
+    volumes:
+      - "./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"
+      - "./infra/prometheus/rules:/etc/prometheus/rules:ro"
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=90d"
+      - "--web.enable-lifecycle"
     ports: ["9090:9090"]
+    restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:10.4.2
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - "./infra/grafana/provisioning:/etc/grafana/provisioning:ro"
       - grafana_data:/var/lib/grafana
     ports: ["3000:3000"]
     depends_on: [prometheus]
+    restart: unless-stopped
 
   jaeger:
-    image: jaegertracing/all-in-one:latest
+    image: jaegertracing/all-in-one:1.58
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
-    ports: ["4317:4317", "16686:16686"]
+      SPAN_STORAGE_TYPE: badger
+      BADGER_EPHEMERAL: "false"
+      BADGER_DIRECTORY_VALUE: /badger/data
+      BADGER_DIRECTORY_KEY: /badger/key
+    volumes:
+      - jaeger_data:/badger
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+    restart: unless-stopped
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    ports: ["9121:9121"]
+    depends_on:
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    environment:
+      DATA_SOURCE_NAME: "postgresql://omnibrand:${POSTGRES_PASSWORD}@postgres:5432/omnibrand?sslmode=disable"
+    ports: ["9187:9187"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    restart: unless-stopped
 
   mailhog:
     image: mailhog/mailhog:latest
@@ -132,6 +174,7 @@ services:
       QDRANT_URL: http://qdrant:6333
       LITELLM_BASE_URL: http://litellm:4000
       LANGFUSE_HOST: http://langfuse:3000
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
     command: uv run python -m worker.main
     depends_on:
       postgres: {condition: service_healthy}
@@ -144,3 +187,5 @@ volumes:
   qdrant_data:
   minio_data:
   grafana_data:
+  prometheus_data:
+  jaeger_data:

@@ -33,10 +33,17 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
-    # Observability
+    # Observability — Langfuse
     LANGFUSE_HOST: str = "http://localhost:3001"
     LANGFUSE_PUBLIC_KEY: str = ""
     LANGFUSE_SECRET_KEY: str = ""
+
+    # Observability — OpenTelemetry / Jaeger
+    OTEL_ENABLED: bool = True
+    OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4317"
+
+    # Worker Prometheus metrics port (separate from API /metrics)
+    PROMETHEUS_METRICS_PORT: int = 9091
 
     # Storage
     S3_ENDPOINT_URL: str = "http://localhost:9000"
