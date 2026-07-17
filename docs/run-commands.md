@@ -1,11 +1,18 @@
 # Run Commands
 
-This project currently has two practical execution paths:
+> For the full observability walkthrough — Jaeger traces, Grafana dashboards,
+> Langfuse LLM traces, Prometheus metrics, and E2E request tracking — see
+> **[docs/observability-t0-guide.md](observability-t0-guide.md)**.
 
-- API process via FastAPI.
-- Pipeline execution via the worker and Redis queue.
+> For local-dev mode and `/eval/local-eval` command matrices (Bash + PowerShell), see
+> **[docs/local-eval-developer-guide.md](local-eval-developer-guide.md)**.
 
-The campaign API routes are still placeholders, so end-to-end pipeline execution currently happens through the worker queue plus the smoke test script, not through an HTTP `POST /campaigns` flow.
+This project has two execution paths:
+
+- **API process** — FastAPI on port 8000. `POST /campaigns` is implemented and
+  enqueues a campaign to Redis, returning a UUIDv7 `campaign_id`.
+- **Worker process** — BLPOP consumer that drives the LangGraph pipeline.
+  Every campaign run emits Prometheus metrics and OTel spans to Jaeger.
 
 ## Prerequisites
 
@@ -116,39 +123,95 @@ What this does:
 - Verifies checkpoint history in Postgres.
 - Fails if the dead-letter queue is used.
 
-## Run E2E
+## Run E2E — via HTTP API (recommended)
 
-Current E2E is the smoke path, because the campaign API endpoints are not implemented yet.
+`POST /campaigns` is now implemented. This path gives full request-ID
+propagation and produces Jaeger traces.
 
-Run full smoke E2E:
+Terminal 1 — infrastructure:
 
 ```bash
 make up
-make worker
-make smoke
 ```
 
-If you want API and worker running while you smoke test the system:
+Terminal 2 — worker (Prometheus metrics on :9091, OTel to Jaeger):
 
-Terminal 1:
+```bash
+make worker
+```
+
+Terminal 3 — API (OTel to Jaeger, metrics on :8000/metrics):
 
 ```bash
 make run
 ```
 
-Terminal 2:
+Terminal 4 — send a request:
 
 ```bash
-make worker
+curl -s -X POST http://localhost:8000/campaigns \
+  -H "Content-Type: application/json" \
+  -d '{
+    "brand_id": "00000000-0000-0000-0000-000000000002",
+    "objective": "Launch sustainability report",
+    "target_audience": "ESG investors",
+    "key_messages": ["Net zero by 2030"],
+    "channels": ["linkedin"],
+    "locales": ["en-US"],
+    "audience_segments": ["enterprise"],
+    "token_budget": 4000
+  }' | python -m json.tool
 ```
 
-Terminal 3:
+Then open:
+- http://localhost:16686 — Jaeger traces for this request
+- http://localhost:9090 — Prometheus metrics
+- http://localhost:3000 — Grafana dashboards (Campaign Operations)
+
+## Run E2E — structured validation (smoke test)
+
+Sends 20 dummy campaigns through the queue, then verifies all observability
+signals are present:
 
 ```bash
 make smoke
+# or with custom parameters:
+uv run python scripts/smoke_test.py --count 20 --wait-secs 60
 ```
 
-Note: `scripts/smoke_test.py` bypasses the not-yet-implemented `/campaigns` API and writes directly to the Redis queue.
+The script checks: API health, Prometheus targets UP, alert rules loaded,
+Grafana dashboards provisioned, Jaeger reachable, campaign processing,
+and metric series populated.
+
+## Run E2E — queue bypass (pipeline-only)
+
+If you want to test just the pipeline without the API:
+
+Terminal 1:
+
+```bash
+make up
+make worker
+```
+
+Terminal 2 (push directly to Redis):
+
+```bash
+python - <<'EOF'
+import json, redis
+r = redis.from_url("redis://localhost:6379")
+r.lpush("campaigns:queue", json.dumps({
+    "campaign_id": "01900000-0000-7000-8000-000000000001",
+    "org_id":      "00000000-0000-0000-0000-000000000001",
+    "brand_id":    "00000000-0000-0000-0000-000000000002",
+    "user_id":     "test",
+    "request_id":  "01900000-0000-7000-8000-000000000099",
+}))
+print("enqueued")
+EOF
+```
+
+
 
 ## Run Different Parts Of The Pipeline
 
@@ -221,6 +284,143 @@ The compiled pipeline currently wires these stages in order:
 - `publishing_agent`
 
 The graph is configured with `interrupt_before=["review_gate"]`, so execution pauses before `review_gate` during the current worker-driven flow.
+
+## RAG Indexing Commands (Detailed)
+
+Use this section when starting a fresh instance and you want RAG ready before campaign requests.
+
+### Indexing modes
+
+- API-based indexing: upload one guide file at a time through HTTP endpoint.
+- Seed-based indexing: bulk bootstrap JSON/CSV datasets from disk into all RAG collections.
+
+### Start instance first
+
+Terminal 1 - infrastructure:
+
+```bash
+make up
+```
+
+Terminal 2 - API:
+
+```bash
+make run
+```
+
+Optional Terminal 3 - worker:
+
+```bash
+make worker
+```
+
+Optional health checks:
+
+```bash
+curl -s http://localhost:8000/health
+curl -s http://localhost:8000/health/ready
+```
+
+### A) API-based indexing (single guide, runtime path)
+
+Endpoint:
+
+- `POST /knowledge/brand-guides`
+
+#### Bash example
+
+```bash
+curl -X POST http://localhost:8000/knowledge/brand-guides \
+  -F brand_id=00000000-0000-0000-0000-000000000002 \
+  -F locale=en-US \
+  -F version=v1 \
+  -F guide_file=@./docs/sample-brand-guide.md
+```
+
+#### PowerShell example
+
+```powershell
+curl.exe -X POST http://localhost:8000/knowledge/brand-guides `
+  -F "brand_id=00000000-0000-0000-0000-000000000002" `
+  -F "locale=en-US" `
+  -F "version=v1" `
+  -F "guide_file=@docs/sample-brand-guide.md"
+```
+
+Verify indexed versions:
+
+```bash
+curl "http://localhost:8000/knowledge/brand-guides/00000000-0000-0000-0000-000000000002"
+```
+
+Include inactive historical versions:
+
+```bash
+curl "http://localhost:8000/knowledge/brand-guides/00000000-0000-0000-0000-000000000002?include_inactive=true"
+```
+
+### B) Seed-based indexing (bulk bootstrap)
+
+Script:
+
+- `backend/scripts/ingest_seed_datasets.py`
+
+Expected seed directory layout:
+
+- `brand_guidelines/*.json`
+- `customer_segments.csv`
+- `campaigns_clean.csv`
+- `social_media_ads_clean.csv`
+- `sentiment140_clean.csv`
+
+#### Bash example
+
+```bash
+cd backend
+uv run python scripts/ingest_seed_datasets.py \
+  --seed-dir ../data/rag-seed \
+  --brand-id 00000000-0000-0000-0000-000000000002 \
+  --locale en-US \
+  --version seed-v1
+```
+
+#### PowerShell example
+
+```powershell
+cd backend
+uv run python scripts/ingest_seed_datasets.py `
+  --seed-dir ..\data\rag-seed `
+  --brand-id 00000000-0000-0000-0000-000000000002 `
+  --locale en-US `
+  --version seed-v1
+```
+
+Optional copy from another folder before ingest:
+
+```bash
+cd backend
+uv run python scripts/ingest_seed_datasets.py \
+  --seed-dir ../data/rag-seed \
+  --copy-from /path/to/source-seed \
+  --brand-id 00000000-0000-0000-0000-000000000002 \
+  --locale en-US \
+  --version seed-v1
+```
+
+### Recommended startup sequence for RAG-ready instance
+
+1. Start infra and run DB migration.
+2. Start API.
+3. Run seed-based ingest for baseline corpora (guidelines, segments, campaigns, sentiment).
+4. Run API-based ingest for latest brand guide override/version.
+5. Verify `/knowledge/brand-guides/{brand_id}` shows expected active version.
+6. Start worker and run a campaign smoke flow.
+
+### Notes
+
+- API-based ingest is the canonical runtime operational path.
+- Seed-based ingest is intended for bootstrap, migration import, and non-interactive bulk setup.
+- If seed files are missing, script skips that dataset type and continues.
 
 ## Useful Support Commands
 

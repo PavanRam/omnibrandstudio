@@ -22,6 +22,24 @@ class Settings(BaseSettings):
     # Vector store
     QDRANT_URL: str = "http://localhost:6333"
     QDRANT_API_KEY: str = ""
+    VECTOR_STORE_BACKEND: str = "chroma"
+    CHROMA_PERSIST_PATH: str = "./data/chroma"
+    BM25_CACHE_PATH: str = "./data/bm25_cache"
+    PINECONE_API_KEY: str = ""
+    PINECONE_ENVIRONMENT: str = ""
+    PINECONE_INDEX: str = "omnibrand-guides"
+    HYBRID_FETCH_K: int = 20
+    RRF_K: int = 60
+    RERANKER_MODEL: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    MMR_LAMBDA: float = 0.7
+
+    # MCP integration (optional interoperability layer)
+    RAG_MCP_ENABLED: bool = False
+    RAG_MCP_HOST: str = "0.0.0.0"
+    RAG_MCP_PORT: int = 8001
+
+    # RAG ingestion controls
+    RAG_MAX_UPLOAD_BYTES: int = 5 * 1024 * 1024
 
     # LLM
     LITELLM_BASE_URL: str = "http://localhost:4000"
