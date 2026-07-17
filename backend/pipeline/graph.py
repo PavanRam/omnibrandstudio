@@ -2,13 +2,13 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from pipeline.agents.content_generator import content_generator
+from pipeline.agents.personalization import personalization_agent
 from pipeline.agents.stubs import (
     confidence_aggregator_stub,
     intake_agent_stub,
     judge_claude_stub,
     judge_gpt4o_stub,
     judge_llama_stub,
-    personalization_agent_stub,
     publishing_agent_stub,
     reflexion_router_stub,
     review_gate_stub,
@@ -26,7 +26,7 @@ def build_graph(
 
     g.add_node("intake_agent", intake_agent_stub)
     g.add_node("content_generator", content_generator)
-    g.add_node("personalization_agent", personalization_agent_stub)
+    g.add_node("personalization_agent", personalization_agent)  # T4 — real agent (was stub)
     g.add_node("translation_agent", translation_agent_stub)
     g.add_node("judge_claude", judge_claude_stub)
     g.add_node("judge_gpt4o", judge_gpt4o_stub)
