@@ -132,10 +132,12 @@ def _build_messages(profile: dict[str, str], channel: str, content: str) -> list
 async def personalization_agent(state: OmniBrandState) -> dict:
     async def _impl(state: OmniBrandState) -> dict:
         profiles = load_segment_profiles(state.get("org_config", {}))
+        # Default to the free-tier model (gen-free / Llama via Groq), matching
+        # content_generator — keeps the pipeline within the free-tier budget.
+        # The team can override per campaign via model_aliases["personalization"].
         model = (
             state["model_aliases"].get("personalization")
-            or state["model_aliases"].get("generation")
-            or "gen-premium"
+            or state["model_aliases"].get("generation", "gen-free")
         )
 
         # T4.2 — scan the brief up front (structlog only on this branch).
