@@ -4,3 +4,11 @@
 
 # LangGraph
 .langgraph_api/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local environment files
+.env
+.env.*

@@ -1,0 +1,68 @@
+model_list:
+  # Generation — premium (paid/enterprise tier)
+  - model_name: "gen-premium"
+    litellm_params:
+      model: "anthropic/claude-sonnet-4-6"
+      api_key: "os.environ/ANTHROPIC_API_KEY"
+    model_info: {id: "gen-premium-claude"}
+  - model_name: "gen-premium"
+    litellm_params:
+      model: "openai/gpt-4o-2024-11-20"
+      api_key: "os.environ/OPENAI_API_KEY"
+
+  # Generation — free tier
+  - model_name: "gen-free"
+    litellm_params:
+      model: "groq/llama-3.1-70b-versatile"
+      api_key: "os.environ/GROQ_API_KEY"
+
+  # Judges — pinned by family (never change family on fallback)
+  - model_name: "judge-1"
+    litellm_params:
+      model: "anthropic/claude-sonnet-4-6"
+      api_key: "os.environ/ANTHROPIC_API_KEY"
+
+  - model_name: "judge-2"
+    litellm_params:
+      model: "openai/gpt-4o-2024-11-20"
+      api_key: "os.environ/OPENAI_API_KEY"
+
+  - model_name: "judge-3"
+    litellm_params:
+      model: "groq/llama-3.1-70b-versatile"
+      api_key: "os.environ/GROQ_API_KEY"
+
+  # Utility — cheap model for classification, summarisation
+  - model_name: "util-fast"
+    litellm_params:
+      model: "openai/gpt-4o-mini-2024-07-18"
+      api_key: "os.environ/OPENAI_API_KEY"
+
+  # Evaluation
+  - model_name: "eval-model"
+    litellm_params:
+      model: "anthropic/claude-haiku-4-5"
+      api_key: "os.environ/ANTHROPIC_API_KEY"
+
+  # Embeddings
+  - model_name: "embedding"
+    litellm_params:
+      model: "openai/text-embedding-3-small"
+      api_key: "os.environ/OPENAI_API_KEY"
+
+router_settings:
+  retry_policy:
+    BadRequestError: {num_retries: 0}
+    RateLimitError: {num_retries: 3, retry_after: 60}
+    ServiceUnavailableError: {num_retries: 3}
+
+litellm_settings:
+  cache: true
+  cache_params:
+    type: redis
+    host: redis
+    port: 6379
+    ttl: 3600
+  drop_params: true
+  max_budget: 10.0
+  budget_duration: "1d"

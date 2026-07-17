@@ -1,0 +1,52 @@
+groups:
+- name: llm_costs
+  rules:
+
+  - alert: LLMCostBudgetWarning
+    expr: increase(omnibrand_llm_cost_usd_total[1h]) > 10
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "LLM costs exceed $10 in the last hour"
+      description: "Cost = ${{ $value | humanize }} — check for runaway campaigns"
+
+  - alert: LLMCallLatencyHigh
+    expr: histogram_quantile(0.95, rate(omnibrand_llm_call_duration_seconds_bucket[5m])) > 30
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "LLM call p95 latency above 30s"
+      description: "Agent={{ $labels.agent }} model={{ $labels.model }} p95={{ $value | humanizeDuration }}"
+
+  - alert: JudgeLatencyHigh
+    expr: histogram_quantile(0.95, rate(omnibrand_judge_latency_seconds_bucket[5m])) > 30
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Judge p95 latency above 30s"
+      description: "Judge={{ $labels.judge }} p95={{ $value | humanizeDuration }}"
+
+- name: api_health
+  rules:
+
+  - alert: APIHighErrorRate
+    expr: >
+      rate(omnibrand_http_requests_total{status_code=~"5.."}[5m]) / (rate(omnibrand_http_requests_total[5m]) + 0.001) > 0.05
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "API 5xx error rate above 5%"
+      description: "Error rate = {{ $value | humanizePercentage }}"
+
+  - alert: APIDown
+    expr: up{job="omnibrand_api"} == 0
+    for: 2m
+    labels:
+      severity: critical
+    annotations:
+      summary: "OmniBrand API is down"
+      description: "Prometheus cannot scrape the API metrics endpoint"
