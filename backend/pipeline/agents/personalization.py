@@ -28,6 +28,13 @@ import structlog
 from pipeline.agents.base import safe_agent_run, traced_llm_call
 from pipeline.state import OmniBrandState
 
+try:
+    # Same channel constraints the content generator (T3) uses — so a persona
+    # rewrite stays within the channel's char limit and keeps required elements.
+    from pipeline.agents.prompts.channel_prompts import DEFAULT_CHANNEL_CONSTRAINTS
+except Exception:  # module may be absent on some branches — degrade gracefully
+    DEFAULT_CHANNEL_CONSTRAINTS = {}
+
 log = structlog.get_logger()
 
 
@@ -92,19 +99,30 @@ def scrub_pii(text: str | None) -> tuple[str, list[str]]:
 
 
 def _build_messages(profile: dict[str, str], channel: str, content: str) -> list[dict]:
-    """T4.3 — segment-conditioned prompt (tone, CTA vocabulary, reading level)."""
+    """T4.3 — segment-conditioned prompt (tone, CTA, reading level) that also
+    respects the channel's format constraints (char limit, required elements)."""
+    constraints = DEFAULT_CHANNEL_CONSTRAINTS.get(channel, {})
+    char_limit = constraints.get("char_limit")
+    required = constraints.get("required_elements") or []
+
     system = (
         "You are a brand personalization specialist. Rewrite marketing content "
         "for a specific audience segment while preserving factual claims, offers, "
-        "and brand voice. Return only the rewritten content — no preamble."
+        "brand voice, and the channel's format. Return only the rewritten content "
+        "— no preamble."
     )
-    user = (
-        f"Rewrite the following {channel} content for the target audience segment.\n"
-        f"- Tone: {profile['tone']}\n"
-        f"- Reading level: {profile['reading_level']}\n"
-        f"- Call-to-action style: {profile['cta_style']}\n\n"
-        f"Content:\n{content}"
-    )
+    lines = [
+        f"Rewrite the following {channel} content for the target audience segment.",
+        f"- Tone: {profile['tone']}",
+        f"- Reading level: {profile['reading_level']}",
+        f"- Call-to-action style: {profile['cta_style']}",
+    ]
+    if char_limit:
+        lines.append(f"- Stay within {char_limit} characters (hard limit).")
+    if required:
+        lines.append(f"- Keep these required elements: {', '.join(required)}.")
+    user = "\n".join(lines) + f"\n\nContent:\n{content}"
+
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
