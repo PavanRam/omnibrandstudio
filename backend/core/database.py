@@ -10,6 +10,10 @@ _engine: AsyncEngine | None = None
 
 async def init_db() -> None:
     global _engine
+    if settings.LOCAL_DEV_MODE:
+        # TEMP_LOCAL_EVAL: Local-dev mode intentionally bypasses external DB dependency.
+        _engine = None
+        return
     _engine = create_async_engine(settings.POSTGRES_DSN, pool_pre_ping=True)
 
 
@@ -33,6 +37,9 @@ async def get_db() -> AsyncIterator[AsyncConnection]:
 
 
 async def check_db_health() -> bool:
+    if settings.LOCAL_DEV_MODE:
+        # TEMP_LOCAL_EVAL: Report DB as available in local-dev bypass mode.
+        return True
     try:
         async with get_db() as conn:
             await conn.exec_driver_sql("SELECT 1")

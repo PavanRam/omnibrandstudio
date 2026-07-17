@@ -19,7 +19,7 @@ from core.metrics import (
 from core.redis import close_redis, get_redis, init_redis
 from core.tracing import setup_observability
 from pipeline.graph import build_graph
-from pipeline.state import OmniBrandState
+from pipeline.initial_state import build_initial_state
 
 log = structlog.get_logger()
 
@@ -40,44 +40,17 @@ def _start_metrics_server() -> None:
         log.warning("worker_metrics_server_failed", error=str(exc))
 
 
-def _initial_state(task_payload: dict) -> OmniBrandState:
-    return OmniBrandState(
-        campaign_id=task_payload["campaign_id"],
-        org_id=task_payload["org_id"],
-        brand_id=task_payload["brand_id"],
-        user_id=task_payload.get("user_id", ""),
-        request_id=task_payload.get("request_id", ""),
-        started_at=datetime.now(UTC).isoformat(),
-        org_config={},
-        brand_config={},
-        model_aliases={},
-        brief=None,
-        rag_context=None,
-        prior_campaigns=[],
-        brief_valid=None,
-        brief_validation_errors=[],
-        budget_check_passed=None,
-        tasks=[],
-        current_task=None,
-        variants=[],
-        brand_scores=[],
-        aggregated_scores=[],
-        review_requests=[],
-        publication_receipts=[],
-        failed_task_ids=[],
-        errors=[],
-        current_phase="starting",
-        human_review_requested=False,
-        publishing_paused=False,
-        token_cost_usd=0.0,
-    )
-
-
 async def process_campaign(task_payload: dict) -> None:
     campaign_id = task_payload["campaign_id"]
     org_id = task_payload.get("org_id", "unknown")
     request_id = task_payload.get("request_id", "")
-    initial_state = _initial_state(task_payload)
+    initial_state = build_initial_state(
+        campaign_id=campaign_id,
+        org_id=org_id,
+        brand_id=task_payload["brand_id"],
+        user_id=task_payload.get("user_id", ""),
+        request_id=request_id,
+    )
 
     # Propagate W3C trace context injected by the API at enqueue time
     from opentelemetry.propagate import extract

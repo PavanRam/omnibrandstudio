@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from api.middleware.request_id import RequestIDMiddleware
+from core.config import settings
 from core.metrics import REGISTRY, http_request_duration, http_requests_total
 from core.tracing import instrument_fastapi, setup_observability
 
@@ -33,6 +34,11 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+
+def should_enable_local_eval() -> bool:
+    # TEMP_LOCAL_EVAL: Route is opt-in and blocked in production environments.
+    return settings.ENABLE_LOCAL_EVAL and settings.APP_ENV.lower() != "production"
 
 # ── Middleware stack (order matters: outermost first) ────────────────────────────
 
@@ -78,3 +84,9 @@ app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(campaigns.router, prefix="/campaigns", tags=["campaigns"])
 app.include_router(orgs.router, prefix="/orgs", tags=["orgs"])
 app.include_router(knowledge.router, prefix="/knowledge", tags=["knowledge"])
+
+if should_enable_local_eval():
+    # TEMP_LOCAL_EVAL: Local eval endpoint is intentionally not registered by default.
+    from api.routers import evaluation  # noqa: E402
+
+    app.include_router(evaluation.router, prefix="/eval", tags=["evaluation"])

@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"
     SECRET_KEY: str = "changeme_app_secret_32chars_min"
+    # TEMP_LOCAL_EVAL: Local-only mode to run API and local eval without infra services.
+    LOCAL_DEV_MODE: bool = False
+    # TEMP_LOCAL_EVAL: Explicit opt-in switch for /eval/local-eval endpoint registration.
+    ENABLE_LOCAL_EVAL: bool = False
 
     # Database
     POSTGRES_DSN: str = "postgresql+asyncpg://omnibrand:changeme_local_32chars@localhost:5432/omnibrand"
