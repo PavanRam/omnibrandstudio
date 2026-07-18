@@ -1,0 +1,91 @@
+{
+  "__requires": [
+    {"type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0"},
+    {"type": "panel", "id": "timeseries", "name": "Time series", "version": ""},
+    {"type": "panel", "id": "bargauge", "name": "Bar gauge", "version": ""}
+  ],
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "panels": [
+    {
+      "id": 1,
+      "title": "LLM Call Duration p50 / p95 by Agent",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "right"}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+          "expr": "histogram_quantile(0.50, sum by (agent, le) (rate(omnibrand_llm_call_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{agent}}"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+          "expr": "histogram_quantile(0.95, sum by (agent, le) (rate(omnibrand_llm_call_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{agent}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Token Usage Rate (input vs output)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+          "expr": "sum by (type) (rate(omnibrand_llm_tokens_total[5m]))",
+          "legendFormat": "{{type}} tokens/s"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Cumulative LLM Cost USD by Model",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "right"}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+          "expr": "sum by (model) (omnibrand_llm_cost_usd_total)",
+          "legendFormat": "{{model}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Routing Decisions",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+          "expr": "rate(omnibrand_routing_decisions_total[5m]) * 60",
+          "legendFormat": "{{decision}} / min"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["omnibrand", "llm", "judges"],
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "LLM and Judge Quality",
+  "uid": "omnibrand-llm",
+  "version": 1
+}

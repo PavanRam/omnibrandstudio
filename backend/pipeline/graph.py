@@ -3,13 +3,13 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from pipeline.agents.intake import intake_agent
+from pipeline.agents.content_generator import content_generator
+from pipeline.agents.personalization import personalization_agent
 from pipeline.agents.stubs import (
     confidence_aggregator_stub,
-    content_generator_stub,
     judge_claude_stub,
     judge_gpt4o_stub,
     judge_llama_stub,
-    personalization_agent_stub,
     publishing_agent_stub,
     reflexion_router_stub,
     review_gate_stub,
@@ -18,12 +18,16 @@ from pipeline.agents.stubs import (
 from pipeline.state import OmniBrandState
 
 
-def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
+def build_graph(
+    checkpointer=None,
+    *,
+    interrupt_before_review_gate: bool = True,
+) -> CompiledStateGraph:
     g = StateGraph(OmniBrandState)
 
     g.add_node("intake_agent", intake_agent)
-    g.add_node("content_generator", content_generator_stub)
-    g.add_node("personalization_agent", personalization_agent_stub)
+    g.add_node("content_generator", content_generator)
+    g.add_node("personalization_agent", personalization_agent)  # T4 — real agent (was stub)
     g.add_node("translation_agent", translation_agent_stub)
     g.add_node("judge_claude", judge_claude_stub)
     g.add_node("judge_gpt4o", judge_gpt4o_stub)
@@ -55,7 +59,7 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     g.add_edge("review_gate", "publishing_agent")
     g.add_edge("publishing_agent", END)
 
-    return g.compile(
-        checkpointer=checkpointer,
-        interrupt_before=["review_gate"],
-    )
+    compile_kwargs = {"checkpointer": checkpointer} if checkpointer is not None else {}
+    if interrupt_before_review_gate:
+        compile_kwargs["interrupt_before"] = ["review_gate"]
+    return g.compile(**compile_kwargs)

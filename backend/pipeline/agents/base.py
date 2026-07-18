@@ -5,7 +5,10 @@ from typing import Any
 import httpx
 import structlog
 from core.config import settings
-
+from core.database import get_db
+from core.langfuse import get_langfuse
+from core.metrics import llm_call_duration, llm_cost_usd_total, llm_tokens_total
+from core.tracing import get_tracer
 from pipeline.state import OmniBrandState
 
 log = structlog.get_logger()
@@ -26,18 +29,37 @@ async def traced_llm_call(
 ) -> tuple[str, dict]:
     """Wrapper for every LLM call in the system.
 
-    Calls LiteLLM via httpx and returns (content, usage_metadata).
+    Calls LiteLLM via httpx, records a Langfuse trace, records Prometheus
+    metrics, creates an OTel span, and returns (content, usage_metadata).
     """
+    campaign_id = state.get("campaign_id")
+    request_id = state.get("request_id", "")
     agent = kwargs.pop("agent", task)
+    langfuse = get_langfuse()
+    tracer = get_tracer(f"omnibrand.{agent}")
+
+    trace = langfuse.trace(
+        name=task,
+        session_id=campaign_id,
+        metadata={"model": model, "request_id": request_id, "org_id": state.get("org_id")},
+    )
 
     start = time.perf_counter()
-    async with httpx.AsyncClient(base_url=settings.LITELLM_BASE_URL, timeout=60) as client:
-        response = await client.post(
-            "/chat/completions",
-            json={"model": model, "messages": messages, **kwargs},
-        )
-        response.raise_for_status()
-        payload = response.json()
+    with tracer.start_as_current_span(f"{agent}.llm_call") as span:
+        span.set_attribute("llm.model", model)
+        span.set_attribute("llm.task", task)
+        span.set_attribute("campaign_id", campaign_id or "")
+        span.set_attribute("request_id", request_id)
+
+        async with httpx.AsyncClient(base_url=settings.LITELLM_BASE_URL, timeout=60) as client:
+            response = await client.post(
+                "/chat/completions",
+                json={"model": model, "messages": messages, **kwargs},
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+        span.set_attribute("http.status_code", response.status_code)
 
     latency_ms = int((time.perf_counter() - start) * 1000)
     content = payload["choices"][0]["message"]["content"]
@@ -45,6 +67,14 @@ async def traced_llm_call(
     input_tokens = usage.get("prompt_tokens", 0)
     output_tokens = usage.get("completion_tokens", 0)
     cost = payload.get("_hidden_params", {}).get("response_cost", 0.0)
+
+    llm_call_duration.labels(agent=agent, model=model, task=task).observe(latency_ms / 1000)
+    llm_tokens_total.labels(agent=agent, model=model, type="input").inc(input_tokens)
+    llm_tokens_total.labels(agent=agent, model=model, type="output").inc(output_tokens)
+    llm_cost_usd_total.labels(agent=agent, model=model).inc(cost)
+
+    trace.update(output=content)
+    trace.end()
 
     log.info(
         "llm_call",

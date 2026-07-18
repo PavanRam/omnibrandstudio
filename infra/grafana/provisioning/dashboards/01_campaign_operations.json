@@ -1,0 +1,137 @@
+{
+  "__requires": [
+    {"type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0"},
+    {"type": "panel", "id": "timeseries", "name": "Time series", "version": ""},
+    {"type": "panel", "id": "stat", "name": "Stat", "version": ""},
+    {"type": "panel", "id": "gauge", "name": "Gauge", "version": ""}
+  ],
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Campaigns Started (rate/min)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "fieldConfig": {
+        "defaults": {"unit": "short", "color": {"mode": "palette-classic"}},
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+          "expr": "rate(omnibrand_campaigns_started_total[5m]) * 60",
+          "legendFormat": "started / min"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+          "expr": "rate(omnibrand_campaigns_completed_total{status=\"completed\"}[5m]) * 60",
+          "legendFormat": "completed / min"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+          "expr": "rate(omnibrand_campaigns_completed_total{status=\"failed\"}[5m]) * 60",
+          "legendFormat": "failed / min"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Queue Depth",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {"steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 20},
+            {"color": "red", "value": 50}
+          ]},
+          "color": {"mode": "thresholds"}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "single"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+          "expr": "omnibrand_queue_depth",
+          "legendFormat": "queue depth"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+          "expr": "omnibrand_dlq_messages_total",
+          "legendFormat": "DLQ total"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Campaign Duration p50 / p95 / p99",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "fieldConfig": {
+        "defaults": {"unit": "s"},
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+          "expr": "histogram_quantile(0.50, rate(omnibrand_campaign_duration_seconds_bucket[5m]))",
+          "legendFormat": "p50"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+          "expr": "histogram_quantile(0.95, rate(omnibrand_campaign_duration_seconds_bucket[5m]))",
+          "legendFormat": "p95"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+          "expr": "histogram_quantile(0.99, rate(omnibrand_campaign_duration_seconds_bucket[5m]))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Campaign Cost USD (histogram p50/p95)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "fieldConfig": {
+        "defaults": {"unit": "currencyUSD"},
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+          "expr": "histogram_quantile(0.50, rate(omnibrand_campaign_cost_usd_bucket[10m]))",
+          "legendFormat": "cost p50"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+          "expr": "histogram_quantile(0.95, rate(omnibrand_campaign_cost_usd_bucket[10m]))",
+          "legendFormat": "cost p95"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["omnibrand", "campaigns"],
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Campaign Operations",
+  "uid": "omnibrand-campaigns",
+  "version": 1
+}
