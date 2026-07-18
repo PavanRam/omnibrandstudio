@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import operator
-from typing import Annotated, TypedDict
+from typing import Annotated, NotRequired, TypedDict
 
 
 class CampaignBrief(TypedDict):
@@ -24,6 +24,13 @@ class GenerationTask(TypedDict):
     channel_constraints: dict
 
 
+class TranslationCheckResult(TypedDict):
+    name: str
+    value: float
+    threshold: float
+    passed: bool
+
+
 class ContentVariant(TypedDict):
     task_id: str
     locale: str
@@ -42,6 +49,12 @@ class ContentVariant(TypedDict):
     retry_count: int
     reflexion_applied: bool
     failure_reason: str | None
+    # Translation agent — added via NotRequired so existing ContentVariant
+    # literals (content_generator.py + test/demo fixtures) don't need updating.
+    translation_retry_count: NotRequired[int]
+    translation_gate_status: NotRequired[str]
+    translation_checks: NotRequired[list[TranslationCheckResult]]
+    translation_content_safety_violations: NotRequired[list[str]]
 
 
 class CriterionScore(TypedDict):

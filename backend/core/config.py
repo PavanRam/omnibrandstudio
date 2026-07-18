@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     GROQ_API_KEY: str = ""
     DEEPL_API_KEY: str = ""
+    # Hugging Face Inference Providers — used directly by translation_agent for
+    # mBART/Helsinki-NLP MT models and MPNet embeddings (not proxied via LiteLLM).
+    HF_TOKEN: str = ""
 
     # Auth
     JWT_PRIVATE_KEY_PATH: str = "./certs/private_key.pem"
@@ -58,6 +61,12 @@ class Settings(BaseSettings):
     # Runtime
     MAX_CONCURRENT_CAMPAIGNS: int = 5
     CAMPAIGN_TIMEOUT_SECONDS: int = 300
+    # Placeholder toggle for translation_agent's gate-failure escalation path.
+    # Inert today: translation_agent has no AGENT_WRITE_PERMISSIONS entry for
+    # human_review_requested/review_requests, so flipping this doesn't yet do
+    # anything beyond logging intent — wired for real once confidence_aggregator
+    # reads ContentVariant.translation_gate_status.
+    TRANSLATION_HUMAN_ESCALATION_ENABLED: bool = False
 
     @property
     def private_key(self) -> str:

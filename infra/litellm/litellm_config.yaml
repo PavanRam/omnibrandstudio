@@ -44,6 +44,14 @@ model_list:
       model: "anthropic/claude-haiku-4-5"
       api_key: "os.environ/ANTHROPIC_API_KEY"
 
+  # Translation — pinned single-provider (never pooled; translation needs one
+  # consistent model family, not a Claude/GPT-4o coin-flip like gen-premium)
+  - model_name: "translation-primary"
+    litellm_params:
+      model: "anthropic/claude-sonnet-4-6"
+      api_key: "os.environ/ANTHROPIC_API_KEY"
+    model_info: {id: "translation-primary-claude"}
+
   # Embeddings
   - model_name: "embedding"
     litellm_params:

@@ -65,6 +65,13 @@ class BrandScoreOutput(BaseModel):
 # ── API responses ─────────────────────────────────────────────────────────
 
 
+class TranslationCheckResult(BaseModel):
+    name: str
+    value: float
+    threshold: float
+    passed: bool
+
+
 class VariantSummary(BaseModel):
     task_id: str
     locale: str
@@ -73,6 +80,7 @@ class VariantSummary(BaseModel):
     status: str
     final_content: str | None = None
     composite_score: float | None = None
+    translation_gate_status: str | None = None
 
 
 class CampaignResponse(BaseModel):

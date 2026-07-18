@@ -12,8 +12,8 @@ from pipeline.agents.stubs import (
     publishing_agent_stub,
     reflexion_router_stub,
     review_gate_stub,
-    translation_agent_stub,
 )
+from pipeline.agents.translation import translation_agent
 from pipeline.state import OmniBrandState
 
 
@@ -27,7 +27,7 @@ def build_graph(
     g.add_node("intake_agent", intake_agent)
     g.add_node("content_generator", content_generator)
     g.add_node("personalization_agent", personalization_agent)  # T4 — real agent (was stub)
-    g.add_node("translation_agent", translation_agent_stub)
+    g.add_node("translation_agent", translation_agent)  # real agent — was stub
     g.add_node("judge_claude", judge_claude_stub)
     g.add_node("judge_gpt4o", judge_gpt4o_stub)
     g.add_node("judge_llama", judge_llama_stub)

@@ -49,6 +49,9 @@ dependencies = [
     "httpx>=0.28",
     "anyio>=4.7",
     "structlog>=24.4",
+    "huggingface-hub>=1.22.0",
+    "sacrebleu>=2.6.0",
+    "tenacity>=9.1.4",
 ]
 
 [build-system]
