@@ -2,6 +2,7 @@ import asyncio
 import json
 import sys
 from datetime import UTC, datetime
+from urllib.parse import urlsplit, urlunsplit
 
 import structlog
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -27,6 +28,28 @@ log = structlog.get_logger()
 
 QUEUE = "campaigns:queue"
 DLQ = "campaigns:dead_letter"
+
+
+def _to_psycopg_dsn(raw_dsn: str) -> str:
+    """Return a psycopg-compatible DSN and escape bare percent signs in auth.
+
+    Some local passwords include `%` and are not URL-encoded. psycopg's URL parser
+    rejects these with `invalid percent-encoded token`. We only sanitize the
+    netloc/userinfo portion and keep host/path/query untouched.
+    """
+    dsn = raw_dsn.replace("+asyncpg", "")
+    parts = urlsplit(dsn)
+    if "@" not in parts.netloc:
+        return dsn
+
+    userinfo, hostpart = parts.netloc.rsplit("@", 1)
+    if "%" not in userinfo:
+        return dsn
+
+    # Escape bare '%' characters so URL parsing remains valid for psycopg.
+    safe_userinfo = userinfo.replace("%", "%25")
+    safe_netloc = f"{safe_userinfo}@{hostpart}"
+    return urlunsplit((parts.scheme, safe_netloc, parts.path, parts.query, parts.fragment))
 
 
 def _start_metrics_server() -> None:
@@ -89,8 +112,7 @@ async def process_campaign(task_payload: dict) -> None:
             span.set_attribute("org_id", org_id)
             span.set_attribute("request_id", request_id)
 
-            # AsyncPostgresSaver uses psycopg — strip the asyncpg driver suffix
-            psycopg_dsn = settings.POSTGRES_DSN.replace("+asyncpg", "")
+            psycopg_dsn = _to_psycopg_dsn(settings.POSTGRES_DSN)
             async with AsyncPostgresSaver.from_conn_string(psycopg_dsn) as checkpointer:
                 await checkpointer.setup()
                 graph = build_graph(checkpointer)
@@ -111,6 +133,10 @@ async def process_campaign(task_payload: dict) -> None:
 
 
 async def main() -> None:
+    from core.database import close_db, init_db
+    from core.langfuse import get_langfuse
+
+    await init_db()
     await init_redis()
     redis = get_redis()
     log.info("worker_started", queue=QUEUE)
@@ -141,6 +167,8 @@ async def main() -> None:
                 dlq_messages_total.inc()
     finally:
         await close_redis()
+        get_langfuse().flush()
+        await close_db()
 
 
 if __name__ == "__main__":

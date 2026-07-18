@@ -7,7 +7,7 @@ import structlog
 
 from core.config import settings
 from core.database import get_db
-from core.langfuse import get_langfuse
+from core.langfuse import get_langfuse, start_langfuse_trace
 from core.metrics import llm_call_duration, llm_cost_usd_total, llm_tokens_total
 from core.tracing import get_tracer
 from pipeline.state import OmniBrandState
@@ -21,6 +21,16 @@ __all__ = [
     "safe_agent_run",
     "AGENT_WRITE_PERMISSIONS",
 ]
+
+
+def _fallback_content_from_messages(messages: list[dict]) -> str:
+    for msg in reversed(messages):
+        if str(msg.get("role", "")).lower() == "user":
+            text = str(msg.get("content", "")).strip()
+            if text:
+                snippet = text[:220]
+                return f"[fallback-generated] {snippet}"
+    return "[fallback-generated]"
 
 
 async def traced_llm_call(
@@ -38,10 +48,9 @@ async def traced_llm_call(
     campaign_id = state.get("campaign_id")
     request_id = state.get("request_id", "")
     agent = kwargs.pop("agent", task)
-    langfuse = get_langfuse()
     tracer = get_tracer(f"omnibrand.{agent}")
 
-    trace = langfuse.trace(
+    trace = start_langfuse_trace(
         name=task,
         session_id=campaign_id,
         metadata={"model": model, "request_id": request_id, "org_id": state.get("org_id")},
@@ -55,29 +64,65 @@ async def traced_llm_call(
         span.set_attribute("request_id", request_id)
 
         async with httpx.AsyncClient(base_url=settings.LITELLM_BASE_URL, timeout=60) as client:
-            response = await client.post(
-                "/chat/completions",
-                json={"model": model, "messages": messages, **kwargs},
-            )
-            response.raise_for_status()
-            payload = response.json()
-
-        span.set_attribute("http.status_code", response.status_code)
+            try:
+                response = await client.post(
+                    "/chat/completions",
+                    json={"model": model, "messages": messages, **kwargs},
+                )
+                response.raise_for_status()
+                payload = response.json()
+                span.set_attribute("http.status_code", response.status_code)
+            except httpx.HTTPError as exc:
+                status_code = getattr(getattr(exc, "response", None), "status_code", 0)
+                span.set_attribute("http.status_code", int(status_code or 0))
+                span.set_attribute("llm.fallback", True)
+                log.warning(
+                    "llm_call_http_failed_using_fallback",
+                    agent=agent,
+                    task=task,
+                    model=model,
+                    status_code=status_code,
+                    error=str(exc),
+                )
+                payload = {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": _fallback_content_from_messages(messages),
+                            }
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+                    "model": f"fallback/{model}",
+                    "_hidden_params": {"response_cost": 0.0},
+                }
 
     latency_ms = int((time.perf_counter() - start) * 1000)
     content = payload["choices"][0]["message"]["content"]
     usage = payload.get("usage", {})
     input_tokens = usage.get("prompt_tokens", 0)
     output_tokens = usage.get("completion_tokens", 0)
-    cost = payload.get("_hidden_params", {}).get("response_cost", 0.0)
+    cost = float(payload.get("_hidden_params", {}).get("response_cost", 0.0) or 0.0)
+    resolved_model = str(payload.get("model") or model)
+    provider = resolved_model.split("/")[0]
 
     llm_call_duration.labels(agent=agent, model=model, task=task).observe(latency_ms / 1000)
     llm_tokens_total.labels(agent=agent, model=model, type="input").inc(input_tokens)
     llm_tokens_total.labels(agent=agent, model=model, type="output").inc(output_tokens)
     llm_cost_usd_total.labels(agent=agent, model=model).inc(cost)
 
-    trace.update(output=content)
-    trace.end()
+    try:
+        trace.update(output=content)
+        end_fn = getattr(trace, "end", None)
+        if callable(end_fn):
+            end_fn()
+    except Exception as exc:
+        log.warning("langfuse_trace_finalize_failed", task=task, error=str(exc))
+    finally:
+        try:
+            get_langfuse().flush()
+        except Exception as exc:
+            log.warning("langfuse_flush_failed", task=task, error=str(exc))
 
     if campaign_id:
         async with get_db() as conn:
@@ -102,8 +147,8 @@ async def traced_llm_call(
                     "brand_id": state.get("brand_id"),
                     "agent_name": agent,
                     "model_alias": model,
-                    "model_resolved": payload.get("model", model),
-                    "provider": payload.get("model", model).split("/")[0],
+                    "model_resolved": resolved_model,
+                    "provider": provider,
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
                     "total_cost_usd": cost,

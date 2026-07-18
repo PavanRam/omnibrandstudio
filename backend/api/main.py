@@ -14,6 +14,7 @@ from core.tracing import instrument_fastapi, setup_observability
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from core.database import close_db, init_db
+    from core.langfuse import get_langfuse
     from core.redis import close_redis, init_redis
 
     setup_observability("omnibrand-api")
@@ -24,6 +25,7 @@ async def lifespan(app: FastAPI):
     yield
     await close_db()
     await close_redis()
+    get_langfuse().flush()
 
 
 app = FastAPI(
