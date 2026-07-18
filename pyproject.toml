@@ -17,7 +17,6 @@ dependencies = [
     # cache / queue
     "redis[hiredis]>=5.2",
     # vector store
-    "qdrant-client>=1.13",
     "chromadb>=0.5",
     "pinecone>=5.0",
     # auth

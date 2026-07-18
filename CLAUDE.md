@@ -1,6 +1,6 @@
 # OmniBrand Studio
 
-Multi-tenant agentic content platform. LangGraph pipeline generates brand-compliant content across 6 channels and 2+ locales. FastAPI + PostgreSQL + Redis + Qdrant + LiteLLM proxy.
+Multi-tenant agentic content platform. LangGraph pipeline generates brand-compliant content across 6 channels and 2+ locales. FastAPI + PostgreSQL + Redis + ChromaDB + LiteLLM proxy.
 
 ---
 
@@ -18,7 +18,7 @@ Never use `pip`, `pip install`, or `poetry`. Always prefix Python commands with 
 ## Commands
 
 ```bash
-make up          # start 12 Docker services (blocks until healthy)
+make up          # start Docker services (blocks until healthy)
 make run         # uv run uvicorn api.main:app --reload  (port 8000)
 make worker      # uv run python -m worker.main
 make dev         # honcho start (web + worker via Procfile)
@@ -46,7 +46,7 @@ backend/
       base.py         ← traced_llm_call · write_audit · safe_agent_run · AGENT_WRITE_PERMISSIONS
       stubs.py        ← 10 stub nodes; replace stubs with real implementations here
   api/
-    main.py           ← FastAPI app + lifespan (DB, Redis, Qdrant init)
+    main.py           ← FastAPI app + lifespan (DB, Redis init)
     deps.py           ← get_current_user · require() · UserContext
     middleware/auth.py← HS256 decode · jti revocation · API key verify
   core/
@@ -152,7 +152,7 @@ async def my_agent(state: OmniBrandState) -> dict:
 | `judge-3` | Llama 70B | Judge 3 — pinned Groq/open-source family |
 | `util-fast` | GPT-4o-mini | Classification, extraction, short tasks |
 | `eval-model` | Claude Haiku | Prompt critique, evaluation, lightweight LLM tasks |
-| `embedding` | text-embedding-3-small | Qdrant dense vectors |
+| `embedding` | text-embedding-3-small | Chroma/Pinecone dense vectors |
 
 ---
 
@@ -215,6 +215,6 @@ These are the acceptance gates. Run `make smoke` at each:
 - Do not use raw model names in agent code — use aliases from `state["model_aliases"]`
 - Do not run `alembic` without `uv run` prefix
 - Do not use sync SQLAlchemy sessions — always async
-- Do not query Qdrant without `brand_id` filter — cross-brand data leakage
+- Do not query vector stores without `brand_id` filter — cross-brand data leakage
 - Do not commit `.env` — commit `uv.lock`
 - Do not spawn subagents for file reads, linting, or single-file edits

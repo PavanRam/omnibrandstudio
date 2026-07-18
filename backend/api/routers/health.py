@@ -1,7 +1,6 @@
 from fastapi import APIRouter
 
 from core.database import check_db_health
-from core.qdrant import check_qdrant_health
 from core.redis import check_redis_health
 
 router = APIRouter()
@@ -11,7 +10,6 @@ router = APIRouter()
 async def health() -> dict:
     db_ok = await check_db_health()
     redis_ok = await check_redis_health()
-    qdrant_ok = await check_qdrant_health()
     overall_ok = db_ok and redis_ok
 
     return {
@@ -19,7 +17,6 @@ async def health() -> dict:
         "checks": {
             "database": {"status": "up" if db_ok else "down"},
             "redis": {"status": "up" if redis_ok else "down"},
-            "qdrant": {"status": "up" if qdrant_ok else "down"},
         },
     }
 

@@ -285,16 +285,18 @@ The compiled pipeline currently wires these stages in order:
 
 The graph is configured with `interrupt_before=["review_gate"]`, so execution pauses before `review_gate` during the current worker-driven flow.
 
-## RAG Indexing Commands (Detailed)
+## RAG Local Start and Ingestion
 
 Use this section when starting a fresh instance and you want RAG ready before campaign requests.
 
-### Indexing modes
+### Chroma (local default)
 
-- API-based indexing: upload one guide file at a time through HTTP endpoint.
-- Seed-based indexing: bulk bootstrap JSON/CSV datasets from disk into all RAG collections.
+#### Backend config
 
-### Start instance first
+- `VECTOR_STORE_BACKEND=chroma`
+- `CHROMA_PERSIST_PATH=/app/data/chroma` (Docker local default)
+
+#### Start RAG locally
 
 Terminal 1 - infrastructure:
 
@@ -321,13 +323,13 @@ curl -s http://localhost:8000/health
 curl -s http://localhost:8000/health/ready
 ```
 
-### A) API-based indexing (single guide, runtime path)
+#### Ingest via API (runtime, one guide at a time)
 
 Endpoint:
 
 - `POST /knowledge/brand-guides`
 
-#### Bash example
+Bash:
 
 ```bash
 curl -X POST http://localhost:8000/knowledge/brand-guides \
@@ -337,7 +339,7 @@ curl -X POST http://localhost:8000/knowledge/brand-guides \
   -F guide_file=@./docs/sample-brand-guide.md
 ```
 
-#### PowerShell example
+PowerShell:
 
 ```powershell
 curl.exe -X POST http://localhost:8000/knowledge/brand-guides `
@@ -347,19 +349,14 @@ curl.exe -X POST http://localhost:8000/knowledge/brand-guides `
   -F "guide_file=@docs/sample-brand-guide.md"
 ```
 
-Verify indexed versions:
+Verify:
 
 ```bash
 curl "http://localhost:8000/knowledge/brand-guides/00000000-0000-0000-0000-000000000002"
-```
-
-Include inactive historical versions:
-
-```bash
 curl "http://localhost:8000/knowledge/brand-guides/00000000-0000-0000-0000-000000000002?include_inactive=true"
 ```
 
-### B) Seed-based indexing (bulk bootstrap)
+#### Ingest via script (bootstrap/bulk)
 
 Script:
 
@@ -373,7 +370,7 @@ Expected seed directory layout:
 - `social_media_ads_clean.csv`
 - `sentiment140_clean.csv`
 
-#### Bash example
+Bash:
 
 ```bash
 cd backend
@@ -384,7 +381,7 @@ uv run python scripts/ingest_seed_datasets.py \
   --version seed-v1
 ```
 
-#### PowerShell example
+PowerShell:
 
 ```powershell
 cd backend
@@ -395,7 +392,7 @@ uv run python scripts/ingest_seed_datasets.py `
   --version seed-v1
 ```
 
-Optional copy from another folder before ingest:
+Optional copy-from:
 
 ```bash
 cd backend
@@ -407,11 +404,62 @@ uv run python scripts/ingest_seed_datasets.py \
   --version seed-v1
 ```
 
-### Recommended startup sequence for RAG-ready instance
+### Pinecone (managed external vector store)
+
+Use this mode when you want managed vector infrastructure instead of local Chroma persistence.
+
+#### Backend config
+
+Set all of:
+
+- `VECTOR_STORE_BACKEND=pinecone`
+- `PINECONE_API_KEY=<key>`
+- `PINECONE_ENVIRONMENT=<environment>`
+- `PINECONE_INDEX=<index-name>`
+
+Example (Bash):
+
+```bash
+export VECTOR_STORE_BACKEND=pinecone
+export PINECONE_API_KEY=<key>
+export PINECONE_ENVIRONMENT=<environment>
+export PINECONE_INDEX=<index-name>
+```
+
+Example (PowerShell):
+
+```powershell
+$env:VECTOR_STORE_BACKEND = "pinecone"
+$env:PINECONE_API_KEY = "<key>"
+$env:PINECONE_ENVIRONMENT = "<environment>"
+$env:PINECONE_INDEX = "<index-name>"
+```
+
+#### Start with Pinecone backend
+
+1. Restart API and worker after setting env vars.
+2. Re-run ingestion for the selected Pinecone index.
+
+Startup commands are the same:
+
+```bash
+make up
+make run
+# optional
+make worker
+```
+
+#### Ingest via API and script
+
+Use the same API and script commands from the Chroma section.
+
+Important: switching backend does not migrate vectors automatically; always re-index after a backend change.
+
+### Recommended sequence (either backend)
 
 1. Start infra and run DB migration.
 2. Start API.
-3. Run seed-based ingest for baseline corpora (guidelines, segments, campaigns, sentiment).
+3. Run script-based ingest for baseline corpora (guidelines, segments, campaigns, sentiment).
 4. Run API-based ingest for latest brand guide override/version.
 5. Verify `/knowledge/brand-guides/{brand_id}` shows expected active version.
 6. Start worker and run a campaign smoke flow.
@@ -419,7 +467,7 @@ uv run python scripts/ingest_seed_datasets.py \
 ### Notes
 
 - API-based ingest is the canonical runtime operational path.
-- Seed-based ingest is intended for bootstrap, migration import, and non-interactive bulk setup.
+- Script-based ingest is intended for bootstrap, migration import, and non-interactive bulk setup.
 - If seed files are missing, script skips that dataset type and continues.
 
 ## Useful Support Commands

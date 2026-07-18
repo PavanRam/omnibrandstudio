@@ -23,14 +23,6 @@ services:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
 
-  qdrant:
-    image: qdrant/qdrant:latest
-    volumes: [qdrant_data:/qdrant/storage]
-    ports: ["6333:6333", "6334:6334"]
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' || exit 1"]
-      interval: 10s
-
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
@@ -153,7 +145,7 @@ services:
     environment:
       POSTGRES_DSN: postgresql+asyncpg://omnibrand:${POSTGRES_PASSWORD}@postgres:5432/omnibrand
       REDIS_URL: redis://redis:6379
-      QDRANT_URL: http://qdrant:6333
+      CHROMA_PERSIST_PATH: /app/data/chroma
       LITELLM_BASE_URL: http://litellm:4000
       LANGFUSE_HOST: http://langfuse:3000
       S3_ENDPOINT_URL: http://minio:9000
@@ -171,7 +163,7 @@ services:
     environment:
       POSTGRES_DSN: postgresql+asyncpg://omnibrand:${POSTGRES_PASSWORD}@postgres:5432/omnibrand
       REDIS_URL: redis://redis:6379
-      QDRANT_URL: http://qdrant:6333
+      CHROMA_PERSIST_PATH: /app/data/chroma
       LITELLM_BASE_URL: http://litellm:4000
       LANGFUSE_HOST: http://langfuse:3000
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
@@ -184,7 +176,6 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  qdrant_data:
   minio_data:
   grafana_data:
   prometheus_data:

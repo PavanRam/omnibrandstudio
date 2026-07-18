@@ -14,7 +14,6 @@ from core.tracing import instrument_fastapi, setup_observability
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from core.database import close_db, init_db
-    from core.qdrant import close_qdrant, init_qdrant
     from core.redis import close_redis, init_redis
 
     setup_observability("omnibrand-api")
@@ -22,11 +21,9 @@ async def lifespan(app: FastAPI):
 
     await init_db()
     await init_redis()
-    await init_qdrant()
     yield
     await close_db()
     await close_redis()
-    await close_qdrant()
 
 
 app = FastAPI(

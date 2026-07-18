@@ -20,8 +20,6 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379"
 
     # Vector store
-    QDRANT_URL: str = "http://localhost:6333"
-    QDRANT_API_KEY: str = ""
     VECTOR_STORE_BACKEND: str = "chroma"
     CHROMA_PERSIST_PATH: str = "./data/chroma"
     BM25_CACHE_PATH: str = "./data/bm25_cache"
