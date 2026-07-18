@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 import structlog
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from pydantic import ValidationError
 from prometheus_client import start_http_server as _prom_start_http_server
 
 from core.config import settings
@@ -20,6 +21,7 @@ from core.redis import close_redis, get_redis, init_redis
 from core.tracing import setup_observability
 from pipeline.graph import build_graph
 from pipeline.initial_state import build_initial_state
+from pipeline.schemas import CreateCampaignRequest
 
 log = structlog.get_logger()
 
@@ -44,12 +46,24 @@ async def process_campaign(task_payload: dict) -> None:
     campaign_id = task_payload["campaign_id"]
     org_id = task_payload.get("org_id", "unknown")
     request_id = task_payload.get("request_id", "")
+    brief_payload = task_payload.get("brief")
+    brief: CreateCampaignRequest | None = None
+    if isinstance(brief_payload, dict):
+        try:
+            brief = CreateCampaignRequest.model_validate(brief_payload)
+        except ValidationError as exc:
+            log.warning(
+                "campaign_brief_payload_invalid",
+                campaign_id=campaign_id,
+                error=str(exc),
+            )
     initial_state = build_initial_state(
         campaign_id=campaign_id,
         org_id=org_id,
         brand_id=task_payload["brand_id"],
         user_id=task_payload.get("user_id", ""),
         request_id=request_id,
+        brief=brief,
     )
 
     # Propagate W3C trace context injected by the API at enqueue time

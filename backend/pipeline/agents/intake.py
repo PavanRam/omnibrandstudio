@@ -7,14 +7,23 @@ Pure validation + planning — no LLM call, token_cost_usd = 0.0.
 from __future__ import annotations
 
 from itertools import product
+import re
 
 import structlog
 
 from pipeline.agents.base import safe_agent_run
 from pipeline.intake_validation import check_budget, screen_for_injection
+from services.rag import get_retriever
 from pipeline.state import CampaignBrief, GenerationTask, OmniBrandState
 
 log = structlog.get_logger()
+
+
+def _version_key(version: str) -> tuple[int, str]:
+    match = re.search(r"(\d+)", version)
+    if match:
+        return (int(match.group(1)), version)
+    return (0, version)
 
 
 # ---------------------------------------------------------------------------
@@ -95,10 +104,37 @@ async def intake_agent(state: OmniBrandState) -> dict:
                 budget_ok = True
 
         # ------------------------------------------------------------------
-        # 5. RAG context / prior campaigns — explicit no-ops on this branch
+        # 5. RAG context / prior campaigns
         # ------------------------------------------------------------------
         rag_context = None
         prior_campaigns: list = []
+        if brief_valid and budget_ok and campaign_brief is not None:
+            query = campaign_brief["objective"].strip() or campaign_brief["raw_text"].strip()
+            if query:
+                try:
+                    chunks = await get_retriever().retrieve(
+                        query=query,
+                        brand_id=state["brand_id"],
+                        locale=campaign_brief["locales"][0],
+                        n_results=5,
+                    )
+                    if chunks:
+                        versions = [c.version for c in chunks if c.version]
+                        rag_context = {
+                            "brand_guide_chunks": [c.content for c in chunks],
+                            "section_types": [c.section_type for c in chunks if c.section_type],
+                            "brand_guide_version": (
+                                max(versions, key=_version_key) if versions else "unknown"
+                            ),
+                            "retrieval_scores": [float(c.score) for c in chunks],
+                        }
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "intake_rag_context_failed",
+                        campaign_id=state.get("campaign_id"),
+                        brand_id=state.get("brand_id"),
+                        error=str(exc),
+                    )
 
         # ------------------------------------------------------------------
         # 6. Task fan-out (Cartesian product) — only if valid

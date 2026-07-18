@@ -42,9 +42,7 @@ def build_graph(
     """
     g = StateGraph(OmniBrandState)
 
-    g.add_node("intake_agent", intake_agent_stub)
-    # content_generator is the first heavy LLM stage and consumes retrieval-backed
-    # few-shot examples; personalization_agent is now a real implementation.
+    g.add_node("intake_agent", intake_agent)
     g.add_node("content_generator", content_generator)
     g.add_node("personalization_agent", personalization_agent)  # T4 — real agent (was stub)
     g.add_node("translation_agent", translation_agent_stub)

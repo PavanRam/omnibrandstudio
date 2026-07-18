@@ -18,16 +18,16 @@ RUN groupadd -r omnibrand && useradd -r -g omnibrand -u 10001 omnibrand
 
 WORKDIR /app
 
-COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /app/.venv /opt/venv
 
 COPY . .
 
-ENV PATH="/app/.venv/bin:$PATH"
+ENV PATH="/opt/venv/bin:$PATH"
 ENV PYTHONPATH="/app"
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-RUN chown -R omnibrand:omnibrand /app
+RUN chown -R omnibrand:omnibrand /app /opt/venv
 USER omnibrand
 
 EXPOSE 8000

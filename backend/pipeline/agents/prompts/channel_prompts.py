@@ -53,6 +53,7 @@ _USER_TEMPLATE = (
     "Key messages: {key_messages}\n"
     "Audience segment: {segment}\n"
     "Locale: {locale}\n\n"
+    "Brand guide excerpts to follow (highest priority):\n{brand_guidance}\n\n"
     "Examples of strong past {channel} content for this brand:\n{few_shot_examples}\n\n"
     "Write one new {channel} post that follows the system instructions exactly."
 )

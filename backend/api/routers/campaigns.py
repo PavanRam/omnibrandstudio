@@ -25,13 +25,16 @@ async def create_campaign(
     """
     campaign_id = new_campaign_id()
     request_id = getattr(request.state, "request_id", "")
+    org_id = getattr(request.state, "org_id", "unknown")
+    user_id = getattr(request.state, "user_id", "")
 
     task = {
         "campaign_id": campaign_id,
-        "org_id": body.brand_id,   # placeholder until auth provides real org_id
+        "org_id": org_id,
         "brand_id": body.brand_id,
-        "user_id": "",
+        "user_id": user_id,
         "request_id": request_id,
+        "brief": body.model_dump(),
     }
     redis = get_redis()
     await redis.lpush(QUEUE, json.dumps(task))

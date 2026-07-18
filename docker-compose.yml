@@ -105,12 +105,8 @@ services:
     image: jaegertracing/all-in-one:1.58
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
-      SPAN_STORAGE_TYPE: badger
-      BADGER_EPHEMERAL: "false"
-      BADGER_DIRECTORY_VALUE: /badger/data
-      BADGER_DIRECTORY_KEY: /badger/key
-    volumes:
-      - jaeger_data:/badger
+      # Use memory storage by default in local dev to avoid host-volume permission issues.
+      SPAN_STORAGE_TYPE: ${JAEGER_SPAN_STORAGE_TYPE:-memory}
     ports:
       - "16686:16686"  # Jaeger UI
       - "4317:4317"    # OTLP gRPC
@@ -143,6 +139,7 @@ services:
     build: {context: ., dockerfile: backend/Dockerfile, target: runtime}
     env_file: .env
     environment:
+      UV_CACHE_DIR: /tmp/uv-cache
       POSTGRES_DSN: postgresql+asyncpg://omnibrand:${POSTGRES_PASSWORD}@postgres:5432/omnibrand
       REDIS_URL: redis://redis:6379
       CHROMA_PERSIST_PATH: /app/data/chroma
@@ -161,6 +158,7 @@ services:
     build: {context: ., dockerfile: backend/Dockerfile, target: runtime}
     env_file: .env
     environment:
+      UV_CACHE_DIR: /tmp/uv-cache
       POSTGRES_DSN: postgresql+asyncpg://omnibrand:${POSTGRES_PASSWORD}@postgres:5432/omnibrand
       REDIS_URL: redis://redis:6379
       CHROMA_PERSIST_PATH: /app/data/chroma

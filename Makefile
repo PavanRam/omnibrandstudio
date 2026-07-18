@@ -66,7 +66,10 @@ seed:
 
 # ── Infrastructure ────────────────────────────────────────────────────────────
 up:
-	docker compose up -d --wait
+	# Bring up long-running services and wait for health/readiness.
+	docker compose up -d --wait postgres redis minio litellm langfuse prometheus grafana jaeger redis-exporter postgres-exporter mailhog api worker
+	# One-shot init job exits 0 by design; run it separately so --wait does not fail.
+	docker compose up -d createbuckets
 
 down:
 	docker compose down -v
