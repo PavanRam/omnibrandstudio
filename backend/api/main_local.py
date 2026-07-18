@@ -1,7 +1,9 @@
 """No-Docker FastAPI entrypoint for quick pipeline evaluation.
 
 Runs the real OmniBrandState graph end-to-end in-process with an in-memory
-checkpointer — no Postgres, no Redis, no Qdrant, no worker process.
+checkpointer. The code is still production grade, only execution is local and ephemeral.
+Run with:
+    uvicorn api.main_local:app --reload --port 8000
 
     uv run uvicorn api.main_local:app --reload --port 8000
 """
