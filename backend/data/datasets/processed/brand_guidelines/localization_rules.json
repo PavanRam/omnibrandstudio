@@ -1,0 +1,71 @@
+{
+  "English": {
+    "region": "United States, United Kingdom",
+    "formality_level": "Neutral — adapts to persona tone",
+    "date_format": "MM/DD/YYYY (US) | DD/MM/YYYY (UK)",
+    "currency": "USD ($) | GBP (£)",
+    "cultural_notes": [
+      "Direct communication is appreciated — get to the point",
+      "Humour is acceptable but must be subtle and brand-safe",
+      "Avoid British vs American English conflicts — use internationally neutral terms where possible",
+      "Spelling: use 'color' not 'colour' for US, 'colour' not 'color' for UK"
+    ],
+    "phrases_to_avoid": [
+      "Bloody good deal (UK slang — not brand appropriate)",
+      "Ya'll (too regional for brand voice)",
+      "Awesome sauce (too informal for all personas)"
+    ],
+    "legal_disclaimers": [
+      "Prices subject to change without notice.",
+      "Offer valid while supplies last.",
+      "See website for full terms and conditions."
+    ]
+  },
+  "French": {
+    "region": "France, Belgium, Canada (Quebec)",
+    "formality_level": "High — French audiences expect formal register by default",
+    "date_format": "DD/MM/YYYY",
+    "currency": "EUR (€) | CAD ($) for Quebec",
+    "cultural_notes": [
+      "Always use 'vous' (formal you) unless specifically targeting Gen Z on social media",
+      "French consumers value quality and elegance over bargain language",
+      "Avoid direct translations of English idioms — they often read as unnatural",
+      "Food and lifestyle content resonates strongly with French audiences",
+      "Brand messaging must feel crafted — rushed or generic copy is poorly received"
+    ],
+    "phrases_to_avoid": [
+      "Direct translations of English slang",
+      "Overly enthusiastic exclamation marks (seen as tacky in French)",
+      "'Super' used excessively (informal and overused)",
+      "RSVP in reverse — do not use English idioms untranslated"
+    ],
+    "legal_disclaimers": [
+      "Prix susceptibles de modification sans préavis.",
+      "Offre valable dans la limite des stocks disponibles.",
+      "Voir le site pour les conditions générales complètes."
+    ]
+  },
+  "Spanish": {
+    "region": "Spain, Mexico, United States (Hispanic market)",
+    "formality_level": "Medium — warm and personal, less formal than French",
+    "date_format": "DD/MM/YYYY",
+    "currency": "EUR (€) for Spain | MXN ($) for Mexico | USD ($) for US Hispanic",
+    "cultural_notes": [
+      "Use 'usted' for formal contexts, 'tú' for social media and younger audiences",
+      "Family and community values resonate strongly — reference shared experiences",
+      "Colour and warmth in language is culturally appropriate — Spanish audiences respond to emotive copy",
+      "Distinguish between Spain Spanish and Latin American Spanish where possible",
+      "Health and food content performs especially well in Spanish-language campaigns"
+    ],
+    "phrases_to_avoid": [
+      "Direct word-for-word translations from English",
+      "Slang specific to one Spanish-speaking country used globally",
+      "Overly corporate or cold language — warmth is expected"
+    ],
+    "legal_disclaimers": [
+      "Precios sujetos a cambio sin previo aviso.",
+      "Oferta válida hasta agotar existencias.",
+      "Consulte el sitio web para conocer los términos y condiciones completos."
+    ]
+  }
+}

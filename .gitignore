@@ -12,3 +12,11 @@ __pycache__/
 # Local environment files
 .env
 .env.*
+
+# Local vector DB/runtime artifacts
+data/chroma/
+backend/data/chroma/
+
+# Local NLP download cache
+backend/.nltk_data/
+backend/data/bm25_cache/

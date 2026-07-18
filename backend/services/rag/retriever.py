@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 from pathlib import Path
+import tempfile
 from typing import Any
 
 import structlog
@@ -35,7 +36,24 @@ class RAGRetriever:
         self._cross = CrossEncoderReranker()
         self._tfidf = TFIDFReranker()
         self._mmr = MMRReranker()
-        self._bm25_cache_dir = Path(settings.BM25_CACHE_PATH)
+        self._bm25_cache_dir = self._resolve_writable_cache_dir()
+
+    @staticmethod
+    def _resolve_writable_cache_dir() -> Path:
+        candidates = [
+            Path(settings.BM25_CACHE_PATH),
+            Path(tempfile.gettempdir()) / "omnibrand_bm25_cache",
+        ]
+        for candidate in candidates:
+            try:
+                candidate.mkdir(parents=True, exist_ok=True)
+                probe = candidate / ".write_probe"
+                probe.write_text("ok", encoding="utf-8")
+                probe.unlink(missing_ok=True)
+                return candidate
+            except OSError:
+                continue
+        return Path(tempfile.gettempdir()) / "omnibrand_bm25_cache"
 
     @staticmethod
     def _collection_name(brand_id: str, kind: str) -> str:
@@ -157,7 +175,10 @@ class RAGRetriever:
         current_count: int,
     ) -> HybridBM25Index:
         index = HybridBM25Index(docs)
-        index.save(cache_path, current_count)
+        try:
+            index.save(cache_path, current_count)
+        except OSError as exc:
+            log.warning("bm25_cache_write_failed", path=str(cache_path), error=str(exc))
         return index
 
     async def _merge_candidates(

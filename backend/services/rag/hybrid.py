@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import pickle
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -11,15 +13,76 @@ from rank_bm25 import BM25Okapi
 _NON_ALPHA = re.compile(r"[^a-z0-9\s]")
 _TOKENIZER_VERSION = 2
 
+
+def _nltk_data_dir() -> Path:
+    override = os.getenv("NLTK_DATA", "").strip()
+    if override:
+        candidate = Path(override)
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / ".write_probe"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return candidate
+        except OSError:
+            # Fall back when container/user cannot write configured path.
+            pass
+    for fallback in (Path.cwd() / ".nltk_data", Path(tempfile.gettempdir()) / "omnibrand_nltk_data"):
+        try:
+            fallback.mkdir(parents=True, exist_ok=True)
+            probe = fallback / ".write_probe"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return fallback
+        except OSError:
+            continue
+    # Last resort: return temp dir path even if write probe failed.
+    return Path(tempfile.gettempdir()) / "omnibrand_nltk_data"
+
+
+_FALLBACK_STOP_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "in",
+        "is",
+        "it",
+        "of",
+        "on",
+        "or",
+        "that",
+        "the",
+        "this",
+        "to",
+        "was",
+        "with",
+    }
+)
+
 try:
     from nltk.corpus import stopwords as _sw_corpus
 
     _STOP_WORDS: frozenset[str] = frozenset(_sw_corpus.words("english"))
 except LookupError:
-    nltk.download("stopwords", quiet=True)
-    from nltk.corpus import stopwords as _sw_corpus
+    dl_dir = _nltk_data_dir()
+    dl_dir_str = str(dl_dir)
+    if dl_dir_str not in nltk.data.path:
+        nltk.data.path.insert(0, dl_dir_str)
+    try:
+        nltk.download("stopwords", quiet=True, download_dir=dl_dir_str)
+        from nltk.corpus import stopwords as _sw_corpus
 
-    _STOP_WORDS = frozenset(_sw_corpus.words("english"))
+        _STOP_WORDS = frozenset(_sw_corpus.words("english"))
+    except Exception:
+        _STOP_WORDS = _FALLBACK_STOP_WORDS
 
 from nltk.stem import PorterStemmer
 

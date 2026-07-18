@@ -2,8 +2,20 @@ from __future__ import annotations
 
 import hashlib
 from functools import lru_cache
+import os
+import tempfile
 
 import anyio
+
+
+def _ensure_writable_model_cache() -> None:
+    """Route model caches to writable temp locations in restricted containers."""
+    temp_root = tempfile.gettempdir()
+    os.environ.setdefault("HF_HOME", os.path.join(temp_root, "hf_home"))
+    os.environ.setdefault(
+        "SENTENCE_TRANSFORMERS_HOME",
+        os.path.join(temp_root, "sentence_transformers"),
+    )
 
 
 @lru_cache(maxsize=1)
@@ -12,7 +24,11 @@ def _get_sentence_transformer():
         from sentence_transformers import SentenceTransformer
     except Exception:
         return None
-    return SentenceTransformer("all-MiniLM-L6-v2")
+    try:
+        _ensure_writable_model_cache()
+        return SentenceTransformer("all-MiniLM-L6-v2")
+    except Exception:
+        return None
 
 
 def _hash_embedding(text: str, dimensions: int = 384) -> list[float]:

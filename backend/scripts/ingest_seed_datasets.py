@@ -5,6 +5,7 @@ import asyncio
 from pathlib import Path
 import shutil
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from core.config import settings
@@ -27,8 +28,8 @@ def parse_args() -> argparse.Namespace:
 
 
 async def _assert_brand_in_org(conn, *, brand_id: str, org_id: str) -> None:
-    result = await conn.exec_driver_sql(
-        "SELECT 1 FROM brands WHERE id = %(brand_id)s AND org_id = %(org_id)s",
+    result = await conn.execute(
+        text("SELECT 1 FROM brands WHERE id = :brand_id AND org_id = :org_id"),
         {"brand_id": brand_id, "org_id": org_id},
     )
     if result.mappings().first() is None:
@@ -68,7 +69,7 @@ async def _run(args: argparse.Namespace) -> None:
     if not seed_dir.exists():
         raise FileNotFoundError(f"Seed directory not found: {seed_dir}")
 
-    engine = create_async_engine(settings.database_url, pool_pre_ping=True)
+    engine = create_async_engine(settings.POSTGRES_DSN, pool_pre_ping=True)
     try:
         async with engine.begin() as conn:
             await _assert_brand_in_org(conn, brand_id=args.brand_id, org_id=args.org_id)

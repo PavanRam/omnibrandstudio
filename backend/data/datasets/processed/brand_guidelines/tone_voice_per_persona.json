@@ -1,0 +1,158 @@
+{
+  "High-Income Store Spender": {
+    "description": "Wealthy, educated customers who shop in-store and spend heavily across all categories.",
+    "tone": "Premium, sophisticated, exclusive, confident",
+    "language_style": "Elevated vocabulary, longer sentences, no slang, subtle elegance",
+    "emotional_appeal": "Aspiration, exclusivity, quality craftsmanship, status",
+    "key_messages": [
+      "You deserve the finest — and we deliver it.",
+      "Exclusively curated for discerning tastes.",
+      "Quality that speaks for itself.",
+      "A world of premium products, personally selected for you."
+    ],
+    "content_focus": [
+      "Highlight premium product quality and provenance",
+      "Emphasise exclusivity and limited availability",
+      "Reference craftsmanship, heritage, and expertise",
+      "Use lifestyle imagery that reflects luxury and refinement"
+    ],
+    "avoid": [
+      "Discount language (e.g. 'cheap', 'bargain', 'save big')",
+      "Overly casual or informal tone",
+      "Hard-sell urgency tactics",
+      "Generic mass-market messaging"
+    ],
+    "sentence_length": "Medium to long",
+    "preferred_channels": [
+      "Store",
+      "Catalog",
+      "Email"
+    ],
+    "campaign_approach": "Multi-touchpoint storytelling journey — build desire before presenting product"
+  },
+  "Budget-Conscious Low Spender": {
+    "description": "Price-sensitive customers who spend minimally and rarely respond to campaigns.",
+    "tone": "Reassuring, honest, helpful, straightforward",
+    "language_style": "Simple vocabulary, short sentences, plain and clear, no jargon",
+    "emotional_appeal": "Security, practicality, value for money, trust",
+    "key_messages": [
+      "Great quality doesn't have to cost more.",
+      "Smart choices for everyday living.",
+      "We respect your budget — and your intelligence.",
+      "Real value, real savings, real results."
+    ],
+    "content_focus": [
+      "Lead with price and value proposition",
+      "Highlight savings and affordability clearly",
+      "Use simple, relatable everyday scenarios",
+      "Focus on practical benefits over aspirational lifestyle"
+    ],
+    "avoid": [
+      "Premium or luxury language",
+      "Complicated or abstract messaging",
+      "High-pressure sales tactics",
+      "Imagery or language that feels out of reach"
+    ],
+    "sentence_length": "Short to medium",
+    "preferred_channels": [
+      "Store",
+      "Deals",
+      "Email"
+    ],
+    "campaign_approach": "Reactivation campaigns with clear value offers — keep messaging simple and honest"
+  },
+  "Web-Savvy Mid-Tier Buyer": {
+    "description": "Mid-income customers who prefer online shopping and are comfortable with digital content.",
+    "tone": "Modern, friendly, snappy, digitally native",
+    "language_style": "Conversational, punchy, uses digital-native expressions, emoji-friendly",
+    "emotional_appeal": "Convenience, discovery, smart choices, staying current",
+    "key_messages": [
+      "Shop smarter. Live better.",
+      "Everything you need, right here, right now.",
+      "Discover what's trending — curated just for you.",
+      "Fast. Easy. Delivered to your door."
+    ],
+    "content_focus": [
+      "Emphasise convenience and seamless online experience",
+      "Highlight new arrivals, trending products, and personalised picks",
+      "Use short punchy copy with strong visual support",
+      "Include social proof — ratings, reviews, popular picks"
+    ],
+    "avoid": [
+      "Long-form text blocks",
+      "Offline-only references (e.g. 'visit us in-store')",
+      "Overly formal or stiff language",
+      "Outdated references or out-of-touch cultural references"
+    ],
+    "sentence_length": "Short",
+    "preferred_channels": [
+      "Web",
+      "Instagram",
+      "Facebook",
+      "Email"
+    ],
+    "campaign_approach": "Digital-first campaigns with retargeting — use web behaviour signals to personalise"
+  },
+  "Deal-Seeking Value Hunter": {
+    "description": "Low-income customers who only engage when there is a compelling deal or discount.",
+    "tone": "Urgent, direct, deal-driven, energetic",
+    "language_style": "Short punchy sentences, numbers and percentages prominent, action-oriented",
+    "emotional_appeal": "FOMO (fear of missing out), urgency, winning a deal, smart shopping",
+    "key_messages": [
+      "Today only — don't miss out.",
+      "Your exclusive deal is waiting.",
+      "Up to 50% off. Right now.",
+      "Act fast — limited stock at this price."
+    ],
+    "content_focus": [
+      "Lead with the discount or offer — make it the headline",
+      "Include specific numbers (%, $ saved, items remaining)",
+      "Use countdown language and limited-time framing",
+      "Keep copy minimal — let the offer speak"
+    ],
+    "avoid": [
+      "Soft or ambiguous offers",
+      "Long explanations before revealing the deal",
+      "Premium positioning or luxury language",
+      "Vague CTAs like 'Learn More'"
+    ],
+    "sentence_length": "Very short",
+    "preferred_channels": [
+      "Deals",
+      "Email",
+      "Facebook"
+    ],
+    "campaign_approach": "Trigger-based campaigns tied to promotions — only contact when there is a genuine deal"
+  },
+  "Highly Engaged Campaign Responder": {
+    "description": "The rarest and most responsive segment — actively responds to campaigns across touchpoints.",
+    "tone": "Loyal, rewarding, inclusive, celebratory",
+    "language_style": "Warm and personal, uses 'you' frequently, acknowledges their loyalty",
+    "emotional_appeal": "Recognition, belonging, reward, being valued",
+    "key_messages": [
+      "You've been with us from the start — here's something special.",
+      "As one of our most valued customers, this is for you.",
+      "Thank you for your loyalty. You deserve this.",
+      "Exclusively for our most engaged community members."
+    ],
+    "content_focus": [
+      "Acknowledge and reward their engagement history",
+      "Offer early access, exclusives, or loyalty rewards",
+      "Use personalised language that references their behaviour",
+      "Build on the relationship — reference previous campaigns"
+    ],
+    "avoid": [
+      "Generic mass-market messaging",
+      "Ignoring their loyalty history",
+      "Treating them like a new customer",
+      "Overly transactional tone"
+    ],
+    "sentence_length": "Medium",
+    "preferred_channels": [
+      "Catalog",
+      "Email",
+      "Store"
+    ],
+    "campaign_approach": "Loyalty-first campaigns — reward before asking. Use full 6-step campaign sequences."
+  }
+}

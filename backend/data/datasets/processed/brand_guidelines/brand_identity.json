@@ -1,0 +1,50 @@
+{
+  "brand_name": "Omnibrand Studio",
+  "tagline": "Elevate the Everyday",
+  "industry": "Lifestyle & Consumer Goods",
+  "founded": 2010,
+  "mission": "To enrich everyday living by delivering curated, high-quality products across food, fashion, home, health, and technology — tailored to every lifestyle and budget.",
+  "vision": "To be the most trusted lifestyle brand globally, where every customer feels seen, valued, and inspired regardless of their spending power.",
+  "core_values": [
+    "Quality — Every product and piece of content must meet a high standard.",
+    "Trust — We never overpromise. Every claim must be accurate and verifiable.",
+    "Inclusivity — We speak to all customer segments with equal respect.",
+    "Innovation — We embrace technology and creativity in everything we do.",
+    "Sustainability — We promote mindful consumption and responsible choices."
+  ],
+  "brand_personality": [
+    "Warm but professional",
+    "Inspiring without being pushy",
+    "Knowledgeable but never condescending",
+    "Confident but approachable"
+  ],
+  "product_categories": [
+    "Food & Beverages (Wines, Gourmet Foods, Sweets)",
+    "Fashion & Accessories",
+    "Home & Living",
+    "Health & Wellness",
+    "Technology & Gadgets"
+  ],
+  "primary_markets": [
+    "United States",
+    "France",
+    "Spain",
+    "United Kingdom"
+  ],
+  "primary_languages": [
+    "English",
+    "French",
+    "Spanish"
+  ],
+  "brand_colors": {
+    "primary": "#1A1A2E",
+    "secondary": "#E94560",
+    "accent": "#F5A623",
+    "neutral": "#F7F7F7"
+  },
+  "brand_fonts": {
+    "heading": "Playfair Display",
+    "body": "Inter",
+    "accent": "Montserrat"
+  }
+}
