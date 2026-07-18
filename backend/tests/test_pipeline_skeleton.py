@@ -7,11 +7,14 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from core.config import settings
 from pipeline.agents import stubs
 from pipeline.agents.base import AGENT_WRITE_PERMISSIONS
+from pipeline.agents.intake import intake_agent
 from pipeline.graph import build_graph
 from pipeline.state import OmniBrandState
 
+# intake_agent_stub is no longer used in the graph (real agent swapped in),
+# but it remains in stubs.py and is tested here to confirm the stub itself
+# still meets the async + write-permission contract.
 AGENT_STUB_NAMES = [
-    "intake_agent_stub",
     "content_generator_stub",
     "personalization_agent_stub",
     "translation_agent_stub",
@@ -70,9 +73,10 @@ def test_reflexion_router_is_sync():
 
 
 async def test_agent_write_permissions():
-    """Each stub only writes to its authorised fields."""
-    node_to_stub = {
-        "intake_agent": stubs.intake_agent_stub,
+    """Each agent/stub only writes to its authorised fields."""
+    # intake_agent is the real implementation; all others are stubs.
+    node_to_agent = {
+        "intake_agent": intake_agent,
         "content_generator": stubs.content_generator_stub,
         "personalization_agent": stubs.personalization_agent_stub,
         "translation_agent": stubs.translation_agent_stub,
@@ -83,11 +87,25 @@ async def test_agent_write_permissions():
         "review_gate": stubs.review_gate_stub,
         "publishing_agent": stubs.publishing_agent_stub,
     }
-    assert set(node_to_stub.keys()) == set(AGENT_WRITE_PERMISSIONS.keys())
+    assert set(node_to_agent.keys()) == set(AGENT_WRITE_PERMISSIONS.keys())
 
-    state = _empty_state()
-    for node_name, stub_fn in node_to_stub.items():
-        result = await stub_fn(state)
+    # Provide a minimal valid brief so intake_agent can run through all steps.
+    valid_brief = {
+        "objective": "test",
+        "target_audience": "all",
+        "key_messages": ["hello"],
+        "tone_override": None,
+        "channels": ["email"],
+        "locales": ["en"],
+        "audience_segments": ["all"],
+        "token_budget": 10000,
+        "raw_text": "test brief",
+    }
+    state_with_brief = _empty_state(brief=valid_brief)
+
+    for node_name, agent_fn in node_to_agent.items():
+        state = state_with_brief if node_name == "intake_agent" else _empty_state()
+        result = await agent_fn(state)
         allowed = AGENT_WRITE_PERMISSIONS[node_name]
         assert set(result.keys()) <= allowed, (
             f"{node_name} wrote unauthorised keys: {set(result.keys()) - allowed}"

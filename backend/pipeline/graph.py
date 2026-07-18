@@ -2,10 +2,10 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from pipeline.agents.content_generator import content_generator
+from pipeline.agents.intake import intake_agent
 from pipeline.agents.personalization import personalization_agent
 from pipeline.agents.stubs import (
     confidence_aggregator_stub,
-    intake_agent_stub,
     judge_claude_stub,
     judge_gpt4o_stub,
     judge_llama_stub,

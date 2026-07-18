@@ -17,19 +17,14 @@ def get_vector_store() -> VectorStoreAdapter:
         return _vector_store
 
     backend = settings.VECTOR_STORE_BACKEND.strip().lower()
-    if backend == "chroma":
-        _vector_store = ChromaVectorStore(path=settings.CHROMA_PERSIST_PATH)
-    elif backend == "pinecone":
+    if backend == "pinecone":
         _vector_store = PineconeVectorStore(
             api_key=settings.PINECONE_API_KEY,
             environment=settings.PINECONE_ENVIRONMENT,
             index_name=settings.PINECONE_INDEX,
         )
     else:
-        raise ValueError(
-            "Invalid VECTOR_STORE_BACKEND value "
-            f"'{settings.VECTOR_STORE_BACKEND}'. Expected one of: chroma, pinecone."
-        )
+        _vector_store = ChromaVectorStore(path=settings.CHROMA_PERSIST_PATH)
     return _vector_store
 
 
