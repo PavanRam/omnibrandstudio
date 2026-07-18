@@ -22,6 +22,24 @@ def build_graph(
     *,
     interrupt_before_review_gate: bool = True,
 ) -> CompiledStateGraph:
+    """Build and compile the OmniBrand LangGraph pipeline.
+
+    Flow summary:
+    - Intake prepares brief context and retrieval-derived state.
+    - Generation and personalization prepare candidate variants.
+    - Translation fans out into three parallel judges.
+    - Judge outputs fan in at confidence aggregation.
+    - Router decides whether to re-enter validation or continue.
+    - Review gate can interrupt for human decisions before publishing.
+
+    Args:
+        checkpointer: Optional LangGraph checkpointer for persistence.
+        interrupt_before_review_gate: If true, graph pauses before review_gate
+            so human review can be injected via checkpoint resume.
+
+    Returns:
+        CompiledStateGraph ready for ``ainvoke``/``stream`` execution.
+    """
     g = StateGraph(OmniBrandState)
 
     g.add_node("intake_agent", intake_agent)

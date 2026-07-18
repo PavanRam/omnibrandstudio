@@ -12,6 +12,7 @@ from pipeline.agents.retrieval import get_examples
 from pipeline.state import CampaignBrief, ContentVariant, GenerationTask, OmniBrandState
 
 MAX_RETRIES = 3
+NO_CONTEXT_AVAILABLE = "(none available)"
 
 _CTA_MARKERS = (
     "http://",
@@ -52,6 +53,25 @@ def _check_constraints(content: str, constraints: dict[str, Any]) -> list[str]:
     return violations
 
 
+def _build_brand_guidance_text(rag_context: dict[str, Any] | None) -> str:
+    if not rag_context:
+        return NO_CONTEXT_AVAILABLE
+    chunks = rag_context.get("brand_guide_chunks") or []
+    if not isinstance(chunks, list):
+        return NO_CONTEXT_AVAILABLE
+
+    compact: list[str] = []
+    for chunk in chunks[:3]:
+        text = str(chunk).strip()
+        if not text:
+            continue
+        compact.append(text[:500])
+
+    if not compact:
+        return NO_CONTEXT_AVAILABLE
+    return "\n\n".join(compact)
+
+
 async def _generate_for_task(
     task: GenerationTask,
     brand_config: dict[str, Any],
@@ -87,12 +107,13 @@ async def _generate_for_task(
         required_elements=", ".join(constraints.get("required_elements", [])) or "none",
         prohibited_vocab=", ".join(constraints.get("prohibited_vocab", [])) or "none",
         cta_pattern=constraints.get("cta_pattern", "a clear, brand-appropriate call to action"),
-        few_shot_examples="\n".join(f"- {ex}" for ex in few_shot) or "(none available)",
+        few_shot_examples="\n".join(f"- {ex}" for ex in few_shot) or NO_CONTEXT_AVAILABLE,
         objective=brief["objective"],
         target_audience=brief["target_audience"],
         key_messages=", ".join(brief["key_messages"]),
         segment=task["segment"],
         locale=task["locale"],
+        brand_guidance=_build_brand_guidance_text(state.get("rag_context")),
     )
 
     total_cost = 0.0

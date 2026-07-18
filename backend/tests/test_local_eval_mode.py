@@ -4,7 +4,6 @@ import pytest
 
 from core.config import settings
 from core.database import check_db_health
-from core.qdrant import check_qdrant_health
 from core.redis import check_redis_health
 from pipeline.graph import build_graph
 from pipeline.initial_state import build_initial_state
@@ -62,4 +61,3 @@ async def test_local_dev_health_checks_are_deterministic(monkeypatch: pytest.Mon
 
     assert await check_db_health() is True
     assert await check_redis_health() is True
-    assert await check_qdrant_health() is True

@@ -1,13 +1,92 @@
-from fastapi import APIRouter, HTTPException, status
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+
+from api.deps import UserContext, get_current_user
+from core.database import get_db
+from services.rag.ingest import ingest_brand_guide
 
 router = APIRouter()
 
 
+async def _assert_brand_access(conn, user: UserContext, brand_id: str) -> None:
+    # API keys and scoped JWTs must match explicit brand grants.
+    if user.brand_ids and brand_id not in user.brand_ids:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Brand not in caller scope")
+
+    # For org-scoped users without explicit brand_ids, enforce org->brand ownership.
+    if not user.brand_ids:
+        result = await conn.exec_driver_sql(
+            "SELECT 1 FROM brands WHERE id = %(brand_id)s AND org_id = %(org_id)s",
+            {"brand_id": brand_id, "org_id": user.org_id},
+        )
+        if result.mappings().first() is None:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Brand not accessible in caller org")
+
+
 @router.post("/brand-guides")
-async def upload_brand_guide() -> dict:
-    raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, "knowledge upload not yet implemented")
+async def upload_brand_guide(
+    brand_id: Annotated[str, Form(...)],
+    locale: Annotated[str, Form(...)],
+    version: Annotated[str, Form(...)],
+    guide_file: Annotated[UploadFile, File(...)],
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    """Ingest a brand guide document into the configured vector backend.
+
+    This endpoint is the canonical runtime entrypoint for RAG ingestion.
+    It extracts text, chunks content, indexes vectors and updates brand_guide
+    metadata version state for the provided brand/locale.
+    """
+    file_bytes = await guide_file.read()
+    async with get_db() as conn:
+        await _assert_brand_access(conn, user, brand_id)
+        result = await ingest_brand_guide(
+            db=conn,
+            brand_id=brand_id,
+            file_bytes=file_bytes,
+            filename=guide_file.filename or "uploaded.guide",
+            locale=locale,
+            version=version,
+        )
+    return {
+        "status": "indexed",
+        **result,
+    }
 
 
 @router.get("/brand-guides/{brand_id}")
-async def list_brand_guides(brand_id: str) -> dict:
-    raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, "knowledge list not yet implemented")
+async def list_brand_guides(
+    brand_id: str,
+    user: Annotated[UserContext, Depends(get_current_user)],
+    include_inactive: bool = False,
+) -> dict:
+    """List known brand-guide versions for a brand from Postgres metadata."""
+    async with get_db() as conn:
+        await _assert_brand_access(conn, user, brand_id)
+        if include_inactive:
+            query = (
+                "SELECT id, locale, version, source_filename, indexed_at, active, chunk_count, created_at "
+                "FROM brand_guides WHERE brand_id = %(brand_id)s "
+                "ORDER BY created_at DESC"
+            )
+            params = {"brand_id": brand_id}
+        else:
+            query = (
+                "SELECT id, locale, version, source_filename, indexed_at, active, chunk_count, created_at "
+                "FROM brand_guides WHERE brand_id = %(brand_id)s AND active = TRUE "
+                "ORDER BY created_at DESC"
+            )
+            params = {"brand_id": brand_id}
+
+        try:
+            result = await conn.exec_driver_sql(query, params)
+            rows = [dict(row) for row in result.mappings().all()]
+        except Exception as exc:
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from exc
+
+    return {
+        "brand_id": brand_id,
+        "count": len(rows),
+        "items": rows,
+    }

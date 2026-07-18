@@ -23,14 +23,6 @@ services:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
 
-  qdrant:
-    image: qdrant/qdrant:latest
-    volumes: [qdrant_data:/qdrant/storage]
-    ports: ["6333:6333", "6334:6334"]
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' || exit 1"]
-      interval: 10s
-
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
@@ -113,12 +105,8 @@ services:
     image: jaegertracing/all-in-one:1.58
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
-      SPAN_STORAGE_TYPE: badger
-      BADGER_EPHEMERAL: "false"
-      BADGER_DIRECTORY_VALUE: /badger/data
-      BADGER_DIRECTORY_KEY: /badger/key
-    volumes:
-      - jaeger_data:/badger
+      # Use memory storage by default in local dev to avoid host-volume permission issues.
+      SPAN_STORAGE_TYPE: ${JAEGER_SPAN_STORAGE_TYPE:-memory}
     ports:
       - "16686:16686"  # Jaeger UI
       - "4317:4317"    # OTLP gRPC
@@ -151,9 +139,10 @@ services:
     build: {context: ., dockerfile: backend/Dockerfile, target: runtime}
     env_file: .env
     environment:
+      UV_CACHE_DIR: /tmp/uv-cache
       POSTGRES_DSN: postgresql+asyncpg://omnibrand:${POSTGRES_PASSWORD}@postgres:5432/omnibrand
       REDIS_URL: redis://redis:6379
-      QDRANT_URL: http://qdrant:6333
+      CHROMA_PERSIST_PATH: /app/data/chroma
       LITELLM_BASE_URL: http://litellm:4000
       LANGFUSE_HOST: http://langfuse:3000
       S3_ENDPOINT_URL: http://minio:9000
@@ -162,20 +151,21 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
-    command: uv run uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+    command: python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
     volumes: ["./backend:/app"]
 
   worker:
     build: {context: ., dockerfile: backend/Dockerfile, target: runtime}
     env_file: .env
     environment:
+      UV_CACHE_DIR: /tmp/uv-cache
       POSTGRES_DSN: postgresql+asyncpg://omnibrand:${POSTGRES_PASSWORD}@postgres:5432/omnibrand
       REDIS_URL: redis://redis:6379
-      QDRANT_URL: http://qdrant:6333
+      CHROMA_PERSIST_PATH: /app/data/chroma
       LITELLM_BASE_URL: http://litellm:4000
       LANGFUSE_HOST: http://langfuse:3000
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
-    command: uv run python -m worker.main
+    command: python -m worker.main
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
@@ -184,7 +174,6 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  qdrant_data:
   minio_data:
   grafana_data:
   prometheus_data:

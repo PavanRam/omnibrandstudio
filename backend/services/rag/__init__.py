@@ -1,39 +1,36 @@
-"""RAG (retrieval-augmented generation) service package.
-
-The real Qdrant-backed retriever lives in ``services.rag.retriever`` and is
-only available on branches where Qdrant/DB infrastructure is wired up.
-
-This stub provides a ``get_retriever()`` factory so that import-time
-resolution succeeds on the quick-eval / intake-agent branch.  All calls
-degrade gracefully — ``get_examples`` in ``pipeline.agents.retrieval``
-already catches any exception and returns an empty list.
-"""
 from __future__ import annotations
 
+from core.config import settings
+from services.rag.chroma_store import ChromaVectorStore
+from services.rag.pinecone_store import PineconeVectorStore
+from services.rag.retriever import RAGRetriever
+from services.rag.vector_store import VectorStoreAdapter
 
-class _NullRetriever:
-    """No-op retriever used when Qdrant is not available."""
-
-    async def get_examples(
-        self,
-        brand_id: str,
-        channel: str,
-        locale: str,
-        n: int = 3,
-    ) -> list[str]:
-        return []
+_vector_store: VectorStoreAdapter | None = None
+_retriever: RAGRetriever | None = None
 
 
-_INSTANCE: _NullRetriever | None = None
+def get_vector_store() -> VectorStoreAdapter:
+    """Return a cached vector-store adapter selected by runtime config."""
+    global _vector_store
+    if _vector_store is not None:
+        return _vector_store
+
+    backend = settings.VECTOR_STORE_BACKEND.strip().lower()
+    if backend == "pinecone":
+        _vector_store = PineconeVectorStore(
+            api_key=settings.PINECONE_API_KEY,
+            environment=settings.PINECONE_ENVIRONMENT,
+            index_name=settings.PINECONE_INDEX,
+        )
+    else:
+        _vector_store = ChromaVectorStore(path=settings.CHROMA_PERSIST_PATH)
+    return _vector_store
 
 
-def get_retriever() -> _NullRetriever:
-    """Return a singleton null-retriever.
-
-    Replace this with a real Qdrant-backed implementation on the develop
-    branch once Qdrant is available.
-    """
-    global _INSTANCE
-    if _INSTANCE is None:
-        _INSTANCE = _NullRetriever()
-    return _INSTANCE
+def get_retriever() -> RAGRetriever:
+    """Return a cached retriever wired to the configured vector backend."""
+    global _retriever
+    if _retriever is None:
+        _retriever = RAGRetriever(store=get_vector_store())
+    return _retriever
