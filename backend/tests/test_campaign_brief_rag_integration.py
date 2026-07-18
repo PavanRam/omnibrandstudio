@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 
 from api.routers import campaigns
 from pipeline.agents import content_generator as cg
@@ -22,7 +26,11 @@ class _FakeRedis:
 
 class _FakeRequest:
     def __init__(self) -> None:
-        self.state = SimpleNamespace(request_id="req-1", org_id="org-1", user_id="user-1")
+        self.state = SimpleNamespace(
+            request_id="req-1",
+            org_id="00000000-0000-0000-0000-000000000001",
+            user_id="",
+        )
 
 
 def _base_state(**overrides) -> OmniBrandState:
@@ -65,8 +73,39 @@ async def test_create_campaign_enqueues_brief_payload(monkeypatch: pytest.Monkey
     redis = _FakeRedis()
     monkeypatch.setattr(campaigns, "get_redis", lambda: redis)
 
+    class _FakeResult:
+        def __init__(self, row):
+            self._row = row
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return self._row
+
+    class _FakeConn:
+        async def execute(self, stmt, *_args, **_kwargs):
+            sql_text = str(getattr(stmt, "text", stmt))
+            if "FROM brands" in sql_text:
+                return _FakeResult(
+                    {
+                        "id": "00000000-0000-0000-0000-000000000002",
+                        "org_id": "00000000-0000-0000-0000-000000000001",
+                    }
+                )
+            return _FakeResult(None)
+
+        async def commit(self) -> None:
+            return None
+
+    @asynccontextmanager
+    async def _fake_get_db():
+        yield _FakeConn()
+
+    monkeypatch.setattr(campaigns, "get_db", _fake_get_db)
+
     request = CreateCampaignRequest(
-        brand_id="brand-1",
+        brand_id="00000000-0000-0000-0000-000000000002",
         objective="Launch new feature",
         target_audience="Developers",
         key_messages=["Fast", "Reliable"],
@@ -81,11 +120,256 @@ async def test_create_campaign_enqueues_brief_payload(monkeypatch: pytest.Monkey
 
     assert len(redis.payloads) == 1
     task = json.loads(redis.payloads[0])
-    assert task["brand_id"] == "brand-1"
-    assert task["org_id"] == "org-1"
-    assert task["user_id"] == "user-1"
+    assert task["brand_id"] == "00000000-0000-0000-0000-000000000002"
+    assert task["org_id"] == "00000000-0000-0000-0000-000000000001"
+    assert task["user_id"] == ""
     assert task["brief"]["objective"] == "Launch new feature"
     assert task["brief"]["channels"] == ["email"]
+
+
+@pytest.mark.asyncio
+async def test_create_campaign_returns_404_for_missing_brand(monkeypatch: pytest.MonkeyPatch) -> None:
+    redis = _FakeRedis()
+    monkeypatch.setattr(campaigns, "get_redis", lambda: redis)
+
+    class _FakeResult:
+        def mappings(self):
+            return self
+
+        def first(self):
+            return None
+
+    class _FakeConn:
+        async def execute(self, *_args, **_kwargs):
+            return _FakeResult()
+
+        async def commit(self) -> None:
+            return None
+
+    @asynccontextmanager
+    async def _fake_get_db():
+        yield _FakeConn()
+
+    monkeypatch.setattr(campaigns, "get_db", _fake_get_db)
+
+    request = CreateCampaignRequest(
+        brand_id="00000000-0000-0000-0000-000000000003",
+        objective="Launch new feature",
+        target_audience="Developers",
+        key_messages=["Fast", "Reliable"],
+        channels=["email"],
+        locales=["en-US"],
+        audience_segments=["enterprise"],
+        token_budget=200,
+        raw_text="launch brief",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await campaigns.create_campaign(request, _FakeRequest())
+
+    err = exc_info.value
+    assert getattr(err, "status_code", None) == 404
+    assert getattr(err, "detail", "") == "brand not found"
+    assert len(redis.payloads) == 0
+
+
+@pytest.mark.asyncio
+async def test_get_campaign_status_returns_campaign_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime.now(UTC)
+
+    class _FakeResult:
+        def __init__(self, row):
+            self._row = row
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return self._row
+
+    class _FakeConn:
+        async def execute(self, *_args, **_kwargs):
+            return _FakeResult(
+                {
+                    "id": "019f76e9-c299-7756-a483-761aa106ba33",
+                    "status": "queued",
+                    "started_at": None,
+                    "completed_at": None,
+                    "token_cost_usd": 0,
+                    "created_at": now,
+                }
+            )
+
+    @asynccontextmanager
+    async def _fake_get_db():
+        yield _FakeConn()
+
+    monkeypatch.setattr(campaigns, "get_db", _fake_get_db)
+
+    result = await campaigns.get_campaign_status("019f76e9-c299-7756-a483-761aa106ba33")
+
+    assert result["campaign_id"] == "019f76e9-c299-7756-a483-761aa106ba33"
+    assert result["status"] == "queued"
+    assert result["token_cost_usd"] == 0.0
+    assert result["created_at"] == now
+
+
+@pytest.mark.asyncio
+async def test_get_campaign_returns_campaign_with_variants(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime.now(UTC)
+
+    class _FakeResult:
+        def __init__(self, row):
+            self._row = row
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return self._row
+
+        def all(self):
+            return self._row
+
+    class _FakeConn:
+        async def execute(self, stmt, *_args, **_kwargs):
+            sql_text = str(getattr(stmt, "text", stmt))
+            if "FROM campaigns" in sql_text:
+                return _FakeResult(
+                    {
+                        "id": "019f76e9-c299-7756-a483-761aa106ba33",
+                        "org_id": "00000000-0000-0000-0000-000000000001",
+                        "brand_id": "00000000-0000-0000-0000-000000000002",
+                        "status": "running",
+                        "token_cost_usd": 1.25,
+                        "created_at": now,
+                        "started_at": now,
+                        "completed_at": None,
+                        "brief": {"objective": "Launch"},
+                    }
+                )
+            return _FakeResult(
+                [
+                    {
+                        "task_id": "en-US_email_enterprise",
+                        "locale": "en-US",
+                        "channel": "email",
+                        "segment": "enterprise",
+                        "status": "published",
+                        "final_content": "Done",
+                        "composite_score": 8.7,
+                    }
+                ]
+            )
+
+    @asynccontextmanager
+    async def _fake_get_db():
+        yield _FakeConn()
+
+    monkeypatch.setattr(campaigns, "get_db", _fake_get_db)
+    monkeypatch.setattr(
+        campaigns,
+        "_load_in_memory_trace",
+        AsyncMock(
+            return_value=[
+                {
+                    "step": 2,
+                    "source": "loop",
+                    "created_at": "2026-07-18T20:51:12Z",
+                    "agents": ["personalization_agent"],
+                    "next": ["translation_agent"],
+                    "state": {"current_phase": "content_generated", "variants": []},
+                }
+            ]
+        ),
+    )
+
+    result = await campaigns.get_campaign("019f76e9-c299-7756-a483-761aa106ba33")
+
+    assert result["id"] == "019f76e9-c299-7756-a483-761aa106ba33"
+    assert result["status"] == "running"
+    assert result["brief"]["objective"] == "Launch"
+    assert len(result["variants"]) == 1
+    assert result["variants"][0]["task_id"] == "en-US_email_enterprise"
+    assert result["variants"][0]["composite_score"] == 8.7
+    assert result["in_memory_trace"][0]["agents"] == ["personalization_agent"]
+
+
+@pytest.mark.asyncio
+async def test_approve_campaign_transitions_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeResult:
+        def __init__(self, row):
+            self._row = row
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return self._row
+
+    class _FakeConn:
+        async def execute(self, stmt, *_args, **_kwargs):
+            sql_text = str(getattr(stmt, "text", stmt))
+            if "SELECT id, status" in sql_text:
+                return _FakeResult(
+                    {
+                        "id": "019f76e9-c299-7756-a483-761aa106ba33",
+                        "status": "awaiting_review",
+                    }
+                )
+            return _FakeResult(None)
+
+        async def commit(self):
+            return None
+
+    @asynccontextmanager
+    async def _fake_get_db():
+        yield _FakeConn()
+
+    monkeypatch.setattr(campaigns, "get_db", _fake_get_db)
+
+    result = await campaigns.approve_campaign(
+        "019f76e9-c299-7756-a483-761aa106ba33",
+        campaigns.ReviewDecision(decision="approved", reviewer_note="looks good"),
+    )
+    assert result["status"] == "published"
+    assert result["decision"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_approve_campaign_rejects_non_reviewable_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeResult:
+        def __init__(self, row):
+            self._row = row
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return self._row
+
+    class _FakeConn:
+        async def execute(self, *_args, **_kwargs):
+            return _FakeResult(
+                {
+                    "id": "019f76e9-c299-7756-a483-761aa106ba33",
+                    "status": "failed",
+                }
+            )
+
+    @asynccontextmanager
+    async def _fake_get_db():
+        yield _FakeConn()
+
+    monkeypatch.setattr(campaigns, "get_db", _fake_get_db)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await campaigns.approve_campaign(
+            "019f76e9-c299-7756-a483-761aa106ba33",
+            campaigns.ReviewDecision(decision="approved"),
+        )
+
+    assert exc_info.value.status_code == 409
 
 
 @pytest.mark.asyncio

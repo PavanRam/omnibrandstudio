@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import anyio
@@ -21,6 +22,12 @@ class CrossEncoderReranker:
         self._model_name = model_name or settings.RERANKER_MODEL
         self._model = None
         self._load_attempted = False
+        self._allow_remote_download = os.getenv("RERANKER_ALLOW_REMOTE_DOWNLOAD", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
     def _get_model(self):
         if self._load_attempted:
@@ -34,16 +41,41 @@ class CrossEncoderReranker:
             log.info("reranker_loaded_from_cache", model=self._model_name)
             return self._model
         except Exception as cache_exc:
-            log.warning(
-                "reranker_cache_load_failed_try_download",
+            if self._allow_remote_download:
+                log.warning(
+                    "reranker_cache_load_failed_try_download",
+                    model=self._model_name,
+                    error=str(cache_exc),
+                )
+            else:
+                log.info(
+                    "reranker_cache_load_miss",
+                    model=self._model_name,
+                    error=str(cache_exc),
+                )
+
+        if not self._allow_remote_download:
+            log.info(
+                "reranker_cache_miss_remote_download_disabled",
                 model=self._model_name,
-                error=str(cache_exc),
             )
+            self._model = None
+            return self._model
 
         try:
             from sentence_transformers import CrossEncoder
 
-            self._model = CrossEncoder(self._model_name)
+            # Keep compatibility with setups that provide HF_TOKEN instead of
+            # the canonical huggingface_hub env variable.
+            token = os.getenv("HUGGINGFACE_HUB_TOKEN") or os.getenv("HF_TOKEN")
+            if token and not os.getenv("HUGGINGFACE_HUB_TOKEN"):
+                os.environ["HUGGINGFACE_HUB_TOKEN"] = token
+
+            try:
+                self._model = CrossEncoder(self._model_name, token=token)
+            except TypeError:
+                # Older sentence-transformers may still use use_auth_token.
+                self._model = CrossEncoder(self._model_name, use_auth_token=token)
             log.info("reranker_downloaded", model=self._model_name)
         except Exception as exc:
             log.warning("reranker_unavailable", model=self._model_name, error=str(exc))

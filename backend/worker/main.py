@@ -8,6 +8,7 @@ import structlog
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pydantic import ValidationError
 from prometheus_client import start_http_server as _prom_start_http_server
+from sqlalchemy import text
 
 from core.config import settings
 from core.metrics import (
@@ -99,6 +100,23 @@ async def process_campaign(task_payload: dict) -> None:
     start = datetime.now(UTC)
     campaigns_started_total.labels(org_id=org_id).inc()
 
+    # Persist dequeue transition so API status reflects that worker picked it up.
+    from core.database import get_db
+
+    async with get_db() as conn:
+        await conn.execute(
+            text(
+                """
+                UPDATE campaigns
+                SET status = 'running',
+                    started_at = COALESCE(started_at, NOW())
+                WHERE id = CAST(:campaign_id AS UUID)
+                """
+            ),
+            {"campaign_id": campaign_id},
+        )
+        await conn.commit()
+
     log.info(
         "campaign_processing",
         campaign_id=campaign_id,
@@ -117,13 +135,63 @@ async def process_campaign(task_payload: dict) -> None:
                 await checkpointer.setup()
                 graph = build_graph(checkpointer)
                 config = {"configurable": {"thread_id": campaign_id}}
-                await graph.ainvoke(initial_state, config=config)
+                final_state = await graph.ainvoke(initial_state, config=config)
+
+        final_status = "running"
+        mark_completed = False
+        if isinstance(final_state, dict):
+            current_phase = str(final_state.get("current_phase") or "").lower()
+            has_errors = bool(final_state.get("errors"))
+            budget_failed = final_state.get("budget_check_passed") is False
+            brief_invalid = final_state.get("brief_valid") is False
+
+            if current_phase == "published":
+                final_status = "published"
+                mark_completed = True
+            elif has_errors or budget_failed or brief_invalid:
+                final_status = "failed"
+                mark_completed = True
+            else:
+                # Successful non-terminal runs are paused for human review.
+                final_status = "awaiting_review"
+
+        async with get_db() as conn:
+            await conn.execute(
+                text(
+                    """
+                    UPDATE campaigns
+                    SET status = :status,
+                        completed_at = CASE WHEN :mark_completed THEN NOW() ELSE completed_at END
+                    WHERE id = CAST(:campaign_id AS UUID)
+                    """
+                ),
+                {
+                    "campaign_id": campaign_id,
+                    "status": final_status,
+                    "mark_completed": mark_completed,
+                },
+            )
+            await conn.commit()
 
         elapsed = (datetime.now(UTC) - start).total_seconds()
         campaign_duration.labels(org_id=org_id, status="completed").observe(elapsed)
         campaigns_completed_total.labels(org_id=org_id, status="completed").inc()
 
     except Exception:
+        async with get_db() as conn:
+            await conn.execute(
+                text(
+                    """
+                    UPDATE campaigns
+                    SET status = 'failed',
+                        completed_at = NOW()
+                    WHERE id = CAST(:campaign_id AS UUID)
+                    """
+                ),
+                {"campaign_id": campaign_id},
+            )
+            await conn.commit()
+
         elapsed = (datetime.now(UTC) - start).total_seconds()
         campaign_duration.labels(org_id=org_id, status="failed").observe(elapsed)
         campaigns_completed_total.labels(org_id=org_id, status="failed").inc()
