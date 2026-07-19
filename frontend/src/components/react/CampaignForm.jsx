@@ -1,9 +1,41 @@
 import { useId, useMemo, useState } from 'react';
 import { Sparkles, Loader2, Megaphone } from 'lucide-react';
 import { cn } from '@/lib/cn.js';
+import { MultiSelectField } from './ui/MultiSelectField.jsx';
 
 // Well-known local dev brand seeded by scripts/seed_prompts.py.
 const DEFAULT_BRAND_ID = '00000000-0000-0000-0000-000000000002';
+
+// Preset options for the creatable multi-selects. Users can pick these or type
+// their own custom value. Defaults below mirror the previous placeholder text.
+const AGE_RANGES = ['Under 18', '18–24', '25–34', '35–44', '45–54', '55–64', '65+'];
+const DEFAULT_AGE_RANGES = ['25–34', '35–44']; // ~ the old "aged 25–40" example
+
+const KEY_MESSAGE_OPTIONS = [
+  'Lightweight',
+  'Leak-proof',
+  'All-day comfort',
+  'Eco-friendly',
+  'Premium quality',
+  'Great value',
+  'Easy to use',
+  'Award-winning',
+];
+const DEFAULT_KEY_MESSAGES = ['Lightweight', 'Leak-proof', 'All-day comfort'];
+
+const TONE_OPTIONS = [
+  'Confident',
+  'Helpful',
+  'Friendly',
+  'Professional',
+  'Playful',
+  'Bold',
+  'Empathetic',
+  'Authoritative',
+  'Casual',
+  'Inspirational',
+];
+const DEFAULT_TONES = ['Confident', 'Helpful'];
 
 const CHANNELS = [
   { value: 'email', label: 'Email' },
@@ -80,12 +112,6 @@ function ChipGroup({ legend, required, options, selected, onToggle }) {
   );
 }
 
-const splitLines = (text) =>
-  text
-    .split(/\r?\n/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-
 /**
  * Collects a campaign brief and hands back a payload matching the backend's
  * CreateCampaignRequest schema exactly.
@@ -94,17 +120,16 @@ export function CampaignForm({ onSubmit, busy }) {
   const ids = {
     brand: useId(),
     objective: useId(),
-    audience: useId(),
-    messages: useId(),
-    tone: useId(),
     budget: useId(),
   };
 
   const [brandId, setBrandId] = useState(DEFAULT_BRAND_ID);
-  const [objective, setObjective] = useState('');
-  const [targetAudience, setTargetAudience] = useState('');
-  const [keyMessages, setKeyMessages] = useState('');
-  const [toneOverride, setToneOverride] = useState('');
+  // Prefilled so the example acts as real, editable text and the form is
+  // submittable on first load (all other required fields have defaults too).
+  const [objective, setObjective] = useState('Launch summer promo for hydration packs');
+  const [audience, setAudience] = useState(DEFAULT_AGE_RANGES);
+  const [keyMessages, setKeyMessages] = useState(DEFAULT_KEY_MESSAGES);
+  const [tones, setTones] = useState(DEFAULT_TONES);
   const [channels, setChannels] = useState(['email', 'linkedin']);
   const [locales, setLocales] = useState(['en-US']);
   const [segments, setSegments] = useState(['enterprise']);
@@ -120,12 +145,12 @@ export function CampaignForm({ onSubmit, busy }) {
       !busy &&
       brandId.trim().length > 0 &&
       objective.trim().length > 2 &&
-      targetAudience.trim().length > 2 &&
+      audience.length > 0 &&
       channels.length > 0 &&
       locales.length > 0 &&
       segments.length > 0 &&
       Number(tokenBudget) > 0,
-    [busy, brandId, objective, targetAudience, channels, locales, segments, tokenBudget],
+    [busy, brandId, objective, audience, channels, locales, segments, tokenBudget],
   );
 
   const submit = (e) => {
@@ -134,9 +159,10 @@ export function CampaignForm({ onSubmit, busy }) {
     onSubmit({
       brand_id: brandId.trim(),
       objective: objective.trim(),
-      target_audience: targetAudience.trim(),
-      key_messages: splitLines(keyMessages),
-      tone_override: toneOverride.trim() || null,
+      // Backend wants a single string; join the selected audiences.
+      target_audience: audience.join(', '),
+      key_messages: keyMessages,
+      tone_override: tones.length ? tones.join(', ') : null,
       channels,
       locales,
       audience_segments: segments,
@@ -184,41 +210,34 @@ export function CampaignForm({ onSubmit, busy }) {
           />
         </Field>
 
-        <Field label="Target audience" htmlFor={ids.audience} required>
-          <input
-            id={ids.audience}
-            value={targetAudience}
-            onChange={(e) => setTargetAudience(e.target.value)}
-            className={inputClass}
-            placeholder="Urban commuters aged 25–40"
-          />
-        </Field>
+        <MultiSelectField
+          label="Target audience"
+          required
+          hint="age ranges — pick or type your own"
+          options={AGE_RANGES}
+          value={audience}
+          onChange={setAudience}
+          placeholder="Select age ranges or type your own…"
+        />
 
-        <Field
+        <MultiSelectField
           label="Key messages"
-          htmlFor={ids.messages}
-          hint="one per line, optional"
-        >
-          <textarea
-            id={ids.messages}
-            value={keyMessages}
-            onChange={(e) => setKeyMessages(e.target.value)}
-            rows={3}
-            className={cn(inputClass, 'resize-none')}
-            placeholder={'Lightweight\nLeak-proof\nAll-day comfort'}
-          />
-        </Field>
+          hint="pick or type your own, optional"
+          options={KEY_MESSAGE_OPTIONS}
+          value={keyMessages}
+          onChange={setKeyMessages}
+          placeholder="Select key messages or type your own…"
+        />
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Tone override" htmlFor={ids.tone} hint="optional">
-            <input
-              id={ids.tone}
-              value={toneOverride}
-              onChange={(e) => setToneOverride(e.target.value)}
-              className={inputClass}
-              placeholder="confident and helpful"
-            />
-          </Field>
+          <MultiSelectField
+            label="Tone override"
+            hint="optional"
+            options={TONE_OPTIONS}
+            value={tones}
+            onChange={setTones}
+            placeholder="Select tones or type your own…"
+          />
 
           <Field label="Token budget" htmlFor={ids.budget} required>
             <input
