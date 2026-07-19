@@ -1,0 +1,25 @@
+{
+  "name": "omnibrandstudio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OmniBrand Studio — a Firefly-style generative AI studio UI (Vite + Astro + React + Tailwind).",
+  "scripts": {
+    "dev": "astro dev",
+    "start": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/react": "^6.0.0",
+    "astro": "^7.0.5",
+    "lucide-react": "^1.23.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.2",
+    "tailwindcss": "^4.3.2"
+  }
+}

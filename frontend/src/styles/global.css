@@ -1,0 +1,292 @@
+@import 'tailwindcss';
+
+/* Dark mode driven by a `.dark` class on <html> (toggled by ThemeToggle). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ------------------------------------------------------------------ */
+/*  Design tokens                                                      */
+/*  Semantic, theme-aware CSS variables. Light values live on :root,   */
+/*  dark overrides on .dark. Tailwind utilities map to them below.     */
+/* ------------------------------------------------------------------ */
+:root {
+  color-scheme: light;
+
+  --bg: #f6f5f7;
+  --surface: #ffffff;
+  --surface-2: #f1f0f3;
+  --surface-3: #e9e8ec;
+
+  --fg: #16151a;
+  --muted: #6a6773;
+  --faint: #94919d;
+
+  --border: #e4e2e8;
+  --border-strong: #d3d0d9;
+
+  --brand: #6d4de6;
+  --brand-fg: #ffffff;
+  --brand-soft: #efeaff;
+
+  /* Firefly-style warm gradient */
+  --grad-1: #ff8a4c;
+  --grad-2: #ff4f8b;
+  --grad-3: #8b5cff;
+  --grad-4: #4c7dff;
+
+  --ring: #6d4de6;
+  --success: #17916b;
+  --warning: #b7791f;
+  --danger: #d64545;
+
+  --shadow-color: 220 20% 20%;
+}
+
+.dark {
+  color-scheme: dark;
+
+  --bg: #0a090d;
+  --surface: #141319;
+  --surface-2: #1b1a22;
+  --surface-3: #24232d;
+
+  --fg: #f4f3f7;
+  --muted: #a3a0ad;
+  --faint: #6f6c79;
+
+  --border: #26252f;
+  --border-strong: #34333f;
+
+  --brand: #9b81ff;
+  --brand-fg: #0a090d;
+  --brand-soft: #211c3a;
+
+  --grad-1: #ff9a5c;
+  --grad-2: #ff5f97;
+  --grad-3: #9b7bff;
+  --grad-4: #5c8bff;
+
+  --ring: #9b81ff;
+  --success: #35c191;
+  --warning: #e0a94a;
+  --danger: #f06a6a;
+
+  --shadow-color: 260 40% 2%;
+}
+
+/* Map the runtime CSS variables to Tailwind color utilities.
+   `inline` lets utilities resolve to the live variable (so themes flip). */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+
+  --color-brand: var(--brand);
+  --color-brand-fg: var(--brand-fg);
+  --color-brand-soft: var(--brand-soft);
+
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+    Roboto, Helvetica, Arial, sans-serif;
+
+  --radius-4xl: 2rem;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Base                                                               */
+/* ------------------------------------------------------------------ */
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Visible, consistent keyboard focus everywhere. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  /* Only show the ring for keyboard users. */
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--brand) 30%, transparent);
+  }
+
+  ::placeholder {
+    color: var(--faint);
+  }
+
+  /* Themed scrollbars */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border-radius: 999px;
+    border: 2px solid var(--bg);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Utilities / components                                             */
+/* ------------------------------------------------------------------ */
+@layer utilities {
+  .brand-gradient {
+    background-image: linear-gradient(
+      110deg,
+      var(--grad-1) 0%,
+      var(--grad-2) 34%,
+      var(--grad-3) 68%,
+      var(--grad-4) 100%
+    );
+  }
+
+  .brand-text {
+    background-image: linear-gradient(
+      110deg,
+      var(--grad-1),
+      var(--grad-2),
+      var(--grad-3)
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* Soft ambient glow used behind the hero. */
+  .brand-glow {
+    background:
+      radial-gradient(
+        40% 60% at 15% 20%,
+        color-mix(in oklab, var(--grad-1) 45%, transparent),
+        transparent 70%
+      ),
+      radial-gradient(
+        45% 55% at 85% 15%,
+        color-mix(in oklab, var(--grad-2) 40%, transparent),
+        transparent 70%
+      ),
+      radial-gradient(
+        55% 65% at 55% 90%,
+        color-mix(in oklab, var(--grad-3) 40%, transparent),
+        transparent 70%
+      );
+  }
+
+  .card-shadow {
+    box-shadow:
+      0 1px 2px hsl(var(--shadow-color) / 0.06),
+      0 8px 24px -12px hsl(var(--shadow-color) / 0.18);
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+/* Screen-reader-only helper (used by skip link + labels). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.not-sr-only\:focus:focus,
+.sr-only.focus-visible,
+.sr-only:focus {
+  position: fixed;
+  width: auto;
+  height: auto;
+  margin: 0;
+  overflow: visible;
+  clip: auto;
+  white-space: normal;
+}
+
+/* Subtle shimmer for image loading placeholders. */
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+.shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, var(--fg) 8%, transparent),
+    transparent
+  );
+  animation: shimmer 1.6s infinite;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-up {
+  animation: fade-up 0.4s ease both;
+}
+
+/* Respect users who prefer reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

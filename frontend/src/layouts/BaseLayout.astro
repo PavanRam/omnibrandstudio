@@ -1,0 +1,62 @@
+---
+import { ClientRouter } from 'astro:transitions';
+import { withBase } from '../lib/paths.js';
+import '../styles/global.css';
+
+const {
+  title = 'OmniBrand Studio',
+  description = 'OmniBrand Studio — a Firefly-style generative AI studio. Turn words into stunning images.',
+} = Astro.props;
+
+const fullTitle = title === 'OmniBrand Studio' ? title : `${title} · OmniBrand Studio`;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="generator" content={Astro.generator} />
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#0a090d" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f6f5f7" media="(prefers-color-scheme: light)" />
+    <link rel="icon" href={withBase('/favicon.svg')} type="image/svg+xml" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+
+    {/* No-flash theme init — runs before first paint, re-applies on view swaps */}
+    <script is:inline>
+      (function () {
+        function applyTheme() {
+          try {
+            var t = localStorage.getItem('obs-theme');
+            if (t !== 'dark' && t !== 'light') {
+              t = window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light';
+            }
+            var el = document.documentElement;
+            el.classList.toggle('dark', t === 'dark');
+            el.style.colorScheme = t;
+          } catch (e) {}
+        }
+        applyTheme();
+        if (!window.__obsThemeBound) {
+          window.__obsThemeBound = true;
+          document.addEventListener('astro:after-swap', applyTheme);
+        }
+      })();
+    </script>
+
+    <ClientRouter />
+    <title>{fullTitle}</title>
+  </head>
+  <body>
+    <slot />
+  </body>
+</html>
