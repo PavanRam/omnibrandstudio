@@ -4,8 +4,6 @@
  */
 import {
   Home,
-  ImagePlus,
-  Wand2,
   LayoutGrid,
   Sparkles,
   ShieldCheck,
@@ -13,9 +11,7 @@ import {
 
 export const PRIMARY_NAV = [
   { key: 'home', label: 'Home', href: '/', icon: Home },
-  { key: 'text-to-image', label: 'Text to Image', href: '/text-to-image', icon: ImagePlus },
-  { key: 'tools', label: 'AI Tools', href: '/tools', icon: Wand2 },
-  { key: 'gallery', label: 'My Gallery', href: '/gallery', icon: LayoutGrid },
+  { key: 'gallery', label: 'Campaigns', href: '/gallery', icon: LayoutGrid },
 ];
 
 export const SECONDARY_NAV = [

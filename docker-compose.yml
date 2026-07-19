@@ -55,7 +55,7 @@ services:
     depends_on:
       redis: {condition: service_healthy}
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:4000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health', timeout=5)"]
       interval: 15s
 
   langfuse:
@@ -140,6 +140,7 @@ services:
     env_file: .env
     environment:
       UV_CACHE_DIR: /tmp/uv-cache
+      ENABLE_CONVERSATION_PLANNER: ${ENABLE_CONVERSATION_PLANNER:-0}
       POSTGRES_DSN: postgresql+asyncpg://omnibrand:${POSTGRES_PASSWORD}@postgres:5432/omnibrand
       REDIS_URL: redis://redis:6379
       CHROMA_PERSIST_PATH: /app/data/chroma

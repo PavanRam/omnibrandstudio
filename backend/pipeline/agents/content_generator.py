@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, cast
 
-from pipeline.agents.base import safe_agent_run, traced_llm_call
+from pipeline.agents.base import publish_campaign_event, safe_agent_run, traced_llm_call
 from pipeline.agents.prompts.channel_prompts import (
     DEFAULT_CHANNEL_CONSTRAINTS,
     PROMPT_VERSION,
@@ -255,6 +255,29 @@ async def content_generator(state: OmniBrandState) -> dict[str, Any]:
             total_cost += cost
             if variant["status"] == "failed":
                 failed_task_ids.append(task["task_id"])
+            await publish_campaign_event(
+                campaign_id=state.get("campaign_id"),
+                agent="content_generator",
+                phase="variant_generated",
+                payload={
+                    "task_id": task["task_id"],
+                    "channel": task["channel"],
+                    "locale": task["locale"],
+                    "segment": task["segment"],
+                    "status": variant["status"],
+                    "preview": (variant.get("generated_content") or "")[:200],
+                },
+            )
+
+        await publish_campaign_event(
+            campaign_id=state.get("campaign_id"),
+            agent="content_generator",
+            phase="content_generated",
+            payload={
+                "variant_count": len(variants),
+                "failed_count": len(failed_task_ids),
+            },
+        )
 
         return {
             "variants": variants,

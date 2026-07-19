@@ -25,7 +25,7 @@ import re
 
 import structlog
 
-from pipeline.agents.base import safe_agent_run, traced_llm_call
+from pipeline.agents.base import publish_campaign_event, safe_agent_run, traced_llm_call
 from pipeline.state import OmniBrandState
 
 try:
@@ -192,6 +192,14 @@ async def personalization_agent(state: OmniBrandState) -> dict:
             agent="personalization_agent",
             campaign_id=state.get("campaign_id"),
             personalized=personalized,
+        )
+        await publish_campaign_event(
+            campaign_id=state.get("campaign_id"),
+            agent="personalization_agent",
+            phase="personalization_complete",
+            payload={
+                "personalized": personalized,
+            },
         )
         return {"token_cost_usd": total_cost}
 

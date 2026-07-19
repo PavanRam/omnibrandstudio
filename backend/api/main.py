@@ -41,6 +41,7 @@ def should_enable_local_eval() -> bool:
 
 # ── Middleware stack (order matters: outermost first) ────────────────────────────
 
+app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -48,7 +49,6 @@ app.add_middleware(
     allow_headers=["*", "X-Request-ID"],
     expose_headers=["X-Request-ID"],
 )
-app.add_middleware(RequestIDMiddleware)
 
 
 # ── HTTP metrics (lightweight inline middleware) ────────────────────────────────
@@ -76,11 +76,12 @@ async def metrics() -> Response:
 
 # ── Routers ──────────────────────────────────────────────────────────────────────────
 
-from api.routers import auth, campaigns, health, knowledge, orgs  # noqa: E402
+from api.routers import auth, campaigns, conversations, health, knowledge, orgs  # noqa: E402
 
 app.include_router(health.router)
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(campaigns.router, prefix="/campaigns", tags=["campaigns"])
+app.include_router(conversations.router, tags=["conversations"])
 app.include_router(orgs.router, prefix="/orgs", tags=["orgs"])
 app.include_router(knowledge.router, prefix="/knowledge", tags=["knowledge"])
 

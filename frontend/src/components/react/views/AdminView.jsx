@@ -1,127 +1,140 @@
-import { useState } from 'react';
-import {
-  TrendingUp,
-  TrendingDown,
-  LockKeyhole,
-  ShieldCheck,
-  Check,
-  X,
-  Users,
-} from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Building2, Users, Upload, RefreshCw, LockKeyhole } from 'lucide-react';
 import { Page, SectionHeading } from '../Page.jsx';
-import { Badge } from '../ui/Badge.jsx';
 import { Button } from '../ui/Button.jsx';
+import { Badge } from '../ui/Badge.jsx';
 import {
-  ADMIN_STATS,
-  USAGE_SERIES,
-  ADMIN_USERS,
-  MODERATION_QUEUE,
-} from '@/data/adminData.js';
-import { cn } from '@/lib/cn.js';
+  listBrandGuides,
+  listCustomerSegments,
+  uploadBrandGuide,
+  uploadCustomerSegments,
+} from '@/lib/api.js';
 
-function StatCard({ stat }) {
-  const up = stat.trend === 'up';
-  const Trend = up ? TrendingUp : TrendingDown;
-  return (
-    <div className="rounded-2xl border border-border bg-surface p-4 card-shadow">
-      <p className="text-sm text-muted">{stat.label}</p>
-      <div className="mt-2 flex items-end justify-between gap-2">
-        <span className="text-2xl font-semibold tracking-tight text-fg">
-          {stat.value}
-        </span>
-        <span
-          className={cn(
-            'inline-flex items-center gap-1 text-xs font-medium',
-            up ? 'text-success' : 'text-danger',
-          )}
-        >
-          <Trend size={14} aria-hidden="true" />
-          {stat.delta}
-        </span>
-      </div>
-    </div>
-  );
-}
+const DEFAULT_ORG_ID =
+  import.meta.env.PUBLIC_DEFAULT_ORG_ID || '00000000-0000-0000-0000-000000000001';
+const DEFAULT_BRAND_ID =
+  import.meta.env.PUBLIC_DEFAULT_BRAND_ID || '00000000-0000-0000-0000-000000000002';
 
-function UsageChart({ data }) {
-  const max = Math.max(...data);
-  const bw = 100 / data.length;
-  return (
-    <svg
-      viewBox="0 0 100 40"
-      preserveAspectRatio="none"
-      role="img"
-      aria-label="Daily generations over the last 14 days, trending upward"
-      className="h-28 w-full"
-    >
-      {data.map((v, i) => {
-        const h = (v / max) * 36;
-        return (
-          <rect
-            key={i}
-            x={i * bw + 0.6}
-            y={40 - h}
-            width={bw - 1.2}
-            height={h}
-            rx="0.8"
-            className="fill-brand"
-            opacity={0.35 + (i / data.length) * 0.65}
-          />
-        );
-      })}
-    </svg>
-  );
-}
-
-function Switch({ label, defaultOn = false }) {
-  const [on, setOn] = useState(defaultOn);
-  return (
-    <div className="flex items-center justify-between gap-4 py-2.5">
-      <span className="text-sm text-fg">{label}</span>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={on}
-        aria-label={label}
-        onClick={() => setOn((v) => !v)}
-        className={cn(
-          'relative h-6 w-11 shrink-0 rounded-full transition-colors',
-          on ? 'bg-brand' : 'bg-surface-3',
-        )}
-      >
-        <span
-          className={cn(
-            'absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform',
-            on ? 'translate-x-[22px]' : 'translate-x-0.5',
-          )}
-        />
-      </button>
-    </div>
-  );
-}
-
-const PLAN_TONE = { Pro: 'brand', Team: 'success', Free: 'neutral' };
-const USER_STATUS = {
-  active: { tone: 'success', label: 'Active' },
-  suspended: { tone: 'danger', label: 'Suspended' },
-  invited: { tone: 'warning', label: 'Invited' },
-};
-const SEVERITY = { high: 'danger', medium: 'warning', low: 'neutral' };
+const DEMO_USERS = [
+  { id: 'api_key', role: 'api_key', scope: 'brand-scoped' },
+  { id: 'ops-admin', role: 'admin', scope: 'org-scoped' },
+  { id: 'brand-editor', role: 'editor', scope: 'brand-scoped' },
+];
 
 export function AdminView({ onLock }) {
-  const [queue, setQueue] = useState(MODERATION_QUEUE);
-  const resolve = (id) => setQueue((prev) => prev.filter((q) => q.id !== id));
+  const [brandId, setBrandId] = useState(DEFAULT_BRAND_ID);
+  const [locale, setLocale] = useState('en-US');
+  const [version, setVersion] = useState('v1');
+  const [file, setFile] = useState(null);
+  const [guides, setGuides] = useState([]);
+  const [segments, setSegments] = useState([]);
+  const [segmentFile, setSegmentFile] = useState(null);
+  const [loadingGuides, setLoadingGuides] = useState(false);
+  const [loadingSegments, setLoadingSegments] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadingSegments, setUploadingSegments] = useState(false);
+  const [status, setStatus] = useState('');
+  const [error, setError] = useState('');
+
+  const canUpload = useMemo(
+    () => Boolean(brandId.trim() && locale.trim() && version.trim() && file),
+    [brandId, locale, version, file],
+  );
+  const canUploadSegments = useMemo(
+    () => Boolean(brandId.trim() && locale.trim() && version.trim() && segmentFile),
+    [brandId, locale, version, segmentFile],
+  );
+
+  const refreshGuides = async () => {
+    setLoadingGuides(true);
+    setError('');
+    setStatus('');
+    try {
+      const payload = await listBrandGuides(brandId.trim());
+      setGuides(payload.items || []);
+      setStatus(`Loaded ${payload.count || 0} guide record(s).`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load brand guides');
+    } finally {
+      setLoadingGuides(false);
+    }
+  };
+
+  const submitGuide = async (event) => {
+    event.preventDefault();
+    if (!canUpload) return;
+
+    setUploading(true);
+    setError('');
+    setStatus('');
+    try {
+      const result = await uploadBrandGuide({
+        brandId: brandId.trim(),
+        locale: locale.trim(),
+        version: version.trim(),
+        file,
+      });
+      setStatus(`Indexed ${result.chunk_count || 0} chunk(s) from ${result.filename || file.name}.`);
+      await refreshGuides();
+      setFile(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const refreshSegments = async () => {
+    setLoadingSegments(true);
+    setError('');
+    setStatus('');
+    try {
+      const payload = await listCustomerSegments(brandId.trim(), locale.trim(), version.trim());
+      setSegments(payload.items || []);
+      setStatus(`Loaded ${payload.count || 0} segment record(s).`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load segments');
+    } finally {
+      setLoadingSegments(false);
+    }
+  };
+
+  const submitSegments = async (event) => {
+    event.preventDefault();
+    if (!canUploadSegments) return;
+
+    setUploadingSegments(true);
+    setError('');
+    setStatus('');
+    try {
+      const result = await uploadCustomerSegments({
+        brandId: brandId.trim(),
+        locale: locale.trim(),
+        version: version.trim(),
+        file: segmentFile,
+      });
+      setStatus(
+        `Indexed ${result.records_indexed || 0} segment record(s) and ${result.chunks_indexed || 0} chunks.`,
+      );
+      await refreshSegments();
+      setSegmentFile(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Segment upload failed');
+    } finally {
+      setUploadingSegments(false);
+    }
+  };
 
   return (
     <Page
       wide
       eyebrow="Restricted"
-      title="Admin Panel"
-      description="Operations dashboard — usage, users, and content moderation."
+      title="Admin Control Plane"
+      description="Manage org/brand context and ingest brand intelligence for chat-first orchestration."
       actions={
         <>
           <Badge tone="brand">
-            <ShieldCheck size={12} aria-hidden="true" /> Signed in as admin
+            <Building2 size={12} aria-hidden="true" /> Org {DEFAULT_ORG_ID.slice(0, 8)}…
           </Badge>
           <Button variant="outline" size="sm" onClick={onLock}>
             <LockKeyhole size={15} aria-hidden="true" /> Lock
@@ -129,125 +142,168 @@ export function AdminView({ onLock }) {
         </>
       }
     >
-      {/* Stats */}
-      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-        {ADMIN_STATS.map((s) => (
-          <StatCard key={s.id} stat={s} />
-        ))}
-      </div>
+      {error ? (
+        <div className="mb-4 rounded-xl border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
+          {error}
+        </div>
+      ) : null}
+      {status ? (
+        <div className="mb-4 rounded-xl border border-success/40 bg-success/10 px-3 py-2 text-sm text-success">
+          {status}
+        </div>
+      ) : null}
 
-      {/* Chart + settings */}
-      <div className="mt-4 grid gap-4 lg:grid-cols-3">
-        <div className="rounded-2xl border border-border bg-surface p-5 card-shadow lg:col-span-2">
+      <div className="grid gap-4 lg:grid-cols-[1.1fr_1fr]">
+        <section className="rounded-2xl border border-border bg-surface p-4 card-shadow">
           <SectionHeading
-            title="Generation volume"
-            description="Last 14 days"
+            title="Org / Brand Management"
+            description="Reference identities used by the conversation and campaign APIs."
           />
-          <UsageChart data={USAGE_SERIES} />
-        </div>
-        <div className="rounded-2xl border border-border bg-surface p-5 card-shadow">
-          <h2 className="text-lg font-semibold text-fg">Platform settings</h2>
-          <div className="mt-2 divide-y divide-border">
-            <Switch label="Public community feed" defaultOn />
-            <Switch label="NSFW content filter" defaultOn />
-            <Switch label="Allow new sign-ups" defaultOn />
-            <Switch label="Maintenance mode" />
+          <dl className="space-y-2 text-sm">
+            <div className="flex justify-between gap-3">
+              <dt className="text-muted">Org ID</dt>
+              <dd className="font-medium text-fg">{DEFAULT_ORG_ID}</dd>
+            </div>
+            <div className="flex justify-between gap-3">
+              <dt className="text-muted">Default Brand ID</dt>
+              <dd className="font-medium text-fg">{DEFAULT_BRAND_ID}</dd>
+            </div>
+          </dl>
+
+          <SectionHeading title="User Context" description="Current scoped identities." />
+          <div className="overflow-x-auto rounded-xl border border-border">
+            <table className="w-full min-w-[24rem] text-left text-sm">
+              <thead className="border-b border-border text-xs uppercase tracking-wide text-faint">
+                <tr>
+                  <th className="px-3 py-2">User</th>
+                  <th className="px-3 py-2">Role</th>
+                  <th className="px-3 py-2">Scope</th>
+                </tr>
+              </thead>
+              <tbody>
+                {DEMO_USERS.map((user) => (
+                  <tr key={user.id} className="border-b border-border last:border-0">
+                    <td className="px-3 py-2 text-fg">{user.id}</td>
+                    <td className="px-3 py-2 text-muted">{user.role}</td>
+                    <td className="px-3 py-2 text-muted">{user.scope}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        </div>
+        </section>
+
+        <section className="rounded-2xl border border-border bg-surface p-4 card-shadow">
+          <SectionHeading
+            title="RAG Ingestion"
+            description="Upload brand guidelines and inspect indexed guide versions."
+            action={
+              <Button variant="ghost" size="sm" onClick={refreshGuides} disabled={loadingGuides}>
+                <RefreshCw size={14} aria-hidden="true" /> {loadingGuides ? 'Loading…' : 'Refresh'}
+              </Button>
+            }
+          />
+
+          <form className="space-y-3" onSubmit={submitGuide}>
+            <label className="block text-sm text-muted">
+              <span>Brand ID</span>
+              <input
+                className="mt-1 h-10 w-full rounded-xl border border-border bg-surface-2 px-3 text-sm text-fg"
+                value={brandId}
+                onChange={(e) => setBrandId(e.target.value)}
+              />
+            </label>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="block text-sm text-muted">
+                <span>Locale</span>
+                <input
+                  className="mt-1 h-10 w-full rounded-xl border border-border bg-surface-2 px-3 text-sm text-fg"
+                  value={locale}
+                  onChange={(e) => setLocale(e.target.value)}
+                />
+              </label>
+              <label className="block text-sm text-muted">
+                <span>Version</span>
+                <input
+                  className="mt-1 h-10 w-full rounded-xl border border-border bg-surface-2 px-3 text-sm text-fg"
+                  value={version}
+                  onChange={(e) => setVersion(e.target.value)}
+                />
+              </label>
+            </div>
+            <label className="block text-sm text-muted">
+              <span>Brand guide file</span>
+              <input
+                className="mt-1 block w-full text-sm text-muted"
+                type="file"
+                onChange={(e) => setFile(e.target.files?.[0] || null)}
+              />
+            </label>
+            <Button type="submit" variant="primary" disabled={!canUpload || uploading}>
+              <Upload size={15} aria-hidden="true" /> {uploading ? 'Uploading…' : 'Upload guide'}
+            </Button>
+          </form>
+
+          <div className="mt-4 rounded-xl border border-border bg-surface-2 p-3">
+            <h3 className="text-sm font-medium text-fg">Indexed guides</h3>
+            {guides.length === 0 ? (
+              <p className="mt-1 text-sm text-muted">No guide records loaded yet.</p>
+            ) : (
+              <ul className="mt-2 space-y-2 text-sm">
+                {guides.map((guide) => (
+                  <li key={guide.id} className="rounded-lg border border-border bg-surface px-2.5 py-2">
+                    <p className="font-medium text-fg">{guide.source_filename}</p>
+                    <p className="text-muted">
+                      {guide.locale} · {guide.version} · {guide.chunk_count} chunks
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </section>
       </div>
 
-      {/* Users */}
-      <section className="mt-6">
+      <section className="mt-4 rounded-2xl border border-border bg-surface p-4 card-shadow">
         <SectionHeading
-          title="Users"
-          description={`${ADMIN_USERS.length} accounts`}
+          title="Segment Ingestion"
+          description="Upload audience-segment datasets and inspect indexed segment records for the selected brand/locale/version."
           action={
-            <Button variant="secondary" size="sm">
-              <Users size={15} aria-hidden="true" /> Invite user
+            <Button variant="ghost" size="sm" onClick={refreshSegments} disabled={loadingSegments}>
+              <RefreshCw size={14} aria-hidden="true" /> {loadingSegments ? 'Loading…' : 'Refresh'}
             </Button>
           }
         />
-        <div className="overflow-x-auto rounded-2xl border border-border bg-surface card-shadow">
-          <table className="w-full min-w-[38rem] text-left text-sm">
-            <caption className="sr-only">List of platform users</caption>
-            <thead>
-              <tr className="border-b border-border text-xs uppercase tracking-wider text-faint">
-                <th scope="col" className="px-4 py-3 font-semibold">User</th>
-                <th scope="col" className="px-4 py-3 font-semibold">Plan</th>
-                <th scope="col" className="px-4 py-3 font-semibold">Generations</th>
-                <th scope="col" className="px-4 py-3 font-semibold">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ADMIN_USERS.map((u) => {
-                const st = USER_STATUS[u.status];
-                return (
-                  <tr key={u.id} className="border-b border-border last:border-0 hover:bg-surface-2">
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-3">
-                        <span className="grid h-8 w-8 place-items-center rounded-full brand-gradient text-xs font-semibold text-white">
-                          {u.name.split(' ').map((p) => p[0]).join('')}
-                        </span>
-                        <div>
-                          <p className="font-medium text-fg">{u.name}</p>
-                          <p className="text-xs text-muted">{u.email}</p>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <Badge tone={PLAN_TONE[u.plan]}>{u.plan}</Badge>
-                    </td>
-                    <td className="px-4 py-3 tabular-nums text-muted">
-                      {u.gens.toLocaleString()}
-                    </td>
-                    <td className="px-4 py-3">
-                      <Badge tone={st.tone}>{st.label}</Badge>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </section>
 
-      {/* Moderation */}
-      <section className="mt-6">
-        <SectionHeading
-          title="Moderation queue"
-          description={`${queue.length} items awaiting review`}
-        />
-        {queue.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-border-strong bg-surface/50 px-6 py-10 text-center text-sm text-muted">
-            🎉 The moderation queue is clear.
-          </div>
-        ) : (
-          <ul className="space-y-3">
-            {queue.map((m) => (
-              <li
-                key={m.id}
-                className="flex flex-col gap-3 rounded-2xl border border-border bg-surface p-4 card-shadow sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge tone={SEVERITY[m.severity]}>{m.severity}</Badge>
-                    <span className="text-xs text-muted">{m.reason}</span>
-                    <span className="text-xs text-faint">· by {m.reporter}</span>
-                  </div>
-                  <p className="mt-1.5 truncate text-sm text-fg">“{m.prompt}”</p>
-                </div>
-                <div className="flex shrink-0 gap-2">
-                  <Button variant="secondary" size="sm" onClick={() => resolve(m.id)}>
-                    <Check size={15} aria-hidden="true" /> Approve
-                  </Button>
-                  <Button variant="danger" size="sm" onClick={() => resolve(m.id)}>
-                    <X size={15} aria-hidden="true" /> Reject
-                  </Button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+        <form className="space-y-3" onSubmit={submitSegments}>
+          <label className="block text-sm text-muted">
+            <span>Segment file (.csv, .json, .txt, .md)</span>
+            <input
+              className="mt-1 block w-full text-sm text-muted"
+              type="file"
+              onChange={(e) => setSegmentFile(e.target.files?.[0] || null)}
+            />
+          </label>
+          <Button type="submit" variant="primary" disabled={!canUploadSegments || uploadingSegments}>
+            <Users size={15} aria-hidden="true" /> {uploadingSegments ? 'Uploading…' : 'Upload segments'}
+          </Button>
+        </form>
+
+        <div className="mt-4 rounded-xl border border-border bg-surface-2 p-3">
+          <h3 className="text-sm font-medium text-fg">Indexed segments</h3>
+          {segments.length === 0 ? (
+            <p className="mt-1 text-sm text-muted">No segment records loaded yet.</p>
+          ) : (
+            <ul className="mt-2 space-y-2 text-sm">
+              {segments.map((segment) => (
+                <li key={segment.id} className="rounded-lg border border-border bg-surface px-2.5 py-2">
+                  <p className="font-medium text-fg">{segment.metadata?.segment || segment.metadata?.name || segment.id}</p>
+                  <p className="text-muted">{segment.text?.slice(0, 180)}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </section>
     </Page>
   );

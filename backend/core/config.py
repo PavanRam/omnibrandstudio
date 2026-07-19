@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     LOCAL_DEV_MODE: bool = False
     # TEMP_LOCAL_EVAL: Explicit opt-in switch for /eval/local-eval endpoint registration.
     ENABLE_LOCAL_EVAL: bool = False
+    ENABLE_CONVERSATION_PLANNER: bool = False
 
     # Database
     POSTGRES_DSN: str = "postgresql+asyncpg://omnibrand:changeme_local_32chars@localhost:5432/omnibrand"

@@ -1,15 +1,11 @@
 import { AppShell } from './AppShell.jsx';
-import { HomeView } from './views/HomeView.jsx';
-import { TextToImageView } from './views/TextToImageView.jsx';
-import { GalleryView } from './views/GalleryView.jsx';
-import { ToolsView } from './views/ToolsView.jsx';
+import { ConversationView } from './views/ConversationView.jsx';
+import { CampaignsGalleryView } from './views/CampaignsGalleryView.jsx';
 import { AdminGate } from './views/AdminGate.jsx';
 
 const ROUTES = {
-  home: { title: 'Home', View: HomeView },
-  'text-to-image': { title: 'Text to Image', View: TextToImageView },
-  tools: { title: 'AI Tools', View: ToolsView },
-  gallery: { title: 'My Gallery', View: GalleryView },
+  home: { title: 'Conversation', View: ConversationView },
+  gallery: { title: 'Campaign Gallery', View: CampaignsGalleryView },
   admin: { title: 'Admin Panel', View: AdminGate },
 };
 

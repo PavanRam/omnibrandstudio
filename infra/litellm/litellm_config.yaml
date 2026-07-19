@@ -36,8 +36,35 @@ model_list:
 # Utility — cheap model for classification, summarisation
 - model_name: "util-fast"
   litellm_params:
-    model: "openai/gpt-4o-mini-2024-07-18"
-    api_key: "os.environ/OPENAI_API_KEY"
+    model: "groq/llama-3.1-8b-instant"
+    api_key: "os.environ/GROQ_API_KEY"
+
+- model_name: "util-fast-gemini"
+  litellm_params:
+    model: "gemini/gemini-1.5-flash"
+    api_key: "os.environ/GEMINI_API_KEY"
+
+# Brief collector — dedicated extraction model for chat slot filling
+- model_name: "brief-collector"
+  litellm_params:
+    model: "groq/llama-3.1-8b-instant"
+    api_key: "os.environ/GROQ_API_KEY"
+
+- model_name: "brief-collector-gemini"
+  litellm_params:
+    model: "gemini/gemini-1.5-flash"
+    api_key: "os.environ/GEMINI_API_KEY"
+
+# Responder — high quality conversational turn generation
+- model_name: "responder-chat"
+  litellm_params:
+    model: "groq/llama-3.3-70b-versatile"
+    api_key: "os.environ/GROQ_API_KEY"
+
+- model_name: "responder-chat-gemini"
+  litellm_params:
+    model: "gemini/gemini-1.5-flash"
+    api_key: "os.environ/GEMINI_API_KEY"
 
 # Evaluation
 - model_name: "eval-model"
@@ -52,6 +79,10 @@ model_list:
     api_key: "os.environ/OPENAI_API_KEY"
 
 router_settings:
+  fallbacks:
+  - { "responder-chat": [ "responder-chat-gemini" ] }
+  - { "util-fast": [ "util-fast-gemini" ] }
+  - { "brief-collector": [ "brief-collector-gemini" ] }
   retry_policy:
     BadRequestError: { num_retries: 0 }
     RateLimitError: { num_retries: 3, retry_after: 60 }
