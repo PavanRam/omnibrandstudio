@@ -3,17 +3,17 @@
  * `key` matches the `route` prop passed to <App /> by each Astro page.
  */
 import {
-  Home,
-  ImagePlus,
   Wand2,
   LayoutGrid,
   Sparkles,
   ShieldCheck,
+  Megaphone,
+  Image,
 } from 'lucide-react';
 
 export const PRIMARY_NAV = [
-  { key: 'home', label: 'Home', href: '/', icon: Home },
-  { key: 'text-to-image', label: 'Text to Image', href: '/text-to-image', icon: ImagePlus },
+  { key: 'campaign', label: 'Campaign Studio', href: '/', icon: Megaphone },
+  { key: 'home', label: 'Image Generation', href: '/text-to-image', icon: Image },
   { key: 'tools', label: 'AI Tools', href: '/tools', icon: Wand2 },
   { key: 'gallery', label: 'My Gallery', href: '/gallery', icon: LayoutGrid },
 ];
