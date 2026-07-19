@@ -76,13 +76,14 @@ async def metrics() -> Response:
 
 # ── Routers ──────────────────────────────────────────────────────────────────────────
 
-from api.routers import auth, campaigns, conversations, health, knowledge, orgs  # noqa: E402
+from api.routers import auth, campaigns, conversations, health, knowledge, orgs, users  # noqa: E402
 
 app.include_router(health.router)
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(campaigns.router, prefix="/campaigns", tags=["campaigns"])
 app.include_router(conversations.router, tags=["conversations"])
 app.include_router(orgs.router, prefix="/orgs", tags=["orgs"])
+app.include_router(users.router, prefix="/users", tags=["users"])
 app.include_router(knowledge.router, prefix="/knowledge", tags=["knowledge"])
 
 if should_enable_local_eval():

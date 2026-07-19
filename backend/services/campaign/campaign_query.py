@@ -10,6 +10,7 @@ async def get_recent_campaigns(
     *,
     org_id: str,
     brand_ids: list[str],
+    created_by: str | None = None,
     limit: int = 10,
 ) -> list[RecentCampaign]:
     async with get_db() as conn:
@@ -27,6 +28,7 @@ async def get_recent_campaigns(
                 LEFT JOIN content_variants v ON v.campaign_id = c.id
                 WHERE c.org_id = :org_id
                   AND (:brand_filter_disabled OR c.brand_id = ANY(CAST(:brand_ids AS UUID[])))
+                                    AND (:created_by IS NULL OR c.created_by = CAST(:created_by AS UUID))
                 GROUP BY c.id
                 ORDER BY c.created_at DESC
                 LIMIT :limit
@@ -36,6 +38,7 @@ async def get_recent_campaigns(
                 "org_id": org_id,
                 "brand_filter_disabled": len(brand_ids) == 0,
                 "brand_ids": brand_ids,
+                "created_by": created_by,
                 "limit": limit,
             },
         )

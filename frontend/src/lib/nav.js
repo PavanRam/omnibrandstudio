@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 
 export const PRIMARY_NAV = [
-  { key: 'home', label: 'Home', href: '/', icon: Home },
+  { key: 'app', label: 'Workspace', href: '/app', icon: Home },
   { key: 'gallery', label: 'Campaigns', href: '/gallery', icon: LayoutGrid },
 ];
 

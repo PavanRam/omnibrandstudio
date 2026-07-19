@@ -1,8 +1,95 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
-import App from '../components/react/App.jsx';
+import { withBase } from '../lib/paths.js';
+import { HomeLoginLauncher } from '../components/react/HomeLoginLauncher.jsx';
 ---
 
-<BaseLayout title="OmniBrand Studio">
-  <App client:load route="home" />
+<BaseLayout
+  title="OmniBrand Studio"
+  description="OmniBrand Studio creates on-brand, multi-channel campaigns with an AI copilot designed for fast launches."
+>
+  <main class="relative min-h-screen overflow-hidden bg-bg text-fg">
+    <div class="pointer-events-none absolute inset-0 brand-glow opacity-75"></div>
+    <div class="pointer-events-none absolute -left-20 top-20 h-64 w-64 rounded-full brand-gradient opacity-30 blur-3xl"></div>
+    <div class="pointer-events-none absolute -right-12 bottom-16 h-72 w-72 rounded-full bg-brand-soft opacity-75 blur-3xl"></div>
+
+    <section class="relative mx-auto flex max-w-6xl flex-col gap-12 px-6 pb-20 pt-10 sm:px-8 lg:px-10">
+      <header class="flex items-center justify-between">
+        <a href={withBase('/')} class="inline-flex items-center gap-2 text-sm font-semibold tracking-wide text-fg">
+          <span class="grid h-8 w-8 place-items-center rounded-xl brand-gradient text-white">OB</span>
+          OmniBrand Studio
+        </a>
+        <HomeLoginLauncher
+          client:load
+          label="Log in"
+          className="inline-flex h-10 items-center rounded-xl border border-border bg-surface px-4 text-sm font-medium text-fg transition hover:bg-surface-2"
+        />
+      </header>
+
+      <div class="grid gap-10 lg:grid-cols-[1.2fr_1fr] lg:items-center">
+        <div class="space-y-6 animate-fade-up">
+          <p class="inline-flex rounded-full border border-border bg-surface px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-muted">
+            Campaign Copilot for modern brand teams
+          </p>
+          <h1 class="text-4xl font-semibold leading-tight tracking-tight sm:text-5xl" style="font-family: var(--font-display)">
+            Launch regional campaigns faster than your review queue can blink.
+          </h1>
+          <p class="max-w-2xl text-base leading-7 text-muted sm:text-lg">
+            One guided chat turns your objective into localized, on-brand content across channels.
+            Keep creative quality high while reducing back-and-forth across marketing, legal, and regional teams.
+          </p>
+          <div class="flex flex-wrap gap-3">
+            <HomeLoginLauncher
+              client:load
+              label="Start in workspace"
+              showIcon={true}
+              className="inline-flex h-12 items-center gap-2 rounded-xl brand-gradient px-5 text-sm font-semibold text-white transition hover:opacity-95"
+            />
+            <a
+              href={withBase('/gallery')}
+              class="inline-flex h-12 items-center rounded-xl border border-border bg-surface px-5 text-sm font-semibold text-fg transition hover:bg-surface-2"
+            >
+              View campaign gallery
+            </a>
+          </div>
+        </div>
+
+        <div class="relative animate-fade-up rounded-3xl border border-border bg-surface p-5 card-shadow sm:p-6">
+          <div class="mb-4 flex items-center justify-between">
+            <p class="text-sm font-medium text-fg">Live brief snapshot</p>
+            <span class="rounded-full border border-border bg-surface-2 px-2 py-1 text-xs text-muted">in progress</span>
+          </div>
+          <div class="space-y-3 text-sm">
+            <div class="rounded-2xl border border-border bg-surface-2 p-3">
+              <p class="text-faint">Objective</p>
+              <p class="mt-1 font-medium text-fg">Launch sustainability report Q4</p>
+            </div>
+            <div class="rounded-2xl border border-border bg-surface-2 p-3">
+              <p class="text-faint">Channels</p>
+              <p class="mt-1 font-medium text-fg">LinkedIn, Email</p>
+            </div>
+            <div class="rounded-2xl border border-border bg-surface-2 p-3">
+              <p class="text-faint">Locales</p>
+              <p class="mt-1 font-medium text-fg">en-US, fr-FR, de-DE</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <article class="rounded-2xl border border-border bg-surface p-5 card-shadow">
+          <h2 class="text-base font-semibold text-fg">Guided Intake</h2>
+          <p class="mt-2 text-sm leading-6 text-muted">Capture objective, audience, channels, and locales in one smart conversation.</p>
+        </article>
+        <article class="rounded-2xl border border-border bg-surface p-5 card-shadow">
+          <h2 class="text-base font-semibold text-fg">Brand-Safe Output</h2>
+          <p class="mt-2 text-sm leading-6 text-muted">Enforce tone and approved claims with built-in policy and guide context.</p>
+        </article>
+        <article class="rounded-2xl border border-border bg-surface p-5 card-shadow">
+          <h2 class="text-base font-semibold text-fg">Human Review Control</h2>
+          <p class="mt-2 text-sm leading-6 text-muted">Pause, inspect, and approve before publishing to your destination channels.</p>
+        </article>
+      </div>
+    </section>
+  </main>
 </BaseLayout>

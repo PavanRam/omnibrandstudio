@@ -3,9 +3,12 @@ import { Building2, Users, Upload, RefreshCw, LockKeyhole } from 'lucide-react';
 import { Page, SectionHeading } from '../Page.jsx';
 import { Button } from '../ui/Button.jsx';
 import { Badge } from '../ui/Badge.jsx';
+import { useAuth } from '../hooks/useAuth.js';
 import {
+  createUser,
   listBrandGuides,
   listCustomerSegments,
+  listUsers,
   uploadBrandGuide,
   uploadCustomerSegments,
 } from '@/lib/api.js';
@@ -15,13 +18,8 @@ const DEFAULT_ORG_ID =
 const DEFAULT_BRAND_ID =
   import.meta.env.PUBLIC_DEFAULT_BRAND_ID || '00000000-0000-0000-0000-000000000002';
 
-const DEMO_USERS = [
-  { id: 'api_key', role: 'api_key', scope: 'brand-scoped' },
-  { id: 'ops-admin', role: 'admin', scope: 'org-scoped' },
-  { id: 'brand-editor', role: 'editor', scope: 'brand-scoped' },
-];
-
 export function AdminView({ onLock }) {
+  const { user } = useAuth();
   const [brandId, setBrandId] = useState(DEFAULT_BRAND_ID);
   const [locale, setLocale] = useState('en-US');
   const [version, setVersion] = useState('v1');
@@ -35,6 +33,17 @@ export function AdminView({ onLock }) {
   const [uploadingSegments, setUploadingSegments] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
+  const [managedUsers, setManagedUsers] = useState([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [newUserName, setNewUserName] = useState('');
+  const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserRole, setNewUserRole] = useState('viewer');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [userStatus, setUserStatus] = useState('');
+  const [userError, setUserError] = useState('');
+  const [userCreating, setUserCreating] = useState(false);
+
+  const isAdmin = Boolean(user?.roles?.includes('admin'));
 
   const canUpload = useMemo(
     () => Boolean(brandId.trim() && locale.trim() && version.trim() && file),
@@ -44,6 +53,70 @@ export function AdminView({ onLock }) {
     () => Boolean(brandId.trim() && locale.trim() && version.trim() && segmentFile),
     [brandId, locale, version, segmentFile],
   );
+  const canCreateUser = useMemo(
+    () => Boolean(newUserName.trim() && newUserEmail.trim() && newUserRole.trim()),
+    [newUserName, newUserEmail, newUserRole],
+  );
+
+  const refreshUsers = async ({ showStatus = true } = {}) => {
+    setUsersLoading(true);
+    setUserError('');
+    try {
+      const payload = await listUsers();
+      setManagedUsers(payload.items || []);
+      if (showStatus) {
+        setUserStatus(`Loaded ${payload.count || 0} total user account(s) in this tenant.`);
+      }
+      return payload.count || 0;
+    } catch (err) {
+      setUserError(err instanceof Error ? err.message : 'Failed to load users');
+      return 0;
+    } finally {
+      setUsersLoading(false);
+    }
+  };
+
+  const submitUser = async (event) => {
+    event.preventDefault();
+    if (!canCreateUser) return;
+
+    setUserCreating(true);
+    setUserError('');
+    setUserStatus('');
+    try {
+      const payload = await createUser({
+        name: newUserName.trim(),
+        email: newUserEmail.trim(),
+        role: newUserRole.trim(),
+        password: newUserPassword.trim() || null,
+      });
+      const passwordNotice = payload.temporary_password
+        ? ` Temporary password: ${payload.temporary_password}`
+        : '';
+      const totalUsers = await refreshUsers({ showStatus: false });
+      setUserStatus(
+        `Created ${payload.user?.email || newUserEmail.trim()}.${passwordNotice} Total users in tenant: ${totalUsers}.`,
+      );
+      setNewUserName('');
+      setNewUserEmail('');
+      setNewUserRole('viewer');
+      setNewUserPassword('');
+    } catch (err) {
+      setUserError(err instanceof Error ? err.message : 'Failed to create user');
+    } finally {
+      setUserCreating(false);
+    }
+  };
+
+  if (!isAdmin) {
+    return (
+      <Page wide eyebrow="Restricted" title="Admin Control Plane" description="Admin role required.">
+        <div className="rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">
+          You do not have access to this page. Ask a tenant admin for elevated permissions.
+        </div>
+      </Page>
+    );
+  }
 
   const refreshGuides = async () => {
     setLoadingGuides(true);
@@ -136,9 +209,11 @@ export function AdminView({ onLock }) {
           <Badge tone="brand">
             <Building2 size={12} aria-hidden="true" /> Org {DEFAULT_ORG_ID.slice(0, 8)}…
           </Badge>
-          <Button variant="outline" size="sm" onClick={onLock}>
-            <LockKeyhole size={15} aria-hidden="true" /> Lock
-          </Button>
+          {onLock ? (
+            <Button variant="outline" size="sm" onClick={onLock}>
+              <LockKeyhole size={15} aria-hidden="true" /> Lock
+            </Button>
+          ) : null}
         </>
       }
     >
@@ -170,24 +245,106 @@ export function AdminView({ onLock }) {
             </div>
           </dl>
 
-          <SectionHeading title="User Context" description="Current scoped identities." />
+          <SectionHeading
+            title="User Management"
+            description="Create users inside this tenant using name, email, and role."
+            action={
+              <Button variant="ghost" size="sm" onClick={refreshUsers} disabled={usersLoading}>
+                <RefreshCw size={14} aria-hidden="true" /> {usersLoading ? 'Loading…' : 'Refresh'}
+              </Button>
+            }
+          />
+
+          {userError ? (
+            <div className="mb-3 rounded-xl border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
+              {userError}
+            </div>
+          ) : null}
+          {userStatus ? (
+            <div className="mb-3 rounded-xl border border-success/40 bg-success/10 px-3 py-2 text-sm text-success">
+              {userStatus}
+            </div>
+          ) : null}
+
+          <form className="mb-3 space-y-3" onSubmit={submitUser}>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="block text-sm text-muted">
+                <span>Name</span>
+                <input
+                  className="mt-1 h-10 w-full rounded-xl border border-border bg-surface-2 px-3 text-sm text-fg"
+                  value={newUserName}
+                  onChange={(e) => setNewUserName(e.target.value)}
+                  placeholder="Jane Doe"
+                />
+              </label>
+              <label className="block text-sm text-muted">
+                <span>Email</span>
+                <input
+                  className="mt-1 h-10 w-full rounded-xl border border-border bg-surface-2 px-3 text-sm text-fg"
+                  value={newUserEmail}
+                  onChange={(e) => setNewUserEmail(e.target.value)}
+                  placeholder="jane@company.com"
+                />
+              </label>
+            </div>
+            <label className="block text-sm text-muted">
+              <span>Password (optional)</span>
+              <input
+                className="mt-1 h-10 w-full rounded-xl border border-border bg-surface-2 px-3 text-sm text-fg"
+                value={newUserPassword}
+                onChange={(e) => setNewUserPassword(e.target.value)}
+                placeholder="Leave blank to auto-generate temporary password"
+                type="password"
+                minLength={8}
+              />
+            </label>
+            <p className="text-xs text-faint">
+              If password is blank, a temporary password is generated and shown after user creation.
+            </p>
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="block text-sm text-muted">
+                <span>Role</span>
+                <select
+                  className="mt-1 h-10 min-w-[10rem] rounded-xl border border-border bg-surface-2 px-3 text-sm text-fg"
+                  value={newUserRole}
+                  onChange={(e) => setNewUserRole(e.target.value)}
+                >
+                  <option value="viewer">viewer</option>
+                  <option value="editor">editor</option>
+                  <option value="admin">admin</option>
+                </select>
+              </label>
+              <Button type="submit" variant="primary" disabled={!canCreateUser || userCreating}>
+                {userCreating ? 'Creating…' : 'Add user'}
+              </Button>
+            </div>
+          </form>
+
           <div className="overflow-x-auto rounded-xl border border-border">
             <table className="w-full min-w-[24rem] text-left text-sm">
               <thead className="border-b border-border text-xs uppercase tracking-wide text-faint">
                 <tr>
-                  <th className="px-3 py-2">User</th>
-                  <th className="px-3 py-2">Role</th>
-                  <th className="px-3 py-2">Scope</th>
+                  <th className="px-3 py-2">Email</th>
+                  <th className="px-3 py-2">Role(s)</th>
+                  <th className="px-3 py-2">Status</th>
                 </tr>
               </thead>
               <tbody>
-                {DEMO_USERS.map((user) => (
-                  <tr key={user.id} className="border-b border-border last:border-0">
-                    <td className="px-3 py-2 text-fg">{user.id}</td>
-                    <td className="px-3 py-2 text-muted">{user.role}</td>
-                    <td className="px-3 py-2 text-muted">{user.scope}</td>
+                {managedUsers.length === 0 ? (
+                  <tr>
+                    <td className="px-3 py-3 text-muted" colSpan={3}>
+                      No users loaded yet. Click Refresh to fetch tenant users.
+                    </td>
                   </tr>
-                ))}
+                ) : (
+                  managedUsers.map((managedUser) => (
+                    <tr key={managedUser.user_id} className="border-b border-border last:border-0">
+                      <td className="px-3 py-2 text-fg">{managedUser.email}</td>
+                      <td className="px-3 py-2 text-muted">{(managedUser.roles || []).join(', ')}</td>
+                      <td className="px-3 py-2 text-muted">{managedUser.status}</td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>

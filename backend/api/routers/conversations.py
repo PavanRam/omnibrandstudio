@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from api.deps import UserContext, get_current_user
+from api.middleware.auth import decode_access_token, is_jti_revoked
 from core.config import settings
 from core.ids import new_campaign_id, new_request_id
 from core.redis import get_redis
@@ -59,6 +60,51 @@ def _resolve_ws_api_key(websocket: WebSocket, payload: dict[str, Any], query_api
     if not api_key:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing x-api-key header")
     return str(api_key)
+
+
+async def _resolve_ws_user(
+    websocket: WebSocket,
+    payload: dict[str, Any],
+    query_api_key: str | None,
+    query_access_token: str | None,
+) -> UserContext:
+    api_key = websocket.headers.get("x-api-key") or query_api_key or payload.get("api_key")
+    if api_key:
+        from api.deps import _authenticate_api_key
+
+        return await _authenticate_api_key(str(api_key))
+
+    authorization_header = websocket.headers.get("authorization") or str(payload.get("authorization") or "")
+    bearer_token = ""
+    if authorization_header.lower().startswith("bearer "):
+        bearer_token = authorization_header[7:].strip()
+    elif query_access_token:
+        bearer_token = query_access_token
+    elif payload.get("access_token"):
+        bearer_token = str(payload.get("access_token"))
+
+    if not bearer_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="missing credentials",
+        )
+
+    try:
+        claims = decode_access_token(bearer_token)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+
+    jti = claims.get("jti")
+    if isinstance(jti, str) and await is_jti_revoked(jti):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked")
+
+    return UserContext(
+        user_id=str(claims.get("sub") or ""),
+        org_id=str(claims.get("org_id") or ""),
+        brand_ids=[str(value) for value in claims.get("brand_ids", [])],
+        roles=[str(value) for value in claims.get("roles", [])],
+        auth_method="jwt",
+    )
 
 
 def _chat_state_context(session: ConversationSession) -> dict[str, Any]:
@@ -809,7 +855,12 @@ async def create_conversation(
 async def recent_campaigns(
     user: Annotated[UserContext, Depends(get_current_user)],
 ) -> dict[str, Any]:
-    campaigns = await get_recent_campaigns(org_id=user.org_id, brand_ids=user.brand_ids, limit=12)
+    campaigns = await get_recent_campaigns(
+        org_id=user.org_id,
+        brand_ids=user.brand_ids,
+        created_by=_optional_uuid(user.user_id),
+        limit=12,
+    )
     return {"campaigns": [c.model_dump() for c in campaigns]}
 
 
@@ -817,7 +868,12 @@ async def recent_campaigns(
 async def recent_campaigns_compat(
     user: Annotated[UserContext, Depends(get_current_user)],
 ) -> dict[str, Any]:
-    campaigns = await get_recent_campaigns(org_id=user.org_id, brand_ids=user.brand_ids, limit=12)
+    campaigns = await get_recent_campaigns(
+        org_id=user.org_id,
+        brand_ids=user.brand_ids,
+        created_by=_optional_uuid(user.user_id),
+        limit=12,
+    )
     return {"campaigns": [c.model_dump() for c in campaigns]}
 
 
@@ -828,6 +884,7 @@ async def recent_conversations(
     conversations_list = await session_manager.list_recent(
         org_id=user.org_id,
         brand_ids=user.brand_ids,
+        created_by=_optional_uuid(user.user_id),
         limit=12,
     )
     return {"conversations": [c.model_dump() for c in conversations_list]}
@@ -840,6 +897,7 @@ async def recent_conversations_compat(
     conversations_list = await session_manager.list_recent(
         org_id=user.org_id,
         brand_ids=user.brand_ids,
+        created_by=_optional_uuid(user.user_id),
         limit=12,
     )
     return {"conversations": [c.model_dump() for c in conversations_list]}
@@ -857,6 +915,7 @@ async def recent_conversations_by_user(
     conversations_list = await session_manager.list_recent(
         org_id=user.org_id,
         brand_ids=user.brand_ids,
+        created_by=_optional_uuid(user.user_id),
         limit=12,
     )
     return {"conversations": [c.model_dump() for c in conversations_list]}
@@ -866,6 +925,7 @@ async def recent_conversations_by_user(
 async def conversation_ws(websocket: WebSocket, conversation_id: str) -> None:
     await websocket.accept()
     query_api_key = websocket.query_params.get("api_key")
+    query_access_token = websocket.query_params.get("access_token")
     normalized_id = _normalize_uuid(conversation_id, "conversation_id")
 
     try:
@@ -877,14 +937,16 @@ async def conversation_ws(websocket: WebSocket, conversation_id: str) -> None:
                 continue
 
             try:
-                api_key = _resolve_ws_api_key(websocket, payload, query_api_key)
+                user = await _resolve_ws_user(
+                    websocket,
+                    payload,
+                    query_api_key,
+                    query_access_token,
+                )
             except HTTPException as exc:
                 await websocket.send_json({"error": exc.detail})
                 continue
 
-            from api.deps import _authenticate_api_key
-
-            user = await _authenticate_api_key(api_key)
             session = await session_manager.get(normalized_id)
             if session is None:
                 await websocket.send_json({"error": "conversation not found"})

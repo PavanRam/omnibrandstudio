@@ -62,7 +62,8 @@ async def test_recent_campaigns_returns_serialized_list(monkeypatch: pytest.Monk
             cost_usd=0,
         )
     ]
-    monkeypatch.setattr(conversations, "get_recent_campaigns", AsyncMock(return_value=recent))
+    recent_campaigns_mock = AsyncMock(return_value=recent)
+    monkeypatch.setattr(conversations, "get_recent_campaigns", recent_campaigns_mock)
 
     user = UserContext(
         user_id="api_key",
@@ -75,6 +76,34 @@ async def test_recent_campaigns_returns_serialized_list(monkeypatch: pytest.Monk
 
     assert len(result["campaigns"]) == 1
     assert result["campaigns"][0]["campaign_id"] == "019f76e9-c299-7756-a483-761aa106ba33"
+    recent_campaigns_mock.assert_awaited_once_with(
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_ids=["00000000-0000-0000-0000-000000000002"],
+        created_by=None,
+        limit=12,
+    )
+
+
+@pytest.mark.asyncio
+async def test_recent_campaigns_scopes_to_jwt_user_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    recent_campaigns_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(conversations, "get_recent_campaigns", recent_campaigns_mock)
+
+    user = UserContext(
+        user_id="019f76e9-c299-7756-a483-761aa106ba11",
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_ids=["00000000-0000-0000-0000-000000000002"],
+        auth_method="jwt",
+    )
+
+    await conversations.recent_campaigns(user)
+
+    recent_campaigns_mock.assert_awaited_once_with(
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_ids=["00000000-0000-0000-0000-000000000002"],
+        created_by="019f76e9-c299-7756-a483-761aa106ba11",
+        limit=12,
+    )
 
 
 @pytest.mark.asyncio
@@ -89,7 +118,8 @@ async def test_recent_conversations_returns_serialized_list(monkeypatch: pytest.
             updated_at="2026-07-19T00:00:00Z",  # type: ignore[arg-type]
         )
     ]
-    monkeypatch.setattr(conversations.session_manager, "list_recent", AsyncMock(return_value=recent))
+    list_recent_mock = AsyncMock(return_value=recent)
+    monkeypatch.setattr(conversations.session_manager, "list_recent", list_recent_mock)
 
     user = UserContext(
         user_id="api_key",
@@ -102,6 +132,12 @@ async def test_recent_conversations_returns_serialized_list(monkeypatch: pytest.
 
     assert len(result["conversations"]) == 1
     assert result["conversations"][0]["conversation_id"] == "019f76e9-c299-7756-a483-761aa106ba33"
+    list_recent_mock.assert_awaited_once_with(
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_ids=["00000000-0000-0000-0000-000000000002"],
+        created_by=None,
+        limit=12,
+    )
 
 
 @pytest.mark.asyncio
@@ -116,7 +152,8 @@ async def test_recent_conversations_by_user_returns_serialized_list(monkeypatch:
             updated_at="2026-07-19T00:00:00Z",  # type: ignore[arg-type]
         )
     ]
-    monkeypatch.setattr(conversations.session_manager, "list_recent", AsyncMock(return_value=recent))
+    list_recent_mock = AsyncMock(return_value=recent)
+    monkeypatch.setattr(conversations.session_manager, "list_recent", list_recent_mock)
 
     user = UserContext(
         user_id="api_key",
@@ -129,6 +166,34 @@ async def test_recent_conversations_by_user_returns_serialized_list(monkeypatch:
 
     assert len(result["conversations"]) == 1
     assert result["conversations"][0]["conversation_id"] == "019f76e9-c299-7756-a483-761aa106ba33"
+    list_recent_mock.assert_awaited_once_with(
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_ids=["00000000-0000-0000-0000-000000000002"],
+        created_by=None,
+        limit=12,
+    )
+
+
+@pytest.mark.asyncio
+async def test_recent_conversations_scopes_to_jwt_user_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    list_recent_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(conversations.session_manager, "list_recent", list_recent_mock)
+
+    user = UserContext(
+        user_id="019f76e9-c299-7756-a483-761aa106ba11",
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_ids=["00000000-0000-0000-0000-000000000002"],
+        auth_method="jwt",
+    )
+
+    await conversations.recent_conversations(user)
+
+    list_recent_mock.assert_awaited_once_with(
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_ids=["00000000-0000-0000-0000-000000000002"],
+        created_by="019f76e9-c299-7756-a483-761aa106ba11",
+        limit=12,
+    )
 
 
 @pytest.mark.asyncio

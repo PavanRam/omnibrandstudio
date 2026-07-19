@@ -118,27 +118,49 @@ class SessionManager:
         *,
         org_id: str,
         brand_ids: list[str] | None,
+        created_by: str | None = None,
         limit: int = 12,
     ) -> list[RecentConversation]:
         async with get_db() as conn:
-            result = await conn.execute(
-                text(
-                    """
-                    SELECT
-                        id,
-                        brand_id,
-                        status,
-                        active_campaign_id,
-                        partial_brief,
-                        updated_at
-                    FROM conversations
-                    WHERE org_id = :org_id
-                    ORDER BY updated_at DESC
-                    LIMIT :limit
-                    """
-                ),
-                {"org_id": org_id, "limit": limit},
-            )
+            if created_by:
+                result = await conn.execute(
+                    text(
+                        """
+                        SELECT
+                            id,
+                            brand_id,
+                            status,
+                            active_campaign_id,
+                            partial_brief,
+                            updated_at
+                        FROM conversations
+                        WHERE org_id = :org_id
+                          AND created_by = CAST(:created_by AS UUID)
+                        ORDER BY updated_at DESC
+                        LIMIT :limit
+                        """
+                    ),
+                    {"org_id": org_id, "created_by": created_by, "limit": limit},
+                )
+            else:
+                result = await conn.execute(
+                    text(
+                        """
+                        SELECT
+                            id,
+                            brand_id,
+                            status,
+                            active_campaign_id,
+                            partial_brief,
+                            updated_at
+                        FROM conversations
+                        WHERE org_id = :org_id
+                        ORDER BY updated_at DESC
+                        LIMIT :limit
+                        """
+                    ),
+                    {"org_id": org_id, "limit": limit},
+                )
             rows = result.mappings().all()
 
         allowed = set(brand_ids or [])

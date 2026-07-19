@@ -1,4 +1,4 @@
-.PHONY: install install-dev run worker dev run-local-eval test-local-eval check-local-eval test test-unit test-integration smoke lint format migrate migrate-down migrate-history seed up down logs certs setup
+.PHONY: install install-dev run worker dev run-local-eval test-local-eval check-local-eval test test-unit test-integration smoke lint format migrate migrate-down migrate-history seed seed-admin up down logs certs setup
 
 # ── Dependencies ─────────────────────────────────────────────────────────────
 install:
@@ -63,6 +63,9 @@ migrate-history:
 
 seed:
 	cd backend && uv run python ../scripts/seed_prompts.py
+
+seed-admin:
+	cd backend && uv run python scripts/seed_dev_admin.py
 
 # ── Infrastructure ────────────────────────────────────────────────────────────
 up:

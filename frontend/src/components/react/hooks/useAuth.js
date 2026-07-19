@@ -1,7 +1,50 @@
 import { useCallback, useEffect, useState } from 'react';
 import { readSession, writeSession, removeSession } from '@/lib/storage.js';
+import { clearStoredAuth, getCurrentAuthClaims, loginWithPassword, logoutSession } from '@/lib/api.js';
 
 const KEY = 'obs-user';
+
+function nameFromEmail(email = '') {
+  const local = email.split('@')[0] || 'User';
+  return local
+    .replace(/[._-]+/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function initialsFromName(name = '') {
+  const chars = name.trim().split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]);
+  return (chars.join('') || 'U').toUpperCase();
+}
+
+function userFromAuthResponse(payload) {
+  const user = payload?.user || {};
+  const email = String(user.email || '');
+  const name = nameFromEmail(email);
+  return {
+    user_id: String(user.user_id || ''),
+    org_id: String(user.org_id || ''),
+    brand_ids: Array.isArray(user.brand_ids) ? user.brand_ids : [],
+    roles: Array.isArray(user.roles) ? user.roles : [],
+    email,
+    name,
+    initials: initialsFromName(name),
+  };
+}
+
+function userFromClaims(claims) {
+  if (!claims || typeof claims !== 'object') return null;
+  const email = String(claims.email || '');
+  const name = nameFromEmail(email);
+  return {
+    user_id: String(claims.sub || ''),
+    org_id: String(claims.org_id || ''),
+    brand_ids: Array.isArray(claims.brand_ids) ? claims.brand_ids : [],
+    roles: Array.isArray(claims.roles) ? claims.roles : [],
+    email,
+    name,
+    initials: initialsFromName(name),
+  };
+}
 
 /**
  * Demo auth backed by sessionStorage. This is NOT real authentication — it
@@ -21,6 +64,13 @@ export function useAuth() {
         /* ignore */
       }
     }
+    if (!raw) {
+      const claimsUser = userFromClaims(getCurrentAuthClaims());
+      if (claimsUser) {
+        setUser(claimsUser);
+        writeSession(KEY, JSON.stringify(claimsUser));
+      }
+    }
     setReady(true);
 
     const sync = () => {
@@ -31,13 +81,18 @@ export function useAuth() {
     return () => window.removeEventListener('obs:authchange', sync);
   }, []);
 
-  const login = useCallback((profile) => {
+  const login = useCallback(async ({ email, password }) => {
+    const authPayload = await loginWithPassword(email, password);
+    const profile = userFromAuthResponse(authPayload);
     writeSession(KEY, JSON.stringify(profile));
     setUser(profile);
     window.dispatchEvent(new Event('obs:authchange'));
+    return profile;
   }, []);
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    await logoutSession();
+    clearStoredAuth();
     removeSession(KEY);
     setUser(null);
     window.dispatchEvent(new Event('obs:authchange'));

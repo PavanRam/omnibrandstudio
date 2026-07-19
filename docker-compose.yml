@@ -148,12 +148,16 @@ services:
       LANGFUSE_HOST: http://langfuse:3000
       S3_ENDPOINT_URL: http://minio:9000
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      JWT_PRIVATE_KEY_PATH: /app/certs/private_key.pem
+      JWT_PUBLIC_KEY_PATH: /app/certs/public_key.pem
     ports: ["8000:8000"]
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
     command: python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
-    volumes: ["./backend:/app"]
+    volumes:
+      - "./backend:/app"
+      - "./certs:/app/certs:ro"
 
   worker:
     build: {context: ., dockerfile: backend/Dockerfile, target: runtime}
@@ -166,11 +170,15 @@ services:
       LITELLM_BASE_URL: http://litellm:4000
       LANGFUSE_HOST: http://langfuse:3000
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      JWT_PRIVATE_KEY_PATH: /app/certs/private_key.pem
+      JWT_PUBLIC_KEY_PATH: /app/certs/public_key.pem
     command: python -m worker.main
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
-    volumes: ["./backend:/app"]
+    volumes:
+      - "./backend:/app"
+      - "./certs:/app/certs:ro"
 
 volumes:
   postgres_data:

@@ -11,19 +11,26 @@ export function LoginModal({ open, onClose, onLogin }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
-  const submit = (e) => {
+  const submit = async (e) => {
     e.preventDefault();
-    if (!email.includes('@') || password.length < 4) {
-      setError('Enter a valid email and a password of at least 4 characters.');
+    if (!email.includes('@') || password.length < 8) {
+      setError('Enter a valid email and a password of at least 8 characters.');
       return;
     }
-    const name = email
-      .split('@')[0]
-      .replace(/[._-]+/g, ' ')
-      .replace(/\b\w/g, (c) => c.toUpperCase());
-    onLogin({ name, email, initials: name.slice(0, 1).toUpperCase() });
-    onClose();
+
+    setError('');
+    setSubmitting(true);
+    try {
+      await onLogin({ email, password });
+      onClose();
+      setPassword('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Login failed');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -95,14 +102,10 @@ export function LoginModal({ open, onClose, onLogin }) {
           </p>
         )}
 
-        <Button type="submit" variant="primary" size="lg" className="w-full">
-          Sign in
+        <Button type="submit" variant="primary" size="lg" className="w-full" disabled={submitting}>
+          {submitting ? 'Signing in...' : 'Sign in'}
         </Button>
       </form>
-
-      <p className="mt-4 text-center text-xs text-muted">
-        Demo only — no credentials are checked or stored on a server.
-      </p>
     </Modal>
   );
 }
