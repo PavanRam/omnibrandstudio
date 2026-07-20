@@ -66,20 +66,28 @@ def echo_llm(monkeypatch):
 
 # ── T4.1 segment loading ──────────────────────────────────────────────────
 
-def test_default_segment_profiles_present():
+def test_real_personas_loaded_from_brand_guidelines():
     profiles = load_segment_profiles({})
-    assert set(profiles) >= {"enterprise", "sme", "consumer"}
-    assert profiles["enterprise"]["reading_level"] == "Grade 12"
-    assert profiles["consumer"]["reading_level"] == "Grade 8"
+    # The 5 real K-Means personas are loaded from the brand-guideline files.
+    assert set(profiles) >= {
+        "High-Income Store Spender",
+        "Budget-Conscious Low Spender",
+        "Web-Savvy Mid-Tier Buyer",
+        "Deal-Seeking Value Hunter",
+        "Highly Engaged Campaign Responder",
+    }
+    hi = profiles["High-Income Store Spender"]
+    assert "Premium" in hi["tone"]          # voice from tone_voice_per_persona.json
+    assert hi["cta_style"]                  # CTA from cta_library.json
 
 
 def test_org_config_overrides_default_profile():
     profiles = load_segment_profiles(
-        {"segment_profiles": {"enterprise": {"tone": "custom-tone"}}}
+        {"segment_profiles": {"High-Income Store Spender": {"tone": "custom-tone"}}}
     )
-    assert profiles["enterprise"]["tone"] == "custom-tone"
+    assert profiles["High-Income Store Spender"]["tone"] == "custom-tone"
     # Non-overridden keys survive the merge.
-    assert profiles["enterprise"]["reading_level"] == "Grade 12"
+    assert profiles["High-Income Store Spender"]["cta_style"]
 
 
 # ── T4.2 PII scan ─────────────────────────────────────────────────────────
@@ -99,25 +107,25 @@ def test_scrub_pii_handles_empty():
 
 # ── T4.3 / T4.4 agent behaviour ───────────────────────────────────────────
 
-async def test_enterprise_and_consumer_are_conditioned_differently(echo_llm):
+async def test_two_personas_are_conditioned_differently(echo_llm):
     variants = [
-        _variant("t-ent", "enterprise", "Buy our platform. Email sales@acme.com."),
-        _variant("t-con", "consumer", "Buy our platform. Email sales@acme.com."),
+        _variant("t-hi", "High-Income Store Spender", "Buy our platform. Email sales@acme.com."),
+        _variant("t-deal", "Deal-Seeking Value Hunter", "Buy our platform. Email sales@acme.com."),
     ]
     result = await personalization_agent(_state(variants))
 
-    ent = next(v for v in variants if v["segment"] == "enterprise")
-    con = next(v for v in variants if v["segment"] == "consumer")
+    hi = next(v for v in variants if v["segment"] == "High-Income Store Spender")
+    deal = next(v for v in variants if v["segment"] == "Deal-Seeking Value Hunter")
 
     # T4.4 — both variants personalized, in place (no duplication).
     assert len(variants) == 2
-    assert ent["status"] == "personalized" and con["status"] == "personalized"
-    assert ent["personalized_content"] and con["personalized_content"]
+    assert hi["status"] == "personalized" and deal["status"] == "personalized"
+    assert hi["personalized_content"] and deal["personalized_content"]
 
-    # T4.4 — enterprise conditioning differs from consumer.
-    assert ent["personalized_content"] != con["personalized_content"]
-    assert "Grade 12" in ent["personalized_content"]
-    assert "Grade 8" in con["personalized_content"]
+    # T4.4 — the two personas are conditioned on their real brand voices.
+    assert hi["personalized_content"] != deal["personalized_content"]
+    assert "Premium" in hi["personalized_content"]      # High-Income voice
+    assert "Urgent" in deal["personalized_content"]      # Deal-Seeker voice
 
     # T4.2 — no raw PII reaches the prompt/output.
     for v in variants:
