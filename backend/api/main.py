@@ -1,14 +1,14 @@
 import time
 from contextlib import asynccontextmanager
 
+from core.config import settings
+from core.metrics import REGISTRY, http_request_duration, http_requests_total
+from core.tracing import instrument_fastapi, setup_observability
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from api.middleware.request_id import RequestIDMiddleware
-from core.config import settings
-from core.metrics import REGISTRY, http_request_duration, http_requests_total
-from core.tracing import instrument_fastapi, setup_observability
 
 
 @asynccontextmanager
@@ -16,11 +16,13 @@ async def lifespan(app: FastAPI):
     from core.database import close_db, init_db
     from core.langfuse import get_langfuse
     from core.redis import close_redis, init_redis
+    from services.dev.bootstrap import ensure_dev_bootstrap
 
     setup_observability("omnibrand-api")
     instrument_fastapi(app)
 
     await init_db()
+    await ensure_dev_bootstrap()
     await init_redis()
     yield
     await close_db()

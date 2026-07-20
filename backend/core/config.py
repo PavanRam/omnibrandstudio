@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     # TEMP_LOCAL_EVAL: Explicit opt-in switch for /eval/local-eval endpoint registration.
     ENABLE_LOCAL_EVAL: bool = False
     ENABLE_CONVERSATION_PLANNER: bool = False
+    DEV_BOOTSTRAP_ADMIN_ENABLED: bool = False
+    DEV_ADMIN_ORG_ID: str = "00000000-0000-0000-0000-000000000001"
+    DEV_ADMIN_BRAND_ID: str = "00000000-0000-0000-0000-000000000002"
+    DEV_ADMIN_EMAIL: str = "admin@omnibrand.local"
+    DEV_ADMIN_PASSWORD: str = ""
 
     # Database
     POSTGRES_DSN: str = "postgresql+asyncpg://omnibrand:changeme_local_32chars@localhost:5432/omnibrand"

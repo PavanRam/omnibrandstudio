@@ -1,4 +1,4 @@
-.PHONY: install install-dev run worker dev run-local-eval test-local-eval check-local-eval test test-unit test-integration smoke lint format migrate migrate-down migrate-history seed seed-admin up down logs certs setup
+.PHONY: install install-dev run worker dev run-local-eval test-local-eval check-local-eval test test-unit test-integration smoke lint format migrate migrate-docker migrate-down migrate-history seed seed-admin up down down-reset logs certs setup
 
 # ── Dependencies ─────────────────────────────────────────────────────────────
 install:
@@ -55,6 +55,9 @@ format:
 migrate:
 	cd backend && uv run alembic upgrade head
 
+migrate-docker:
+	docker compose exec -T api sh -lc "cd /app && PYTHONPATH=/opt/venv/lib/python3.12/site-packages python -m alembic upgrade head"
+
 migrate-down:
 	cd backend && uv run alembic downgrade -1
 
@@ -73,8 +76,15 @@ up:
 	docker compose up -d --wait postgres redis minio litellm langfuse prometheus grafana jaeger redis-exporter postgres-exporter mailhog api worker
 	# One-shot init job exits 0 by design; run it separately so --wait does not fail.
 	docker compose up -d createbuckets
+	# Keep DB schema current in the same runtime context the API uses.
+	$(MAKE) migrate-docker
+	# Ensure default dev admin exists after startup/migration.
+	docker compose exec -T api python scripts/seed_dev_admin.py
 
 down:
+	docker compose down
+
+down-reset:
 	docker compose down -v
 
 logs:

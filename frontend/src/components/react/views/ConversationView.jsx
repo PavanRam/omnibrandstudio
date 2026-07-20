@@ -9,7 +9,6 @@ import {
   createConversation,
   fetchCampaignReplay,
   fetchRecentConversations,
-  getApiKey,
   openCampaignEventStream,
   openConversationSocket,
   rerunCampaign,
@@ -748,7 +747,7 @@ function handleSelectConversationAction({
 
 function handleSendPromptAction({ prompt, canChat, send, setError, setMessages }) {
   if (!canChat) return;
-  const sent = send({ message: prompt, api_key: getApiKey() });
+  const sent = send({ message: prompt });
   if (!sent) {
     setError('Socket is not connected yet');
     return;
@@ -775,7 +774,7 @@ function handleSendMessageAction({
     setError('Chat is reconnecting. Please try again in a moment.');
     return;
   }
-  const sent = send({ message: trimmed, api_key: getApiKey() });
+  const sent = send({ message: trimmed });
   if (!sent) {
     setError('Chat socket is not connected yet');
     return;

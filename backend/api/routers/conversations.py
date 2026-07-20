@@ -68,12 +68,6 @@ async def _resolve_ws_user(
     query_api_key: str | None,
     query_access_token: str | None,
 ) -> UserContext:
-    api_key = websocket.headers.get("x-api-key") or query_api_key or payload.get("api_key")
-    if api_key:
-        from api.deps import _authenticate_api_key
-
-        return await _authenticate_api_key(str(api_key))
-
     authorization_header = websocket.headers.get("authorization") or str(payload.get("authorization") or "")
     bearer_token = ""
     if authorization_header.lower().startswith("bearer "):
@@ -83,27 +77,33 @@ async def _resolve_ws_user(
     elif payload.get("access_token"):
         bearer_token = str(payload.get("access_token"))
 
-    if not bearer_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="missing credentials",
+    if bearer_token:
+        try:
+            claims = decode_access_token(bearer_token)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+
+        jti = claims.get("jti")
+        if isinstance(jti, str) and await is_jti_revoked(jti):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked")
+
+        return UserContext(
+            user_id=str(claims.get("sub") or ""),
+            org_id=str(claims.get("org_id") or ""),
+            brand_ids=[str(value) for value in claims.get("brand_ids", [])],
+            roles=[str(value) for value in claims.get("roles", [])],
+            auth_method="jwt",
         )
 
-    try:
-        claims = decode_access_token(bearer_token)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    api_key = websocket.headers.get("x-api-key") or query_api_key or payload.get("api_key")
+    if api_key:
+        from api.deps import _authenticate_api_key
 
-    jti = claims.get("jti")
-    if isinstance(jti, str) and await is_jti_revoked(jti):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked")
+        return await _authenticate_api_key(str(api_key))
 
-    return UserContext(
-        user_id=str(claims.get("sub") or ""),
-        org_id=str(claims.get("org_id") or ""),
-        brand_ids=[str(value) for value in claims.get("brand_ids", [])],
-        roles=[str(value) for value in claims.get("roles", [])],
-        auth_method="jwt",
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="missing credentials",
     )
 
 
