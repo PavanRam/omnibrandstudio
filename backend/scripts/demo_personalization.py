@@ -38,7 +38,9 @@ from pipeline.agents import personalization as perso  # noqa: E402
 from pipeline.agents.personalization import personalization_agent  # noqa: E402
 
 # ── Real brand persona data (data track output) ────────────────────────────
-BRAND_DIR = Path.home() / "Downloads" / "brand-guidelines"
+BRAND_DIR = (
+    Path(__file__).resolve().parents[1] / "data" / "datasets" / "processed" / "brand_guidelines"
+)
 TONE_FILE = BRAND_DIR / "tone_voice_per_persona.json"
 CTA_FILE = BRAND_DIR / "cta_library.json"
 
