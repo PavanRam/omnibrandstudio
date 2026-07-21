@@ -20,6 +20,7 @@ from pipeline.conversation_models import (
     PartialBrief,
     RecentCampaign,
     RecentConversation,
+    UnderstandingResult,
 )
 
 
@@ -762,7 +763,7 @@ def test_conversation_websocket_turn_returns_campaign_id(monkeypatch: pytest.Mon
         id="019f76e9-c299-7756-a483-761aa106ba33",
         org_id="00000000-0000-0000-0000-000000000001",
         brand_id="00000000-0000-0000-0000-000000000002",
-        status="collecting",
+        status="awaiting_confirmation",
         partial_brief=PartialBrief(),
     )
 
@@ -782,30 +783,26 @@ def test_conversation_websocket_turn_returns_campaign_id(monkeypatch: pytest.Mon
     monkeypatch.setattr(conversations.session_manager, "load_messages", AsyncMock(return_value=[]))
     monkeypatch.setattr(conversations.session_manager, "update_partial_brief", AsyncMock())
     monkeypatch.setattr(conversations.session_manager, "attach_campaign", AsyncMock())
+    monkeypatch.setattr(conversations.session_manager, "set_status", AsyncMock())
     monkeypatch.setattr(
-        conversations.intent_classifier,
-        "classify_detailed",
+        conversations.understanding_engine,
+        "understand",
         AsyncMock(
-            return_value=IntentClassification(
-                primary="collect_brief",
-                secondary=[],
-                confidence=1.0,
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        conversations.brief_collector,
-        "update_partial_brief_with_meta",
-        AsyncMock(
-            return_value=(
-                PartialBrief(
+            return_value=UnderstandingResult(
+                intent=IntentClassification(
+                    primary="submit_campaign",
+                    secondary=[],
+                    confidence=1.0,
+                    requires_action=True,
+                ),
+                brief=PartialBrief(
                     objective="Launch",
                     channels=["linkedin"],
                     locales=["en-US"],
                     audience_segments=["enterprise"],
                     token_budget=1000,
                 ),
-                ExtractionMeta(field_confidence={}, source="llm"),
+                extraction_meta=ExtractionMeta(field_confidence={}, source="llm"),
             )
         ),
     )
@@ -839,7 +836,7 @@ async def test_process_turn_submit_intent_enqueues_without_run_phrase(monkeypatc
         id="019f76e9-c299-7756-a483-761aa106ba33",
         org_id="00000000-0000-0000-0000-000000000001",
         brand_id="00000000-0000-0000-0000-000000000002",
-        status="collecting",
+        status="awaiting_confirmation",
         partial_brief=PartialBrief(),
     )
     user = UserContext(
@@ -853,32 +850,27 @@ async def test_process_turn_submit_intent_enqueues_without_run_phrase(monkeypatc
     monkeypatch.setattr(conversations.session_manager, "load_messages", AsyncMock(return_value=[]))
     monkeypatch.setattr(conversations.session_manager, "update_partial_brief", AsyncMock())
     monkeypatch.setattr(conversations.session_manager, "attach_campaign", AsyncMock())
+    monkeypatch.setattr(conversations.session_manager, "set_status", AsyncMock())
     monkeypatch.setattr(
-        conversations.intent_classifier,
-        "classify_detailed",
+        conversations.understanding_engine,
+        "understand",
         AsyncMock(
-            return_value=IntentClassification(
-                primary="submit_campaign",
-                secondary=[],
-                confidence=0.95,
-                requires_action=True,
-                mutation_intent=False,
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        conversations.brief_collector,
-        "update_partial_brief_with_meta",
-        AsyncMock(
-            return_value=(
-                PartialBrief(
+            return_value=UnderstandingResult(
+                intent=IntentClassification(
+                    primary="submit_campaign",
+                    secondary=[],
+                    confidence=0.95,
+                    requires_action=True,
+                    mutation_intent=False,
+                ),
+                brief=PartialBrief(
                     objective="Launch",
                     channels=["linkedin"],
                     locales=["en-US"],
                     audience_segments=["enterprise"],
                     token_budget=1000,
                 ),
-                ExtractionMeta(field_confidence={}, source="llm"),
+                extraction_meta=ExtractionMeta(field_confidence={}, source="llm"),
             )
         ),
     )
@@ -900,7 +892,9 @@ async def test_process_turn_submit_intent_enqueues_without_run_phrase(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_process_turn_submit_intent_does_not_enqueue_when_brief_incomplete(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_process_turn_complete_brief_plays_back_before_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     session = ConversationSession(
         id="019f76e9-c299-7756-a483-761aa106ba33",
         org_id="00000000-0000-0000-0000-000000000001",
@@ -919,26 +913,22 @@ async def test_process_turn_submit_intent_does_not_enqueue_when_brief_incomplete
     monkeypatch.setattr(conversations.session_manager, "load_messages", AsyncMock(return_value=[]))
     monkeypatch.setattr(conversations.session_manager, "update_partial_brief", AsyncMock())
     monkeypatch.setattr(conversations.session_manager, "attach_campaign", AsyncMock())
+    set_status_mock = AsyncMock()
+    monkeypatch.setattr(conversations.session_manager, "set_status", set_status_mock)
     monkeypatch.setattr(
-        conversations.intent_classifier,
-        "classify_detailed",
+        conversations.understanding_engine,
+        "understand",
         AsyncMock(
-            return_value=IntentClassification(
-                primary="submit_campaign",
-                secondary=[],
-                confidence=0.91,
-                requires_action=True,
-                mutation_intent=False,
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        conversations.brief_collector,
-        "update_partial_brief_with_meta",
-        AsyncMock(
-            return_value=(
-                PartialBrief(objective="Launch"),
-                ExtractionMeta(field_confidence={}, source="llm"),
+            return_value=UnderstandingResult(
+                intent=IntentClassification(primary="collect_brief", secondary=[], confidence=0.9),
+                brief=PartialBrief(
+                    objective="Launch",
+                    channels=["linkedin"],
+                    locales=["en-US"],
+                    audience_segments=["enterprise"],
+                    token_budget=1000,
+                ),
+                extraction_meta=ExtractionMeta(field_confidence={}, source="llm"),
             )
         ),
     )
@@ -947,7 +937,71 @@ async def test_process_turn_submit_intent_does_not_enqueue_when_brief_incomplete
     monkeypatch.setattr(
         conversations.conversation_responder,
         "respond",
-        AsyncMock(return_value="Please add channels, locales, audience segments, and token budget."),
+        AsyncMock(return_value="playback"),
+    )
+
+    result = await conversations._process_turn(
+        session=session,
+        conversation_id=session.id,
+        user=user,
+        user_message="here is the last detail",
+    )
+
+    assert result["campaign_id"] is None
+    assert result["brief_complete"] is True
+    assert result["awaiting_confirmation"] is True
+    enqueue_mock.assert_not_awaited()
+    set_status_mock.assert_awaited_once_with(session.id, "awaiting_confirmation")
+
+
+@pytest.mark.asyncio
+async def test_process_turn_submit_intent_does_not_enqueue_when_brief_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = ConversationSession(
+        id="019f76e9-c299-7756-a483-761aa106ba33",
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_id="00000000-0000-0000-0000-000000000002",
+        status="collecting",
+        partial_brief=PartialBrief(),
+    )
+    user = UserContext(
+        user_id="api_key",
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_ids=["00000000-0000-0000-0000-000000000002"],
+        auth_method="api_key",
+    )
+
+    monkeypatch.setattr(conversations.session_manager, "add_message", AsyncMock())
+    monkeypatch.setattr(conversations.session_manager, "load_messages", AsyncMock(return_value=[]))
+    monkeypatch.setattr(conversations.session_manager, "update_partial_brief", AsyncMock())
+    monkeypatch.setattr(conversations.session_manager, "attach_campaign", AsyncMock())
+    monkeypatch.setattr(conversations.session_manager, "set_status", AsyncMock())
+    monkeypatch.setattr(
+        conversations.understanding_engine,
+        "understand",
+        AsyncMock(
+            return_value=UnderstandingResult(
+                intent=IntentClassification(
+                    primary="submit_campaign",
+                    secondary=[],
+                    confidence=0.91,
+                    requires_action=True,
+                    mutation_intent=False,
+                ),
+                brief=PartialBrief(objective="Launch"),
+                extraction_meta=ExtractionMeta(field_confidence={}, source="llm"),
+            )
+        ),
+    )
+    enqueue_mock = AsyncMock(return_value="019f7669-1111-7000-8000-000000000001")
+    monkeypatch.setattr(conversations, "_enqueue_campaign", enqueue_mock)
+    monkeypatch.setattr(
+        conversations.conversation_responder,
+        "respond",
+        AsyncMock(
+            return_value="Please add channels, locales, audience segments, and token budget.",
+        ),
     )
 
     result = await conversations._process_turn(

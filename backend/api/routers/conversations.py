@@ -14,13 +14,13 @@ from api.middleware.auth import decode_access_token, is_jti_revoked
 from core.config import settings
 from core.ids import new_campaign_id, new_request_id
 from core.redis import get_redis
-from pipeline.conversation_models import ConversationPlannerInput, ConversationSession, ExtractionMeta, IntentClassification, PartialBrief
+from pipeline.conversation_models import ConversationPlannerInput, ConversationSession, ExtractionMeta, IntentClassification, PartialBrief, UnderstandingResult
 from services.chat.brief_collector import brief_collector
 from services.campaign.campaign_query import get_recent_campaigns
 from services.chat.conversation_planner import conversation_planner
 from services.chat.conversation_responder import conversation_responder
-from services.chat.intent_classifier import intent_classifier
 from services.chat.session_manager import session_manager
+from services.chat.understanding_engine import understanding_engine
 
 router = APIRouter()
 
@@ -116,6 +116,7 @@ def _chat_state_context(session: ConversationSession) -> dict[str, Any]:
         "model_aliases": {
             "utility": "util-fast",
             "brief_collector": "brief-collector",
+            "understanding": "understanding",
             "responder": "responder-chat",
         },
     }
@@ -162,6 +163,26 @@ def _complete_brief_followup(user_message: str) -> str:
         "Your brief is complete. Say 'run campaign' to start execution, "
         "or ask me to recap the brief before running."
     )
+
+
+def _brief_playback_message(brief: PartialBrief) -> str:
+    lines = ["Here's the campaign brief I've captured:"]
+    lines.append(f"- Objective: {brief.objective or '(none)'}")
+    if brief.target_audience:
+        lines.append(f"- Target audience: {brief.target_audience}")
+    lines.append(f"- Channels: {', '.join(brief.channels) or '(none)'}")
+    lines.append(f"- Locales: {', '.join(brief.locales) or '(none)'}")
+    lines.append(f"- Audience segments: {', '.join(brief.audience_segments) or '(none)'}")
+    if brief.key_messages:
+        lines.append(f"- Key messages: {', '.join(brief.key_messages)}")
+    if brief.tone_override:
+        lines.append(f"- Tone: {brief.tone_override}")
+    lines.append(f"- Token budget: {brief.token_budget or '(none)'}")
+    lines.append("")
+    lines.append(
+        "Shall I run the campaign with this? Reply 'yes' to start, or tell me what to change."
+    )
+    return "\n".join(lines)
 
 
 def _build_planner_output(
@@ -355,19 +376,18 @@ async def _process_turn(
 
     history = await session_manager.load_messages(conversation_id)
     context = _chat_state_context(session)
-    intent_classification = await _classify_intent_with_fallback(
+    understanding = await _understand_turn(
+        previous_brief=session.partial_brief,
         user_message=user_message,
         history=history,
         context=context,
     )
+    intent_classification = understanding.intent
     intent = intent_classification.primary
 
     previous_brief = session.partial_brief
-    brief, extraction_meta = await _collect_brief_with_meta(
-        previous_brief=previous_brief,
-        user_message=user_message,
-        context=context,
-    )
+    brief = understanding.brief
+    extraction_meta = understanding.extraction_meta
 
     await session_manager.update_partial_brief(conversation_id, brief)
     brief_changes = _brief_changes(previous_brief, brief)
@@ -385,7 +405,6 @@ async def _process_turn(
     )
     brief_updates = _brief_updates(previous_brief, brief)
 
-    should_run = ("run" in user_message.lower() and "campaign" in user_message.lower()) or intent == "submit_campaign"
     campaign_id: str | None = None
     campaign_copilot_message: str | None = None
 
@@ -397,7 +416,23 @@ async def _process_turn(
             user_message=user_message,
         )
 
-    if should_run and brief.is_complete():
+    # ── Confirmation gate ────────────────────────────────────────────────
+    # A complete brief is NOT enqueued immediately. The assistant first plays
+    # the brief back and waits; the campaign runs only after the user confirms.
+    brief_complete = brief.is_complete()
+    was_awaiting = session.status == "awaiting_confirmation"
+    explicit_run = ("run" in user_message.lower() and "campaign" in user_message.lower()) or intent == "submit_campaign"
+    affirmative = _is_affirmative(user_message)
+
+    should_run = False
+    confirm_playback = False
+    if brief_complete and not session.active_campaign_id and not campaign_copilot_message:
+        if was_awaiting and (affirmative or explicit_run):
+            should_run = True
+        else:
+            confirm_playback = True
+
+    if should_run:
         campaign_id = await _enqueue_campaign(
             user=user,
             brand_id=session.brand_id,
@@ -405,6 +440,12 @@ async def _process_turn(
             request_id=new_request_id(),
         )
         await session_manager.attach_campaign(conversation_id, campaign_id)
+    elif confirm_playback:
+        if not was_awaiting:
+            await session_manager.set_status(conversation_id, "awaiting_confirmation")
+    elif was_awaiting and not brief_complete:
+        # User edited the brief back into an incomplete state; resume collecting.
+        await session_manager.set_status(conversation_id, "collecting")
 
     assistant_message = await _compose_assistant_message(
         campaign_id=campaign_id,
@@ -415,6 +456,7 @@ async def _process_turn(
         planner_output=planner_output,
         brief_changes=brief_changes,
         context=context,
+        confirm_playback=confirm_playback,
     )
 
     await session_manager.add_message(
@@ -430,6 +472,7 @@ async def _process_turn(
         "intent": intent,
         "brief": brief.model_dump(),
         "brief_complete": brief.is_complete(),
+        "awaiting_confirmation": confirm_playback,
         "campaign_id": campaign_id,
         "message": assistant_message,
         "brief_updates": brief_updates,
@@ -447,46 +490,74 @@ async def _process_turn(
     }
 
 
-async def _classify_intent_with_fallback(
-    *,
-    user_message: str,
-    history: list[dict[str, str]],
-    context: dict[str, Any],
-) -> IntentClassification:
-    try:
-        return await intent_classifier.classify_detailed(
-            message=user_message,
-            conversation_history=history,
-            state=context,
-        )
-    except Exception:
-        intent = await intent_classifier.classify(
-            message=user_message,
-            conversation_history=history,
-            state=context,
-        )
-        return IntentClassification(primary=intent, secondary=[], confidence=0.0)
-
-
-async def _collect_brief_with_meta(
+async def _understand_turn(
     *,
     previous_brief: PartialBrief,
     user_message: str,
+    history: list[dict[str, str]],
     context: dict[str, Any],
-) -> tuple[PartialBrief, ExtractionMeta]:
+) -> UnderstandingResult:
     try:
-        return await brief_collector.update_partial_brief_with_meta(
+        return await understanding_engine.understand(
             current=previous_brief,
             user_message=user_message,
+            conversation_history=history,
             state=context,
         )
     except Exception:
-        brief = await brief_collector.update_partial_brief(
-            current=previous_brief,
-            user_message=user_message,
-            state=context,
+        # Degrade gracefully: keep the existing brief and mark intent unknown so
+        # the turn still produces a safe conversational reply.
+        merged = brief_collector._merge(previous_brief, {}, user_message)
+        return UnderstandingResult(
+            intent=IntentClassification(primary="other", secondary=[], confidence=0.0),
+            brief=merged,
+            extraction_meta=ExtractionMeta(field_confidence={}, source="error"),
         )
-        return brief, ExtractionMeta(field_confidence={}, source="fallback")
+
+
+_AFFIRMATIVE_EXACT = {
+    "yes",
+    "yep",
+    "yeah",
+    "yup",
+    "y",
+    "confirm",
+    "confirmed",
+    "correct",
+    "that's right",
+    "thats right",
+    "looks good",
+    "lgtm",
+    "go ahead",
+    "go",
+    "run it",
+    "run",
+    "start",
+    "launch",
+    "proceed",
+    "do it",
+    "sounds good",
+    "ship it",
+    "approve",
+    "approved",
+    "perfect",
+    "ok run",
+}
+
+
+def _is_affirmative(message: str) -> bool:
+    normalized = " ".join(message.lower().strip().split())
+    trimmed = normalized.rstrip("!.")
+    if trimmed in _AFFIRMATIVE_EXACT:
+        return True
+    if "campaign" in normalized and any(
+        verb in normalized for verb in ("run", "start", "launch", "execute")
+    ):
+        return True
+    return any(
+        phrase in normalized
+        for phrase in ("go ahead", "looks good", "confirm", "proceed", "run it", "ship it")
+    )
 
 
 async def _compose_assistant_message(
@@ -499,6 +570,7 @@ async def _compose_assistant_message(
     planner_output,
     brief_changes: list[dict[str, Any]],
     context: dict[str, Any],
+    confirm_playback: bool = False,
 ) -> str:
     if campaign_id:
         return (
@@ -516,7 +588,11 @@ async def _compose_assistant_message(
             brief_changes=brief_changes,
             user_message=user_message,
             state=context,
+            confirm_playback=confirm_playback,
         )
+
+    if confirm_playback:
+        return _brief_playback_message(brief)
 
     return _select_assistant_message(
         campaign_id=campaign_id,

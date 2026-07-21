@@ -55,6 +55,17 @@ model_list:
     model: "gemini/gemini-1.5-flash"
     api_key: "os.environ/GEMINI_API_KEY"
 
+# Understanding — merged intent classification + brief extraction (JSON-strong)
+- model_name: "understanding"
+  litellm_params:
+    model: "groq/llama-3.3-70b-versatile"
+    api_key: "os.environ/GROQ_API_KEY"
+
+- model_name: "understanding-gemini"
+  litellm_params:
+    model: "gemini/gemini-2.5-flash"
+    api_key: "os.environ/GEMINI_API_KEY"
+
 # Responder — high quality conversational turn generation
 - model_name: "responder-chat"
   litellm_params:
@@ -63,7 +74,7 @@ model_list:
 
 - model_name: "responder-chat-gemini"
   litellm_params:
-    model: "gemini/gemini-1.5-flash"
+    model: "gemini/gemini-2.5-flash"
     api_key: "os.environ/GEMINI_API_KEY"
 
 # Evaluation
@@ -83,6 +94,7 @@ router_settings:
   - { "responder-chat": [ "responder-chat-gemini" ] }
   - { "util-fast": [ "util-fast-gemini" ] }
   - { "brief-collector": [ "brief-collector-gemini" ] }
+  - { "understanding": [ "understanding-gemini" ] }
   retry_policy:
     BadRequestError: { num_retries: 0 }
     RateLimitError: { num_retries: 3, retry_after: 60 }

@@ -159,6 +159,18 @@ class PartialBrief(BaseModel):
         return len(self.missing_slots()) == 0
 
 
+class UnderstandingResult(BaseModel):
+    """Merged output of the single understanding LLM call.
+
+    Combines intent classification and brief extraction so the two
+    understanding passes share the same context (including history).
+    """
+
+    intent: IntentClassification
+    brief: PartialBrief
+    extraction_meta: ExtractionMeta = Field(default_factory=ExtractionMeta)
+
+
 class ConversationSession(BaseModel):
     id: str
     brand_id: str

@@ -14,6 +14,7 @@ _EXTRACTION_PROMPT = (
     "field_confidence must be an object with numeric 0..1 confidence for extracted fields. "
     "Use null for unknown scalars and [] for unknown arrays."
 )
+_STRIP_CHARS = " \t\r\n\"'"
 
 
 class BriefCollector:
@@ -28,6 +29,9 @@ class BriefCollector:
             merged = self._merge(current, {}, user_message)
             return merged, ExtractionMeta(field_confidence={}, source="non_brief")
 
+        fallback_patch = self._fallback_patch_from_text(user_message)
+        fallback_confidence = self._fallback_confidence(fallback_patch)
+
         content, _ = await traced_llm_call(
             model=state.get("model_aliases", {}).get("brief_collector", "brief-collector"),
             messages=[
@@ -41,13 +45,12 @@ class BriefCollector:
 
         patch, meta = self._parse_patch_with_meta(content)
         if not patch:
-            patch = self._fallback_patch_from_text(user_message)
-            fallback_confidence = {
-                key: 0.65
-                for key in patch
-                if key in {"objective", "target_audience", "key_messages", "tone_override", "channels", "locales", "audience_segments", "token_budget"}
-            }
+            patch = fallback_patch
             meta = ExtractionMeta(field_confidence=fallback_confidence, source="fallback")
+        elif fallback_patch:
+            patch = self._merge_missing_patch_fields(patch, fallback_patch)
+            for key, value in fallback_confidence.items():
+                meta.field_confidence.setdefault(key, value)
 
         merged = self._merge(current, patch, user_message)
         return merged, meta
@@ -112,6 +115,9 @@ class BriefCollector:
         if not normalized:
             return True
 
+        if self._has_brief_signal(text):
+            return False
+
         exact_smalltalk = {
             "hi",
             "hello",
@@ -141,6 +147,66 @@ class BriefCollector:
         )
         return any(phrase in normalized for phrase in control_phrases)
 
+    def _has_brief_signal(self, text: str) -> bool:
+        normalized = text.strip()
+        lowered = normalized.lower()
+
+        explicit_markers = (
+            "objective:",
+            "target audience:",
+            "target_audience:",
+            "key messages:",
+            "tone:",
+            "tone override:",
+            "channels:",
+            "locales:",
+            "audience segment:",
+            "audience segments:",
+            "token budget:",
+        )
+        if any(marker in lowered for marker in explicit_markers):
+            return True
+
+        return bool(self._fallback_patch_from_text(normalized))
+
+    def _fallback_confidence(self, patch: dict[str, Any]) -> dict[str, float]:
+        return {
+            key: 0.65
+            for key in patch
+            if key
+            in {
+                "objective",
+                "target_audience",
+                "key_messages",
+                "tone_override",
+                "channels",
+                "locales",
+                "audience_segments",
+                "token_budget",
+            }
+        }
+
+    def _merge_missing_patch_fields(
+        self,
+        primary_patch: dict[str, Any],
+        fallback_patch: dict[str, Any],
+    ) -> dict[str, Any]:
+        merged = dict(primary_patch)
+
+        for key in ("objective", "target_audience", "tone_override", "token_budget"):
+            if merged.get(key) is None and fallback_patch.get(key) is not None:
+                merged[key] = fallback_patch[key]
+
+        for key in ("key_messages", "channels", "locales", "audience_segments"):
+            value = merged.get(key)
+            if isinstance(value, list) and value:
+                continue
+            fallback_value = fallback_patch.get(key)
+            if isinstance(fallback_value, list) and fallback_value:
+                merged[key] = fallback_value
+
+        return merged
+
     def _fallback_patch_from_text(self, text: str) -> dict[str, Any]:
         normalized = text.strip()
         lowered = normalized.lower()
@@ -149,6 +215,10 @@ class BriefCollector:
         objective = self._extract_objective(normalized)
         if objective:
             patch["objective"] = objective
+
+        audience_segments = self._extract_audience_segments(normalized)
+        if audience_segments:
+            patch["audience_segments"] = audience_segments
 
         token_budget = self._extract_token_budget(normalized)
         if token_budget is not None:
@@ -174,15 +244,41 @@ class BriefCollector:
         return patch
 
     def _extract_objective(self, normalized: str) -> str | None:
-        objective_match = re.search(
+        patterns = (
             r"(?:^|\b)(?:objective\s*:\s*|primary campaign objective is to\s+|primary campaign objective is\s+)([^\.!?\n]+)",
-            normalized,
-            re.IGNORECASE,
+            r"(?:^|\b)(?:the\s+)?(?:absolute\s+)?(?:first\s+)?concrete outcome(?:\s+this campaign)?\s+must\s+drive(?:\s+first)?\s+is\s+([^\.!?\n]+)",
+            r"(?:^|\b)(?:the\s+)?(?:primary|main)\s+outcome\s+is\s+([^\.!?\n]+)",
+            r"(?:^|\b)(?:we\s+need\s+to\s+drive|this campaign should drive)\s+([^\.!?\n]+)",
         )
-        if not objective_match:
-            return None
-        objective = objective_match.group(1).strip(" \t\r\n\"'")
-        return objective or None
+        for pattern in patterns:
+            objective_match = re.search(pattern, normalized, re.IGNORECASE)
+            if not objective_match:
+                continue
+            objective = objective_match.group(1).strip(_STRIP_CHARS)
+            if objective:
+                return objective
+        return None
+
+    def _extract_audience_segments(self, normalized: str) -> list[str]:
+        patterns = (
+            r"(?:^|\b)(?:audience segments?\s*:\s*)([^\.!?\n]+)",
+            r"(?:^|\b)(?:target audience\s*:\s*|we want to reach\s+|we need to reach\s+)([^\.!?\n]+)",
+            r"(?:^|\b)(?:target|reach|prioritize)\s+([^\.!?\n]+(?:\s+buyers|\s+leaders|\s+teams|\s+customers|\s+audiences?))",
+        )
+        for pattern in patterns:
+            audience_match = re.search(pattern, normalized, re.IGNORECASE)
+            if not audience_match:
+                continue
+            raw_value = audience_match.group(1).strip(_STRIP_CHARS)
+            if not raw_value:
+                continue
+            if "," in raw_value:
+                values = [item.strip(_STRIP_CHARS) for item in raw_value.split(",")]
+                values = [item for item in values if item]
+                if values:
+                    return values
+            return [raw_value]
+        return []
 
     def _extract_token_budget(self, normalized: str) -> int | None:
         token_budget_match = re.search(
@@ -214,7 +310,7 @@ class BriefCollector:
 
     def _infer_channels(self, lowered: str) -> list[str]:
         inferred_channels = []
-        for channel in ("linkedin", "email", "instagram", "facebook", "twitter", "whatsapp"):
+        for channel in ("linkedin", "email", "instagram", "facebook", "twitter", "whatsapp", "landing page"):
             if re.search(rf"\b{channel}\b", lowered):
                 inferred_channels.append(channel)
         return inferred_channels

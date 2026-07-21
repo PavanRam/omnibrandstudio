@@ -204,6 +204,25 @@ class SessionManager:
             session.partial_brief = partial_brief
             await self._cache_set(session)
 
+    async def set_status(self, conversation_id: str, status: str) -> None:
+        async with get_db() as conn:
+            await conn.execute(
+                text(
+                    """
+                    UPDATE conversations
+                    SET status = :status, updated_at = NOW()
+                    WHERE id = :conversation_id
+                    """
+                ),
+                {"conversation_id": conversation_id, "status": status},
+            )
+            await conn.commit()
+
+        session = await self.get(conversation_id)
+        if session is not None:
+            session.status = status
+            await self._cache_set(session)
+
     async def attach_campaign(self, conversation_id: str, campaign_id: str) -> None:
         async with get_db() as conn:
             await conn.execute(
