@@ -9,7 +9,7 @@ install-dev:
 
 # ── Local development ─────────────────────────────────────────────────────────
 run:
-	cd backend && uv run python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+	cd backend && uv run uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 
 worker:
 	cd backend && uv run python -m worker.main
@@ -19,7 +19,7 @@ dev:
 
 run-local-eval:
 	# TEMP_LOCAL_EVAL: Local-only startup path that bypasses docker dependencies.
-	cd backend && LOCAL_DEV_MODE=1 ENABLE_LOCAL_EVAL=1 uv run python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+	cd backend && LOCAL_DEV_MODE=1 ENABLE_LOCAL_EVAL=1 uv run uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 
 test-local-eval:
 	# TEMP_LOCAL_EVAL: Focused test run for local eval and local-dev safety gates.
