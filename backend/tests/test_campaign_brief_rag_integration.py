@@ -295,81 +295,9 @@ async def test_get_campaign_returns_campaign_with_variants(monkeypatch: pytest.M
     assert result["in_memory_trace"][0]["agents"] == ["personalization_agent"]
 
 
-@pytest.mark.asyncio
-async def test_approve_campaign_transitions_status(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _FakeResult:
-        def __init__(self, row):
-            self._row = row
-
-        def mappings(self):
-            return self
-
-        def first(self):
-            return self._row
-
-    class _FakeConn:
-        async def execute(self, stmt, *_args, **_kwargs):
-            sql_text = str(getattr(stmt, "text", stmt))
-            if "SELECT id, status" in sql_text:
-                return _FakeResult(
-                    {
-                        "id": "019f76e9-c299-7756-a483-761aa106ba33",
-                        "status": "awaiting_review",
-                    }
-                )
-            return _FakeResult(None)
-
-        async def commit(self):
-            return None
-
-    @asynccontextmanager
-    async def _fake_get_db():
-        yield _FakeConn()
-
-    monkeypatch.setattr(campaigns, "get_db", _fake_get_db)
-
-    result = await campaigns.approve_campaign(
-        "019f76e9-c299-7756-a483-761aa106ba33",
-        campaigns.ReviewDecision(decision="approved", reviewer_note="looks good"),
-    )
-    assert result["status"] == "published"
-    assert result["decision"] == "approved"
-
-
-@pytest.mark.asyncio
-async def test_approve_campaign_rejects_non_reviewable_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _FakeResult:
-        def __init__(self, row):
-            self._row = row
-
-        def mappings(self):
-            return self
-
-        def first(self):
-            return self._row
-
-    class _FakeConn:
-        async def execute(self, *_args, **_kwargs):
-            return _FakeResult(
-                {
-                    "id": "019f76e9-c299-7756-a483-761aa106ba33",
-                    "status": "failed",
-                }
-            )
-
-    @asynccontextmanager
-    async def _fake_get_db():
-        yield _FakeConn()
-
-    monkeypatch.setattr(campaigns, "get_db", _fake_get_db)
-
-    with pytest.raises(HTTPException) as exc_info:
-        await campaigns.approve_campaign(
-            "019f76e9-c299-7756-a483-761aa106ba33",
-            campaigns.ReviewDecision(decision="approved"),
-        )
-
-    assert exc_info.value.status_code == 409
+# NOTE: the campaign-level POST /campaigns/{id}/approval placeholder was retired in
+# T11 in favour of the per-variant POST /reviews/{id}/decide API (see
+# tests covering pipeline/agents/review.py and the /reviews router).
 
 
 @pytest.mark.asyncio

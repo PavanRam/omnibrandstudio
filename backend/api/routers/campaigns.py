@@ -4,17 +4,16 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request, status
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from opentelemetry.propagate import inject
-from sqlalchemy import text
-
 from core.config import settings
 from core.database import get_db
 from core.ids import new_campaign_id
 from core.redis import get_redis
+from fastapi import APIRouter, HTTPException, Request, status
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from opentelemetry.propagate import inject
 from pipeline.graph import build_graph
-from pipeline.schemas import CreateCampaignRequest, ReviewDecision
+from pipeline.schemas import CreateCampaignRequest
+from sqlalchemy import text
 
 router = APIRouter()
 log = structlog.get_logger()
@@ -207,64 +206,6 @@ async def create_campaign(
 @router.post("/{campaign_id}/run")
 async def run_campaign(campaign_id: str) -> dict:
     raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, "campaigns run not yet implemented")
-
-
-@router.post("/{campaign_id}/approval")
-async def approve_campaign(campaign_id: str, body: ReviewDecision) -> dict:
-    normalized_campaign_id = _normalize_campaign_id(campaign_id)
-
-    async with get_db() as conn:
-        result = await conn.execute(
-            text(
-                """
-                SELECT id, status
-                FROM campaigns
-                WHERE id = :campaign_id
-                """
-            ),
-            {"campaign_id": normalized_campaign_id},
-        )
-        campaign_row = result.mappings().first()
-
-        if campaign_row is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=CAMPAIGN_NOT_FOUND)
-
-        current_status = str(campaign_row["status"])
-        if current_status not in {"awaiting_review", "running"}:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"campaign status '{current_status}' is not reviewable",
-            )
-
-        status_by_decision = {
-            "approved": "published",
-            "rejected": "cancelled",
-            "edited": "published",
-        }
-        next_status = status_by_decision[body.decision]
-
-        await conn.execute(
-            text(
-                """
-                UPDATE campaigns
-                SET status = :status,
-                    completed_at = NOW()
-                WHERE id = :campaign_id
-                """
-            ),
-            {
-                "campaign_id": normalized_campaign_id,
-                "status": next_status,
-            },
-        )
-        await conn.commit()
-
-    return {
-        "campaign_id": normalized_campaign_id,
-        "decision": body.decision,
-        "status": next_status,
-        "reviewer_note": body.reviewer_note,
-    }
 
 
 @router.get("/{campaign_id}")

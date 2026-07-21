@@ -75,6 +75,14 @@ class Settings(BaseSettings):
     MAX_CONCURRENT_CAMPAIGNS: int = 5
     CAMPAIGN_TIMEOUT_SECONDS: int = 300
 
+    # T11 — human review gate
+    REVIEW_SLA_HOURS: int = 4
+    MAX_REVIEW_ROUNDS: int = 2
+    # Airtable outbound mirror (best-effort; no-op when any is unset)
+    AIRTABLE_API_KEY: str = ""
+    AIRTABLE_BASE_ID: str = ""
+    AIRTABLE_TABLE: str = "Reviews"
+
     @property
     def private_key(self) -> str:
         with open(self.JWT_PRIVATE_KEY_PATH) as f:

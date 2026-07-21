@@ -99,19 +99,19 @@ literally true.
 
 ## 5. Components
 
-| File | Change |
-|---|---|
+| File                                           | Change                                                                                                                                                        |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `backend/pipeline/agents/aggregation.py` (new) | Minimal `confidence_aggregator`: emit placeholder 3-judge `BrandScore` snapshots + `AggregatedScore`, set `human_review_requested`, build `review_requests[]` |
-| `backend/pipeline/agents/review.py` (new) | Real `review_gate` node (apply decisions → variant status/final_content) + post-gate router (publish vs rerun) |
-| `backend/pipeline/graph.py` | Swap `confidence_aggregator_stub`/`review_gate_stub` for real nodes; conditional routing; rerun cap |
-| `backend/services/review_service.py` (new) | Persist variants + aggregated_scores + review_requests (Postgres); resume orchestration (`aupdate_state` + `ainvoke`); decision application |
-| `backend/services/airtable_service.py` (new) | Best-effort outbound mirror (config-gated, non-fatal) |
-| `backend/api/routers/reviews.py` (new) | `GET /reviews`, `POST /reviews/{id}/decide` |
-| `backend/api/main.py` | Register `reviews` router |
-| `backend/api/routers/campaigns.py` | Remove placeholder `POST /campaigns/{id}/approval` |
-| `backend/worker/main.py` | Detect interrupt → persist review batch → set `awaiting_review`; leave completed campaigns as `published` |
-| `backend/core/config.py` | `AIRTABLE_API_KEY` / `AIRTABLE_BASE_ID` / `AIRTABLE_TABLE`, `REVIEW_SLA_HOURS=4`, `MAX_REVIEW_ROUNDS=2` |
-| `backend/pipeline/agents/base.py` | Extend `AGENT_WRITE_PERMISSIONS` only if new fields are written (none expected) |
+| `backend/pipeline/agents/review.py` (new)      | Real `review_gate` node (apply decisions → variant status/final_content) + post-gate router (publish vs rerun)                                                |
+| `backend/pipeline/graph.py`                    | Swap `confidence_aggregator_stub`/`review_gate_stub` for real nodes; conditional routing; rerun cap                                                           |
+| `backend/services/review_service.py` (new)     | Persist variants + aggregated_scores + review_requests (Postgres); resume orchestration (`aupdate_state` + `ainvoke`); decision application                   |
+| `backend/services/airtable_service.py` (new)   | Best-effort outbound mirror (config-gated, non-fatal)                                                                                                         |
+| `backend/api/routers/reviews.py` (new)         | `GET /reviews`, `POST /reviews/{id}/decide`                                                                                                                   |
+| `backend/api/main.py`                          | Register `reviews` router                                                                                                                                     |
+| `backend/api/routers/campaigns.py`             | Remove placeholder `POST /campaigns/{id}/approval`                                                                                                            |
+| `backend/worker/main.py`                       | Detect interrupt → persist review batch → set `awaiting_review`; leave completed campaigns as `published`                                                     |
+| `backend/core/config.py`                       | `AIRTABLE_API_KEY` / `AIRTABLE_BASE_ID` / `AIRTABLE_TABLE`, `REVIEW_SLA_HOURS=4`, `MAX_REVIEW_ROUNDS=2`                                                       |
+| `backend/pipeline/agents/base.py`              | Extend `AGENT_WRITE_PERMISSIONS` only if new fields are written (none expected)                                                                               |
 
 No DB migration required — `review_requests`, `content_variants`, `aggregated_scores`
 tables and the `awaiting_review` campaign status already exist (migrations 001, 002).
@@ -213,13 +213,13 @@ separate, best-effort step.
 
 ## 12. Config additions (`core/config.py`)
 
-| Setting | Default | Purpose |
-|---|---|---|
-| `AIRTABLE_API_KEY` | `""` | Airtable mirror (no-op when empty) |
-| `AIRTABLE_BASE_ID` | `""` | Airtable base |
-| `AIRTABLE_TABLE` | `"Reviews"` | Airtable table name |
-| `REVIEW_SLA_HOURS` | `4` | SLA deadline offset |
-| `MAX_REVIEW_ROUNDS` | `2` | Rerun cap |
+| Setting             | Default     | Purpose                            |
+| ------------------- | ----------- | ---------------------------------- |
+| `AIRTABLE_API_KEY`  | `""`        | Airtable mirror (no-op when empty) |
+| `AIRTABLE_BASE_ID`  | `""`        | Airtable base                      |
+| `AIRTABLE_TABLE`    | `"Reviews"` | Airtable table name                |
+| `REVIEW_SLA_HOURS`  | `4`         | SLA deadline offset                |
+| `MAX_REVIEW_ROUNDS` | `2`         | Rerun cap                          |
 
 ## 13. Testing
 

@@ -150,6 +150,11 @@ class OmniBrandState(TypedDict):
     current_phase: str
     human_review_requested: bool
     publishing_paused: bool
+    # T11 — human review: reviewer decisions injected on resume (keyed by task_id),
+    # and a counter capping reject→regenerate loops. Both are plain (non-reducer)
+    # channels so aupdate_state replaces rather than appends.
+    review_round: int
+    review_decisions: dict
 
     # Cost tracking
     token_cost_usd: float

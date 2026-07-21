@@ -1,20 +1,34 @@
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from pipeline.agents.aggregation import confidence_aggregator
 from pipeline.agents.content_generator import content_generator
 from pipeline.agents.intake import intake_agent
 from pipeline.agents.personalization import personalization_agent
+from pipeline.agents.review import review_gate, review_router
 from pipeline.agents.stubs import (
-    confidence_aggregator_stub,
     judge_claude_stub,
     judge_gpt4o_stub,
     judge_llama_stub,
     publishing_agent_stub,
     reflexion_router_stub,
-    review_gate_stub,
     translation_agent_stub,
 )
 from pipeline.state import OmniBrandState
+
+
+def post_aggregation_router(state: OmniBrandState) -> str:
+    """Conditional edge after ``confidence_aggregator``.
+
+    Precedence: an in-flight reflexion retry loops back to the judges; otherwise a
+    campaign flagged for human review goes to ``review_gate`` (where the graph
+    pauses via ``interrupt_before``); otherwise it proceeds straight to publishing.
+    """
+    if reflexion_router_stub(state) == "validation_subgraph":
+        return "validation_subgraph"
+    if state.get("human_review_requested"):
+        return "review_gate"
+    return "publishing_agent"
 
 
 def build_graph(
@@ -29,13 +43,14 @@ def build_graph(
     - Generation and personalization prepare candidate variants.
     - Translation fans out into three parallel judges.
     - Judge outputs fan in at confidence aggregation.
-    - Router decides whether to re-enter validation or continue.
-    - Review gate can interrupt for human decisions before publishing.
+    - Router decides: reflexion retry, human review, or straight to publishing.
+    - Review gate interrupts for human decisions; on resume it applies them and
+      either publishes (approved/edited) or loops back to regenerate (rejected).
 
     Args:
         checkpointer: Optional LangGraph checkpointer for persistence.
         interrupt_before_review_gate: If true, graph pauses before review_gate
-            so human review can be injected via checkpoint resume.
+            so a human decision can be injected via checkpoint resume.
 
     Returns:
         CompiledStateGraph ready for ``ainvoke``/``stream`` execution.
@@ -49,8 +64,8 @@ def build_graph(
     g.add_node("judge_claude", judge_claude_stub)
     g.add_node("judge_gpt4o", judge_gpt4o_stub)
     g.add_node("judge_llama", judge_llama_stub)
-    g.add_node("confidence_aggregator", confidence_aggregator_stub)
-    g.add_node("review_gate", review_gate_stub)
+    g.add_node("confidence_aggregator", confidence_aggregator)  # T11 — minimal trigger (was stub)
+    g.add_node("review_gate", review_gate)  # T11 — real review gate (was stub)
     g.add_node("publishing_agent", publishing_agent_stub)
 
     g.set_entry_point("intake_agent")
@@ -64,16 +79,29 @@ def build_graph(
     g.add_edge("judge_gpt4o", "confidence_aggregator")
     g.add_edge("judge_llama", "confidence_aggregator")
 
-    # reflexion_router_stub is a routing function, not a node — it is used
-    # directly as the conditional-edge selector. "validation_subgraph" is a
-    # logical label mapped to the real "judge_claude" node; END proceeds.
+    # After aggregation: reflexion retry (→ judge_claude), human review (→ review_gate),
+    # or straight to publishing. "validation_subgraph" is a logical label for the
+    # reflexion loop back into the judges.
     g.add_conditional_edges(
         "confidence_aggregator",
-        reflexion_router_stub,
-        {"validation_subgraph": "judge_claude", END: "review_gate"},
+        post_aggregation_router,
+        {
+            "validation_subgraph": "judge_claude",
+            "review_gate": "review_gate",
+            "publishing_agent": "publishing_agent",
+        },
     )
 
-    g.add_edge("review_gate", "publishing_agent")
+    # After the (resumed) review gate: regenerate rejected variants (capped) or publish.
+    g.add_conditional_edges(
+        "review_gate",
+        review_router,
+        {
+            "content_generator": "content_generator",
+            "publishing_agent": "publishing_agent",
+        },
+    )
+
     g.add_edge("publishing_agent", END)
 
     compile_kwargs = {"checkpointer": checkpointer} if checkpointer is not None else {}

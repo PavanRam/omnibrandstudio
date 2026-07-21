@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OmniBrand Studio — Request Control Flow (Docker)</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #161d2e; --panel2: #1c2740; --ink: #e6ebf5;
+    --muted: #97a3ba; --line: #2a3550;
+    --http: #4aa3ff; --router: #8b7dff; --graph: #b07cff; --agent: #35c48c;
+    --core: #f6a545; --ext: #8391a8; --accent: #4aa3ff;
+    --code-bg: #0b1020;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.6 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { display: grid; grid-template-columns: 260px 1fr; max-width: 1280px; margin: 0 auto; }
+  /* Sidebar */
+  nav.toc {
+    position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto;
+    padding: 24px 18px; border-right: 1px solid var(--line); background: var(--panel);
+  }
+  nav.toc h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 18px 0 8px; }
+  nav.toc a { display: block; padding: 4px 8px; border-radius: 6px; color: var(--ink); font-size: 13.5px; }
+  nav.toc a:hover { background: var(--panel2); text-decoration: none; }
+  nav.toc .brand { font-weight: 700; font-size: 16px; color: #fff; margin-bottom: 2px; }
+  nav.toc .brand small { display:block; font-weight: 400; color: var(--muted); font-size: 12px; }
+  /* Main */
+  main { padding: 34px 40px 120px; min-width: 0; }
+  h1 { font-size: 28px; margin: 0 0 6px; color: #fff; }
+  h2.sec { font-size: 22px; margin: 46px 0 6px; padding-top: 12px; border-top: 1px solid var(--line); color: #fff; }
+  h3 { font-size: 17px; margin: 26px 0 8px; color: #dfe6f5; }
+  p.lead { color: var(--muted); margin-top: 0; }
+  code, pre, .mono { font-family: "JetBrains Mono", "SF Mono", Consolas, monospace; }
+  code.inline { background: var(--code-bg); padding: 1px 6px; border-radius: 5px; font-size: 13px; color: #cdd8ee; border: 1px solid var(--line); }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; overflow-x: auto; font-size: 12.5px; line-height: 1.55; color: #cdd8ee;
+  }
+  .badge {
+    display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .04em;
+    text-transform: uppercase; padding: 2px 8px; border-radius: 20px; color: #06101f; vertical-align: middle;
+  }
+  .b-http{background:var(--http)} .b-router{background:var(--router)} .b-graph{background:var(--graph)}
+  .b-agent{background:var(--agent)} .b-core{background:var(--core)} .b-ext{background:var(--ext);color:#0b1020}
+  /* Step cards */
+  .step { display: grid; grid-template-columns: 42px 1fr; gap: 14px; margin: 14px 0; }
+  .step .n {
+    width: 42px; height: 42px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: center; font-weight: 700; color: var(--accent); font-size: 16px;
+  }
+  .step .body { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; }
+  .step .body .file { color: var(--muted); font-size: 12.5px; margin: 2px 0 6px; }
+  .step .body .file b { color: #cdd8ee; font-weight: 600; }
+  .step .body h4 { margin: 0; font-size: 15px; color: #fff; }
+  .callout {
+    border-left: 3px solid var(--accent); background: var(--panel); border-radius: 0 8px 8px 0;
+    padding: 10px 16px; margin: 16px 0; color: #d7deee;
+  }
+  .callout.warn { border-left-color: var(--core); }
+  .callout b { color: #fff; }
+  /* Diagram */
+  .diagram { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin: 18px 0; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
+  .node {
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: var(--panel2);
+    font-size: 13px; color: #e6ebf5; white-space: nowrap;
+  }
+  .node .k { display:block; font-size: 11px; color: var(--muted); }
+  .arrow { color: var(--muted); font-weight: 700; }
+  .lane { border:1px dashed var(--line); border-radius:10px; padding:10px 12px; margin:8px 0; }
+  .lane .lane-title { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13.5px; }
+  th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--panel2); color: #dfe6f5; }
+  td.mono, th.mono { font-family: "JetBrains Mono", Consolas, monospace; font-size: 12.5px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 4px; }
+  .pill { display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--muted); }
+  hr.soft { border: none; border-top: 1px solid var(--line); margin: 30px 0; }
+  .small { font-size: 12.5px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<nav class="toc">
+  <div class="brand">OmniBrand Studio<small>Request control flow · local Docker</small></div>
+  <h2>Setup</h2>
+  <a href="#overview">Overview &amp; entrypoints</a>
+  <a href="#boot">Container boot</a>
+  <h2>The two request paths</h2>
+  <a href="#flowA">A · POST /eval/local-eval (sync)</a>
+  <a href="#flowB">B · POST /campaigns (async)</a>
+  <h2>Shared engine</h2>
+  <a href="#pipeline">The LangGraph pipeline</a>
+  <a href="#nodes">Node-by-node</a>
+  <a href="#core">Core utilities</a>
+  <a href="#services">External services</a>
+  <h2>Reference</h2>
+  <a href="#stack">Technology stack</a>
+  <a href="#legend">Layer legend</a>
+</nav>
+
+<main>
+  <h1>How a Postman request flows through the code</h1>
+  <p class="lead">Traced against the current code, running the full stack in Docker
+  (<code class="inline">docker compose up</code>). Every step names the real file &rarr; function
+  and what that block does. Two entrypoints are covered: the synchronous
+  <code class="inline">/eval/local-eval</code> path (what you've been hitting in Postman) and the
+  asynchronous <code class="inline">/campaigns</code> path (API &rarr; Redis &rarr; worker).</p>
+
+  <div class="legend" id="legend-top">
+    <span class="pill"><span class="badge b-http">HTTP</span> middleware / ASGI</span>
+    <span class="pill"><span class="badge b-router">Router</span> FastAPI handler</span>
+    <span class="pill"><span class="badge b-graph">Graph</span> LangGraph orchestration</span>
+    <span class="pill"><span class="badge b-agent">Agent</span> pipeline node</span>
+    <span class="pill"><span class="badge b-core">Core</span> shared utility</span>
+    <span class="pill"><span class="badge b-ext">Ext</span> container / service</span>
+  </div>
+
+  <!-- OVERVIEW -->
+  <h2 class="sec" id="overview">Overview &amp; entrypoints</h2>
+  <p>In Docker, two containers run the same image with different commands:
+  the <b>api</b> container runs <code class="inline">python -m uvicorn api.main:app</code> and the
+  <b>worker</b> container runs <code class="inline">python -m worker.main</code>. They share
+  Postgres, Redis, the LiteLLM proxy, and Qdrant over the compose network.</p>
+
+  <div class="diagram">
+    <div class="row">
+      <div class="node">Postman <span class="k">HTTP :8000</span></div>
+      <span class="arrow">&rarr;</span>
+      <div class="node">api container <span class="k">uvicorn / FastAPI</span></div>
+      <span class="arrow">&rarr;</span>
+      <div class="node">LangGraph pipeline <span class="k">in-process</span></div>
+      <span class="arrow">→ Flow A</span>
+    </div>
+    <div class="row">
+      <div class="node">api container <span class="k">POST /campaigns</span></div>
+      <span class="arrow">&rarr;</span>
+      <div class="node">Redis list <span class="k">campaigns:queue</span></div>
+      <span class="arrow">&rarr;</span>
+      <div class="node">worker container <span class="k">BLPOP loop</span></div>
+      <span class="arrow">&rarr;</span>
+      <div class="node">LangGraph pipeline <span class="k">in worker</span></div>
+      <span class="arrow">→ Flow B</span>
+    </div>
+  </div>
+
+  <table>
+    <tr><th>Entrypoint</th><th>Where the graph runs</th><th>Checkpointer</th><th>Review interrupt</th><th>When</th></tr>
+    <tr>
+      <td class="mono">POST /eval/local-eval</td>
+      <td>Inside the <b>api</b> request (synchronous)</td>
+      <td>Postgres (only if not <code class="inline">LOCAL_DEV_MODE</code>)</td>
+      <td>Disabled (<code class="inline">interrupt_before_review_gate=False</code>)</td>
+      <td>Only registered when <code class="inline">ENABLE_LOCAL_EVAL=1</code> &amp; not prod</td>
+    </tr>
+    <tr>
+      <td class="mono">POST /campaigns</td>
+      <td>In the <b>worker</b> (asynchronous)</td>
+      <td>Postgres (always)</td>
+      <td>Enabled (pauses before <code class="inline">review_gate</code>)</td>
+      <td>Always registered</td>
+    </tr>
+  </table>
+
+  <!-- BOOT -->
+  <h2 class="sec" id="boot">Container boot (what exists before the request)</h2>
+
+  <div class="step">
+    <div class="n">A</div>
+    <div class="body">
+      <h4><span class="badge b-http">HTTP</span> api container starts</h4>
+      <div class="file"><b>backend/api/main.py</b> &rarr; <code>lifespan()</code></div>
+      Uvicorn imports <code class="inline">app = FastAPI(lifespan=lifespan)</code>. On startup the lifespan
+      runs <code class="inline">setup_observability("omnibrand-api")</code> (OTEL; a no-op in local-dev),
+      <code class="inline">instrument_fastapi(app)</code>, then <code class="inline">init_db()</code> (asyncpg pool) and
+      <code class="inline">init_redis()</code>. Routers are mounted: <code class="inline">health, auth, campaigns, orgs,
+      knowledge</code>, plus <code class="inline">evaluation</code> only when <code class="inline">should_enable_local_eval()</code>
+      is true (<code class="inline">ENABLE_LOCAL_EVAL</code> set &amp; <code class="inline">APP_ENV != production</code>).
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="n">B</div>
+    <div class="body">
+      <h4><span class="badge b-ext">Ext</span> worker container starts</h4>
+      <div class="file"><b>backend/worker/main.py</b> &rarr; <code>__main__</code> &rarr; <code>main()</code></div>
+      Sets the Windows/psycopg event-loop policy, calls <code class="inline">setup_observability("omnibrand-worker")</code>,
+      starts a Prometheus metrics server, then <code class="inline">asyncio.run(main())</code> which does
+      <code class="inline">init_db()</code> + <code class="inline">init_redis()</code> and enters an infinite
+      <code class="inline">redis.blpop("campaigns:queue", timeout=5)</code> loop, waiting for work.
+    </div>
+  </div>
+
+  <!-- FLOW A -->
+  <h2 class="sec" id="flowA">Flow A — <code>POST /eval/local-eval</code> (synchronous)</h2>
+  <p class="lead">The whole pipeline runs inside the single HTTP request, in the api container. This is
+  the path your Postman call exercises.</p>
+
+  <div class="step"><div class="n">1</div><div class="body">
+    <h4><span class="badge b-http">HTTP</span> Request enters the ASGI middleware stack</h4>
+    <div class="file"><b>api/main.py</b> (metrics) &middot; <b>api/middleware/request_id.py</b> &middot; CORS</div>
+    Three middlewares wrap every request. <code>RequestIDMiddleware.__call__</code> reads/creates an
+    <code class="inline">X-Request-ID</code>, stores it at <code class="inline">request.state.request_id</code>, and binds it into
+    structlog context-vars (so every subsequent log line carries <code class="inline">request_id=</code>). The inline
+    <code>_record_http_metrics</code> middleware times the request and increments Prometheus counters. CORS adds headers.
+  </div></div>
+
+  <div class="step"><div class="n">2</div><div class="body">
+    <h4><span class="badge b-router">Router</span> FastAPI validates the body and calls the handler</h4>
+    <div class="file"><b>api/routers/evaluation.py</b> &rarr; <code>local_eval(body: CreateCampaignRequest, request)</code></div>
+    FastAPI parses the JSON into <code>CreateCampaignRequest</code> (Pydantic) — a bad body returns
+    <code class="inline">422</code> before your code runs. The handler reads <code class="inline">request.state.request_id</code> and mints
+    <code class="inline">campaign_id = new_campaign_id()</code> (UUIDv7, <b>core/ids.py</b>).
+  </div></div>
+
+  <div class="step"><div class="n">3</div><div class="body">
+    <h4><span class="badge b-core">Core</span> Build the shared state object</h4>
+    <div class="file"><b>pipeline/initial_state.py</b> &rarr; <code>build_initial_state(...)</code></div>
+    Produces an <code>OmniBrandState</code> TypedDict (<b>pipeline/state.py</b>): the <code>brief</code> becomes a
+    <code>CampaignBrief</code>, every accumulator list (<code>variants</code>, <code>brand_scores</code>,
+    <code>review_requests</code>&hellip;) starts empty, <code>current_phase="starting"</code>. This dict is the single
+    contract passed to — and mutated by — every node.
+  </div></div>
+
+  <div class="step"><div class="n">4</div><div class="body">
+    <h4><span class="badge b-graph">Graph</span> Build &amp; invoke the graph</h4>
+    <div class="file"><b>pipeline/graph.py</b> &rarr; <code>build_graph(...)</code> &rarr; <code>graph.ainvoke(state, config)</code></div>
+    <code>local_eval</code> branches on <code class="inline">settings.LOCAL_DEV_MODE</code>. In Docker it's <b>unset</b>, so it
+    takes the <code class="inline">else</code> branch: open an <code>AsyncPostgresSaver</code> checkpointer, call
+    <code class="inline">checkpointer.setup()</code>, then <code class="inline">build_graph(checkpointer, interrupt_before_review_gate=False)</code>.
+    Note <b>the review interrupt is off here</b>, so local-eval never pauses. <code class="inline">await graph.ainvoke(state, {"configurable": {"thread_id": campaign_id}})</code> runs the pipeline (see
+    <a href="#pipeline">The LangGraph pipeline</a>).
+  </div></div>
+
+  <div class="step"><div class="n">5</div><div class="body">
+    <h4><span class="badge b-router">Router</span> Shape and return the response</h4>
+    <div class="file"><b>api/routers/evaluation.py</b> (end of <code>local_eval</code>)</div>
+    On success it logs <code class="inline">local_eval_completed</code> and returns
+    <code class="inline">{campaign_id, status:"completed", elapsed_ms, final_state}</code> — the entire terminal
+    <code>OmniBrandState</code>. Any exception is caught and re-raised as an HTTP <code class="inline">500</code> with the error.
+    The response travels back out through the middleware, which appends the <code class="inline">X-Request-ID</code> header.
+  </div></div>
+
+  <!-- FLOW B -->
+  <h2 class="sec" id="flowB">Flow B — <code>POST /campaigns</code> (asynchronous)</h2>
+  <p class="lead">The api container only <em>accepts and queues</em> the work; the <b>worker</b> container
+  runs the graph. This is the production-like path, and the one where human review can pause the pipeline.</p>
+
+  <div class="step"><div class="n">1</div><div class="body">
+    <h4><span class="badge b-router">Router</span> Persist the campaign, then enqueue</h4>
+    <div class="file"><b>api/routers/campaigns.py</b> &rarr; <code>create_campaign(body, request)</code></div>
+    After the same middleware, this handler: normalizes <code>org_id</code>/<code>brand_id</code> (UUID, else
+    <code class="inline">422</code>); <code class="inline">SELECT</code>s the <code>brands</code> row (<code class="inline">404</code> if missing, <code class="inline">403</code> if it
+    belongs to another org); <code class="inline">INSERT</code>s a <code>campaigns</code> row with <code class="inline">status='queued'</code>;
+    injects the OpenTelemetry trace context into the task; and
+    <code class="inline">redis.lpush("campaigns:queue", task)</code>. It returns <code class="inline">202 Accepted</code> with a
+    <code class="inline">poll_url</code> — <b>the graph has not run yet.</b>
+  </div></div>
+
+  <div class="step"><div class="n">2</div><div class="body">
+    <h4><span class="badge b-ext">Ext</span> Worker pops the task</h4>
+    <div class="file"><b>worker/main.py</b> &rarr; <code>main()</code> loop &rarr; <code>redis.blpop(...)</code></div>
+    The worker's blocking loop returns the JSON payload and calls <code>process_campaign(task)</code>. If that
+    raises, the task is pushed to the <code class="inline">campaigns:dead_letter</code> list and a DLQ metric increments.
+  </div></div>
+
+  <div class="step"><div class="n">3</div><div class="body">
+    <h4><span class="badge b-ext">Ext</span> process_campaign: rebuild state &amp; mark running</h4>
+    <div class="file"><b>worker/main.py</b> &rarr; <code>process_campaign(task_payload)</code></div>
+    Re-validates the <code>brief</code> into <code>CreateCampaignRequest</code>, calls <code>build_initial_state(...)</code>
+    (same object as Flow A), re-attaches the OTEL trace context, and <code class="inline">UPDATE campaigns SET status='running'</code>
+    so the poll endpoint reflects progress.
+  </div></div>
+
+  <div class="step"><div class="n">4</div><div class="body">
+    <h4><span class="badge b-graph">Graph</span> Run with the review interrupt ON</h4>
+    <div class="file"><b>worker/main.py</b> &rarr; <code>AsyncPostgresSaver</code> + <code>build_graph(checkpointer)</code></div>
+    Opens the Postgres checkpointer and calls <code class="inline">build_graph(checkpointer)</code> — here
+    <code class="inline">interrupt_before_review_gate</code> defaults to <b>True</b>, so
+    <code class="inline">interrupt_before=["review_gate"]</code> is compiled in. <code class="inline">await graph.ainvoke(initial_state, config)</code>
+    runs the pipeline and, if it reaches the review gate, <b>pauses and returns the checkpointed state</b> — which
+    survives a worker restart because it lives in Postgres.
+  </div></div>
+
+  <div class="step"><div class="n">5</div><div class="body">
+    <h4><span class="badge b-ext">Ext</span> Decide the campaign's final status</h4>
+    <div class="file"><b>worker/main.py</b> (after <code>ainvoke</code>)</div>
+    From the returned state: <code class="inline">current_phase=="published"</code> &rarr; <code class="inline">published</code> (done);
+    any <code>errors</code> / budget-fail / invalid-brief &rarr; <code class="inline">failed</code>; otherwise the run paused &rarr;
+    <code class="inline">awaiting_review</code>. It writes that status back to the <code>campaigns</code> row. Clients learn the
+    outcome via <code class="inline">GET /campaigns/{id}/status</code> and <code class="inline">GET /campaigns/{id}</code> (which also
+    reconstructs an in-memory trace from the checkpointer history).
+  </div></div>
+
+  <div class="callout"><b>Where they converge:</b> both flows call the identical
+  <code class="inline">build_initial_state()</code> &rarr; <code class="inline">build_graph()</code> &rarr; <code class="inline">graph.ainvoke()</code>.
+  Everything below the graph is shared; only <em>who</em> runs it (api vs. worker) and <em>whether the review
+  interrupt is armed</em> differ.</div>
+
+  <!-- PIPELINE -->
+  <h2 class="sec" id="pipeline">The LangGraph pipeline (<code>graph.ainvoke</code>)</h2>
+  <div class="file small"><b>pipeline/graph.py</b> &rarr; <code>build_graph()</code> wires the nodes and edges below.</div>
+
+  <div class="diagram">
+    <div class="row">
+      <div class="node">intake_agent</div><span class="arrow">&rarr;</span>
+      <div class="node">content_generator</div><span class="arrow">&rarr;</span>
+      <div class="node">personalization_agent</div><span class="arrow">&rarr;</span>
+      <div class="node">translation_agent</div>
+    </div>
+    <div class="lane">
+      <div class="lane-title">fan-out (parallel super-step) &rarr; fan-in via <code>operator.add</code></div>
+      <div class="row">
+        <div class="node">judge_claude</div>
+        <div class="node">judge_gpt4o</div>
+        <div class="node">judge_llama</div>
+        <span class="arrow">&rarr;</span>
+        <div class="node">confidence_aggregator</div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="node">confidence_aggregator</div>
+      <span class="arrow">— reflexion_router —&rarr;</span>
+      <div class="node">validation_subgraph<span class="k">loop &rarr; judge_claude</span></div>
+      <span class="arrow">| END &rarr;</span>
+      <div class="node">review_gate</div>
+      <span class="arrow">&rarr;</span>
+      <div class="node">publishing_agent</div>
+      <span class="arrow">&rarr; END</span>
+    </div>
+    <div class="small" style="margin-top:8px">In Flow B the graph <b>pauses before <code>review_gate</code></b> (interrupt). In Flow A that interrupt is off, so <code>review_gate</code> runs straight through.</div>
+  </div>
+
+  <div class="callout"><b>Two invariants that explain the mechanics:</b>
+  <br>&bull; The accumulator fields (<code class="inline">variants</code>, <code class="inline">brand_scores</code>&hellip;) are
+  <code class="inline">Annotated[list, operator.add]</code>, so the three parallel judges <em>append</em> instead of
+  overwriting each other.
+  <br>&bull; Every node body is wrapped by <code class="inline">safe_agent_run()</code>, so a node that throws returns an
+  <code class="inline">errors</code> entry instead of crashing the whole graph.</div>
+
+  <!-- NODES -->
+  <h2 class="sec" id="nodes">Node-by-node: what each block does</h2>
+  <table>
+    <tr><th>Node</th><th class="mono">file</th><th>What it does</th><th>State it writes</th></tr>
+    <tr>
+      <td><span class="badge b-agent">Agent</span> intake_agent <span class="small">(real)</span></td>
+      <td class="mono">agents/intake.py</td>
+      <td>Screens the brief for prompt-injection, validates required fields, runs a deterministic budget check, builds the <code>CampaignBrief</code>, and fans out one <code>GenerationTask</code> per locale&times;channel&times;segment. No LLM call.</td>
+      <td class="mono">brief_valid, tasks, budget_check_passed, current_phase</td>
+    </tr>
+    <tr>
+      <td><span class="badge b-agent">Agent</span> content_generator <span class="small">(real)</span></td>
+      <td class="mono">agents/content_generator.py</td>
+      <td>For each task: pulls few-shot examples (<code>get_examples</code> &rarr; Qdrant, best-effort), renders the channel prompt, calls <code>traced_llm_call</code>, checks channel constraints and retries up to <code>MAX_RETRIES</code>. Emits one <code>ContentVariant</code> per task.</td>
+      <td class="mono">variants, failed_task_ids, current_phase</td>
+    </tr>
+    <tr>
+      <td><span class="badge b-agent">Agent</span> personalization_agent <span class="small">(real)</span></td>
+      <td class="mono">agents/personalization.py</td>
+      <td>For each generated variant: scrubs PII, loads the segment profile (tone/reading-level/CTA), calls <code>traced_llm_call</code>, and writes <code>personalized_content</code> back into the variant in place.</td>
+      <td class="mono">variants (in place), token_cost_usd</td>
+    </tr>
+    <tr>
+      <td><span class="badge b-agent">Agent</span> translation_agent <span class="small">(stub)</span></td>
+      <td class="mono">agents/stubs.py</td>
+      <td>Placeholder — logs <code>agent_stub</code> and returns empty. Real translation is a later task.</td>
+      <td class="mono">— </td>
+    </tr>
+    <tr>
+      <td><span class="badge b-agent">Agent</span> judge_claude / gpt4o / llama <span class="small">(stub)</span></td>
+      <td class="mono">agents/stubs.py</td>
+      <td>Run in parallel (fan-out). Currently return <code>brand_scores=[]</code>; real 3-judge scoring is T8.</td>
+      <td class="mono">brand_scores (append)</td>
+    </tr>
+    <tr>
+      <td><span class="badge b-agent">Agent</span> confidence_aggregator <span class="small">(stub)</span></td>
+      <td class="mono">agents/stubs.py</td>
+      <td>Fan-in point. Currently returns empty scores and <code>human_review_requested=False</code>; T9/T11 replace this to compute routing and flag human review.</td>
+      <td class="mono">aggregated_scores, review_requests, human_review_requested</td>
+    </tr>
+    <tr>
+      <td><span class="badge b-graph">Graph</span> reflexion_router <span class="small">(edge fn)</span></td>
+      <td class="mono">agents/stubs.py</td>
+      <td>A conditional-edge <em>function</em>, not a node. Returns <code>validation_subgraph</code> (loop back to judges after a reflexion retry) or <code>END</code> (proceed to <code>review_gate</code>).</td>
+      <td class="mono">— (routing only)</td>
+    </tr>
+    <tr>
+      <td><span class="badge b-agent">Agent</span> review_gate <span class="small">(stub)</span></td>
+      <td class="mono">agents/stubs.py</td>
+      <td>Human-review gate. In Flow B the graph interrupts <em>before</em> this node; today the node itself is a no-op passthrough (T11 makes it apply the reviewer decision).</td>
+      <td class="mono">variants, current_phase</td>
+    </tr>
+    <tr>
+      <td><span class="badge b-agent">Agent</span> publishing_agent <span class="small">(stub)</span></td>
+      <td class="mono">agents/stubs.py</td>
+      <td>Terminal node. Sets <code>current_phase="published"</code>; real channel adapters (LinkedIn, Email&hellip;) are T12.</td>
+      <td class="mono">publication_receipts, variants, current_phase</td>
+    </tr>
+  </table>
+
+  <!-- CORE -->
+  <h2 class="sec" id="core">Core utilities every node leans on</h2>
+
+  <div class="step"><div class="n">i</div><div class="body">
+    <h4><span class="badge b-core">Core</span> safe_agent_run — the crash barrier</h4>
+    <div class="file"><b>agents/base.py</b> &rarr; <code>safe_agent_run(agent_fn, state, task_id=None)</code></div>
+    Each node is written as <code class="inline">return await safe_agent_run(_impl, state)</code>. It runs the inner
+    <code>_impl</code>, returns its partial-state dict on success, and on <em>any</em> exception logs
+    <code class="inline">agent_failed</code> and returns <code class="inline">{"errors": [&hellip;]}</code>. LangGraph merges that in and keeps
+    going — which is why a failing agent degrades the run instead of aborting it.
+  </div></div>
+
+  <div class="step"><div class="n">ii</div><div class="body">
+    <h4><span class="badge b-core">Core</span> traced_llm_call — the single LLM chokepoint</h4>
+    <div class="file"><b>agents/base.py</b> &rarr; <code>traced_llm_call(model, messages, task, state)</code></div>
+    Every model call goes through here. It opens a Langfuse trace + OTEL span, then
+    <code class="inline">httpx.post(settings.LITELLM_BASE_URL + "/chat/completions", ...)</code> — in Docker that URL is
+    <code class="inline">http://litellm:4000</code>. On an HTTP error it logs <code class="inline">llm_call_http_failed_using_fallback</code> and
+    substitutes deterministic fallback content instead of raising. It records Prometheus token/cost/latency
+    metrics and best-effort writes a <code>campaign_cost_attribution</code> row (wrapped in try/except so a
+    bookkeeping failure never fails the agent). Returns <code class="inline">(content, usage)</code>.
+  </div></div>
+
+  <div class="callout warn"><b>Model aliases, not model names.</b> Nodes pass an alias such as
+  <code class="inline">gen-free</code>; the LiteLLM proxy maps it (via <b>infra/litellm/litellm_config.yaml</b>) to a concrete
+  model — currently <code class="inline">groq/llama-3.3-70b-versatile</code>. That indirection is why a decommissioned model
+  is a one-line config fix, not a code change.</div>
+
+  <!-- SERVICES -->
+  <h2 class="sec" id="services">External services in the compose network</h2>
+  <table>
+    <tr><th class="mono">service : port</th><th>Used by</th><th>For</th></tr>
+    <tr><td class="mono">postgres : 5432</td><td>api, worker</td><td><code>campaigns</code> &amp; domain tables, LangGraph checkpoints, cost attribution</td></tr>
+    <tr><td class="mono">redis : 6379</td><td>api (push), worker (pop)</td><td><code>campaigns:queue</code>, DLQ, LiteLLM response cache</td></tr>
+    <tr><td class="mono">litellm : 4000</td><td>traced_llm_call</td><td>Proxy + fallback chains to Groq / Anthropic / OpenAI</td></tr>
+    <tr><td class="mono">ChromaDB / Pinecone</td><td>content_generator, intake</td><td>Brand-guide retrieval (few-shot examples). ChromaDB is <b>embedded</b> (persisted to <code class="inline">CHROMA_PERSIST_PATH</code> — <em>not</em> a separate container); Pinecone is an optional managed cloud store</td></tr>
+    <tr><td class="mono">langfuse : 3001</td><td>traced_llm_call</td><td>LLM tracing (skipped when keys absent)</td></tr>
+    <tr><td class="mono">jaeger : 4317</td><td>OTEL exporters</td><td>Distributed traces (api &harr; worker via injected context)</td></tr>
+    <tr><td class="mono">prometheus / grafana</td><td>both</td><td>HTTP, LLM, campaign metrics</td></tr>
+  </table>
+
+  <!-- STACK -->
+  <h2 class="sec" id="stack">Technology stack &amp; what each does</h2>
+  <p class="lead">Everything the project is built, tested, and run with — grouped by role, with the
+  concrete job each piece does in OmniBrand. Sources: <b>pyproject.toml</b>, <b>docker-compose.yml</b>,
+  <b>frontend/package.json</b>.</p>
+
+  <div class="callout"><b>LiteLLM — the model gateway.</b> Every <code class="inline">traced_llm_call</code> POSTs to the
+  LiteLLM proxy (<code class="inline">litellm:4000</code>) rather than a provider directly. It maps <em>aliases</em>
+  (<code class="inline">gen-free</code>, <code class="inline">judge-1</code>, <code class="inline">util-fast</code>&hellip;) to concrete models
+  (<b>infra/litellm/litellm_config.yaml</b>), applies fallback chains + retry policy, caches responses in Redis,
+  and enforces a spend budget. That indirection is why agent code never names a provider and a model swap is a
+  one-line config change.</div>
+
+  <div class="callout"><b>Langfuse — LLM observability.</b> <code class="inline">traced_llm_call</code> opens a Langfuse
+  trace per model call, recording the prompt, resolved model, output, token counts and cost, grouped under the
+  <code class="inline">campaign_id</code> as a session. It's how you inspect what each agent actually sent and received.
+  It degrades gracefully (logs <code class="inline">langfuse_disabled_missing_keys</code>) when keys aren't configured.</div>
+
+  <h3>Language &amp; packaging</h3>
+  <table>
+    <tr><th>Tech</th><th>Role in the app</th></tr>
+    <tr><td><b>Python 3.12</b></td><td>Backend language &amp; runtime (<code class="inline">requires-python &gt;=3.12</code>)</td></tr>
+    <tr><td><b>uv</b></td><td>Package manager, virtualenv &amp; task runner — the only sanctioned installer (<code class="inline">uv sync</code> / <code class="inline">uv run</code>)</td></tr>
+    <tr><td>hatchling</td><td>Build backend for the <code class="inline">omnibrand</code> package</td></tr>
+  </table>
+
+  <h3>Web / API</h3>
+  <table>
+    <tr><th>Tech</th><th>Role in the app</th></tr>
+    <tr><td><b>FastAPI</b></td><td>HTTP API framework — routers, dependency injection, OpenAPI docs at <code class="inline">/docs</code></td></tr>
+    <tr><td><b>Uvicorn</b></td><td>ASGI server that runs <code class="inline">api.main:app</code></td></tr>
+    <tr><td>Starlette</td><td>ASGI foundation under FastAPI — the middleware stack (e.g. <code class="inline">RequestIDMiddleware</code>), request/response</td></tr>
+    <tr><td><b>Pydantic v2</b></td><td>Request/response schemas &amp; validation (<code class="inline">CreateCampaignRequest</code>, <code class="inline">ReviewDecision</code>)</td></tr>
+    <tr><td>pydantic-settings</td><td>Typed configuration from env / <code class="inline">.env</code> (the <code class="inline">Settings</code> singleton)</td></tr>
+    <tr><td>python-multipart</td><td>Multipart form + file-upload parsing</td></tr>
+  </table>
+
+  <h3>AI orchestration &amp; LLM providers</h3>
+  <table>
+    <tr><th>Tech</th><th>Role in the app</th></tr>
+    <tr><td><b>LangGraph</b></td><td>The agentic pipeline itself — graph of nodes/edges, shared <code class="inline">OmniBrandState</code>, parallel fan-out, conditional routing, and the review <em>interrupt</em></td></tr>
+    <tr><td>langgraph-checkpoint-postgres</td><td>Durable checkpointing in Postgres — pause/resume the graph; state survives worker restarts</td></tr>
+    <tr><td>langchain-core</td><td>Core message/prompt primitives LangGraph builds on</td></tr>
+    <tr><td><b>LiteLLM</b></td><td>Model gateway/proxy (see callout) — alias&rarr;model mapping, fallbacks, Redis cache, budget</td></tr>
+    <tr><td>OpenAI SDK</td><td>GPT models behind the <code class="inline">gen-premium</code> / <code class="inline">judge-2</code> / <code class="inline">util-fast</code> aliases</td></tr>
+    <tr><td>Anthropic SDK</td><td>Claude models behind <code class="inline">gen-premium</code> / <code class="inline">judge-1</code> / <code class="inline">eval-model</code></td></tr>
+    <tr><td>Groq</td><td>Free-tier provider via LiteLLM (<code class="inline">gen-free</code> &rarr; <code class="inline">llama-3.3-70b-versatile</code>)</td></tr>
+    <tr><td>mcp</td><td>Model Context Protocol client/server integration</td></tr>
+  </table>
+
+  <h3>Retrieval, embeddings &amp; ML</h3>
+  <table>
+    <tr><th>Tech</th><th>Role in the app</th></tr>
+    <tr><td><b>ChromaDB</b></td><td>Embedded vector store for brand-guide chunks (persisted to <code class="inline">CHROMA_PERSIST_PATH</code>)</td></tr>
+    <tr><td>Pinecone</td><td>Optional managed/cloud vector store</td></tr>
+    <tr><td>sentence-transformers</td><td>Dense semantic embeddings for retrieval</td></tr>
+    <tr><td>rank-bm25</td><td>Lexical BM25 scoring &rarr; hybrid (dense + sparse) search</td></tr>
+    <tr><td>scikit-learn</td><td>ML utilities — e.g. K-Means segment/persona clustering feeding personalization</td></tr>
+    <tr><td>nltk</td><td>NLP text processing / tokenization</td></tr>
+    <tr><td>pypdf, python-docx</td><td>Ingest brand-guide documents (PDF / DOCX)</td></tr>
+    <tr><td>pandas</td><td>Tabular data handling</td></tr>
+  </table>
+
+  <h3>Data stores &amp; migrations</h3>
+  <table>
+    <tr><th>Tech</th><th>Role in the app</th></tr>
+    <tr><td><b>PostgreSQL 16</b></td><td>Primary DB — campaigns, orgs/brands, content_variants, review_requests, audit_log, cost attribution, and the LangGraph checkpoints</td></tr>
+    <tr><td>SQLAlchemy 2 (async)</td><td>Async DB access layer for app queries</td></tr>
+    <tr><td>asyncpg</td><td>Async Postgres driver used by the application</td></tr>
+    <tr><td>psycopg 3</td><td>Postgres driver required by the LangGraph checkpointer</td></tr>
+    <tr><td>Alembic</td><td>Schema migrations (<code class="inline">alembic/versions/001, 002</code>)</td></tr>
+    <tr><td><b>Redis 7</b></td><td>Task queue (<code class="inline">campaigns:queue</code>), dead-letter queue, and the LiteLLM response cache</td></tr>
+  </table>
+
+  <h3>Security &amp; PII</h3>
+  <table>
+    <tr><th>Tech</th><th>Role in the app</th></tr>
+    <tr><td><b>Presidio</b> (analyzer + anonymizer)</td><td>PII detection &amp; redaction — scrubs content before it enters prompts (personalization agent)</td></tr>
+    <tr><td>python-jose</td><td>Token (JWT) decode</td></tr>
+    <tr><td>bcrypt, passlib</td><td>Password / secret hashing (users, API keys)</td></tr>
+  </table>
+
+  <h3>Observability</h3>
+  <table>
+    <tr><th>Tech</th><th>Role in the app</th></tr>
+    <tr><td><b>Langfuse</b></td><td>Per-call LLM tracing — prompt/output/tokens/cost grouped by campaign (see callout)</td></tr>
+    <tr><td><b>OpenTelemetry</b> (SDK + OTLP + auto-instrumentation)</td><td>Distributed tracing across FastAPI / httpx / SQLAlchemy / Redis; context propagated api&rarr;worker</td></tr>
+    <tr><td>Jaeger</td><td>Trace collector + UI (OTLP <code class="inline">:4317</code>, UI <code class="inline">:16686</code>)</td></tr>
+    <tr><td>Prometheus</td><td>Metrics store — HTTP, LLM tokens/cost, campaign lifecycle, queue depth</td></tr>
+    <tr><td>Grafana</td><td>Metrics dashboards</td></tr>
+    <tr><td><b>structlog</b></td><td>Structured logging — the <code class="inline">agent_start</code>/<code class="inline">agent_end</code> lines and per-request <code class="inline">request_id</code> binding</td></tr>
+    <tr><td>redis-exporter, postgres-exporter</td><td>Feed Redis/Postgres internals to Prometheus</td></tr>
+  </table>
+
+  <h3>Testing &amp; code quality <span class="small">(dev-only)</span></h3>
+  <table>
+    <tr><th>Tech</th><th>Role in the app</th></tr>
+    <tr><td><b>pytest</b> + pytest-asyncio</td><td>Test runner with async support (<code class="inline">asyncio_mode=auto</code>, tests in <code class="inline">backend/tests</code>)</td></tr>
+    <tr><td>pytest-httpx</td><td>Mocks httpx — stubs LiteLLM calls in tests without a live proxy</td></tr>
+    <tr><td><b>ruff</b></td><td>Linter + formatter (rules E, F, I, UP, B, SIM; line length 100)</td></tr>
+    <tr><td><b>mypy</b></td><td>Strict static type checking</td></tr>
+    <tr><td>types-redis, types-passlib</td><td>Type stubs for third-party libs</td></tr>
+  </table>
+
+  <h3>Dev &amp; ops tooling</h3>
+  <table>
+    <tr><th>Tech</th><th>Role in the app</th></tr>
+    <tr><td><b>Docker + Compose</b></td><td>Full local stack (13 services) in one command</td></tr>
+    <tr><td>Makefile</td><td>Task shortcuts (<code class="inline">make up / run / worker / migrate / test / lint</code>)</td></tr>
+    <tr><td>honcho</td><td>Procfile dev runner — web + worker together (<code class="inline">make dev</code>)</td></tr>
+    <tr><td>MinIO <span class="small">(dev)</span></td><td>S3-compatible object storage for brand assets</td></tr>
+    <tr><td>Mailhog <span class="small">(dev)</span></td><td>Captures outbound email for inspection (UI <code class="inline">:8025</code>)</td></tr>
+  </table>
+
+  <h3>Frontend</h3>
+  <div class="file small">A separate <b>frontend/</b> app — "a Firefly-style generative AI studio UI".</div>
+  <table>
+    <tr><th>Tech</th><th>Role in the app</th></tr>
+    <tr><td><b>Astro 7</b></td><td>Site/app framework (dev server, build)</td></tr>
+    <tr><td><b>React 19</b></td><td>UI components (Astro islands) — the campaign UI</td></tr>
+    <tr><td>Vite</td><td>Build / dev tooling (via Astro + <code class="inline">@tailwindcss/vite</code>)</td></tr>
+    <tr><td>Tailwind CSS 4</td><td>Styling</td></tr>
+    <tr><td>lucide-react</td><td>Icon set</td></tr>
+  </table>
+
+  <hr class="soft" />
+  <p class="small">Generated as a code walkthrough of the current working tree. Stub nodes
+  (translation, judges, aggregator, review_gate, publishing) are placeholders being replaced by tasks
+  T8–T12; the real intake, content_generator, and personalization agents already run end-to-end.</p>
+</main>
+</div>
+</body>
+</html>

@@ -1,14 +1,14 @@
 import time
 from contextlib import asynccontextmanager
 
+from core.config import settings
+from core.metrics import REGISTRY, http_request_duration, http_requests_total
+from core.tracing import instrument_fastapi, setup_observability
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from api.middleware.request_id import RequestIDMiddleware
-from core.config import settings
-from core.metrics import REGISTRY, http_request_duration, http_requests_total
-from core.tracing import instrument_fastapi, setup_observability
 
 
 @asynccontextmanager
@@ -76,11 +76,12 @@ async def metrics() -> Response:
 
 # ── Routers ──────────────────────────────────────────────────────────────────────────
 
-from api.routers import auth, campaigns, health, knowledge, orgs  # noqa: E402
+from api.routers import auth, campaigns, health, knowledge, orgs, reviews  # noqa: E402
 
 app.include_router(health.router)
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(campaigns.router, prefix="/campaigns", tags=["campaigns"])
+app.include_router(reviews.router, prefix="/reviews", tags=["reviews"])
 app.include_router(orgs.router, prefix="/orgs", tags=["orgs"])
 app.include_router(knowledge.router, prefix="/knowledge", tags=["knowledge"])
 

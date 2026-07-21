@@ -5,11 +5,6 @@ from datetime import UTC, datetime
 from urllib.parse import urlsplit, urlunsplit
 
 import structlog
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from pydantic import ValidationError
-from prometheus_client import start_http_server as _prom_start_http_server
-from sqlalchemy import text
-
 from core.config import settings
 from core.metrics import (
     REGISTRY,
@@ -21,9 +16,14 @@ from core.metrics import (
 )
 from core.redis import close_redis, get_redis, init_redis
 from core.tracing import setup_observability
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pipeline.graph import build_graph
 from pipeline.initial_state import build_initial_state
 from pipeline.schemas import CreateCampaignRequest
+from prometheus_client import start_http_server as _prom_start_http_server
+from pydantic import ValidationError
+from services import review_service
+from sqlalchemy import text
 
 log = structlog.get_logger()
 
@@ -91,8 +91,9 @@ async def process_campaign(task_payload: dict) -> None:
     )
 
     # Propagate W3C trace context injected by the API at enqueue time
+    from opentelemetry import context as otel_context
+    from opentelemetry import trace
     from opentelemetry.propagate import extract
-    from opentelemetry import trace, context as otel_context
     ctx = extract(task_payload.get("_trace_context", {}))
     token = otel_context.attach(ctx)
 
@@ -136,10 +137,18 @@ async def process_campaign(task_payload: dict) -> None:
                 graph = build_graph(checkpointer)
                 config = {"configurable": {"thread_id": campaign_id}}
                 final_state = await graph.ainvoke(initial_state, config=config)
+                snapshot = await graph.aget_state(config)
+                paused_for_review = "review_gate" in (snapshot.next or ())
 
         final_status = "running"
         mark_completed = False
-        if isinstance(final_state, dict):
+        if paused_for_review:
+            # T11: the graph paused at the review gate. Persist the review batch
+            # (variants + aggregated_scores + review_requests); persist_review_batch
+            # also sets campaigns.status='awaiting_review'.
+            await review_service.persist_review_batch(final_state)
+            final_status = "awaiting_review"
+        elif isinstance(final_state, dict):
             current_phase = str(final_state.get("current_phase") or "").lower()
             has_errors = bool(final_state.get("errors"))
             budget_failed = final_state.get("budget_check_passed") is False
@@ -152,7 +161,6 @@ async def process_campaign(task_payload: dict) -> None:
                 final_status = "failed"
                 mark_completed = True
             else:
-                # Successful non-terminal runs are paused for human review.
                 final_status = "awaiting_review"
 
         async with get_db() as conn:
