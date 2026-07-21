@@ -32,7 +32,7 @@ PowerShell:
 $env:LOCAL_DEV_MODE="1"
 $env:ENABLE_LOCAL_EVAL="1"
 cd backend
-uv run uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+uv run python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### 3) Verify service health

@@ -4,14 +4,14 @@ from typing import Any
 
 import httpx
 import structlog
-
 from core.config import settings
 from core.database import get_db
 from core.langfuse import get_langfuse, start_langfuse_trace
 from core.metrics import llm_call_duration, llm_cost_usd_total, llm_tokens_total
 from core.tracing import get_tracer
-from pipeline.state import OmniBrandState
 from services.audit_service import write_audit  # re-exported for agent use
+
+from pipeline.state import OmniBrandState
 
 log = structlog.get_logger()
 
@@ -125,37 +125,49 @@ async def traced_llm_call(
             log.warning("langfuse_flush_failed", task=task, error=str(exc))
 
     if campaign_id:
-        async with get_db() as conn:
-            from sqlalchemy import text
+        # Cost attribution is bookkeeping — it must never fail the agent. Ephemeral
+        # runs (e.g. /eval/local-eval) don't persist campaigns/orgs/brands rows, so
+        # the FK insert can't succeed; a missing row must degrade to a warning, not
+        # a crash (same policy as the Langfuse writes above).
+        try:
+            async with get_db() as conn:
+                from sqlalchemy import text
 
-            await conn.execute(
-                text(
-                    """
-                    INSERT INTO campaign_cost_attribution
-                        (campaign_id, org_id, brand_id, agent_name, model_alias,
-                         model_resolved, provider, input_tokens, output_tokens,
-                         total_cost_usd, latency_ms)
-                    VALUES
-                        (:campaign_id, :org_id, :brand_id, :agent_name, :model_alias,
-                         :model_resolved, :provider, :input_tokens, :output_tokens,
-                         :total_cost_usd, :latency_ms)
-                    """
-                ),
-                {
-                    "campaign_id": campaign_id,
-                    "org_id": state.get("org_id"),
-                    "brand_id": state.get("brand_id"),
-                    "agent_name": agent,
-                    "model_alias": model,
-                    "model_resolved": resolved_model,
-                    "provider": provider,
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_cost_usd": cost,
-                    "latency_ms": latency_ms,
-                },
+                await conn.execute(
+                    text(
+                        """
+                        INSERT INTO campaign_cost_attribution
+                            (campaign_id, org_id, brand_id, agent_name, model_alias,
+                             model_resolved, provider, input_tokens, output_tokens,
+                             total_cost_usd, latency_ms)
+                        VALUES
+                            (:campaign_id, :org_id, :brand_id, :agent_name, :model_alias,
+                             :model_resolved, :provider, :input_tokens, :output_tokens,
+                             :total_cost_usd, :latency_ms)
+                        """
+                    ),
+                    {
+                        "campaign_id": campaign_id,
+                        "org_id": state.get("org_id"),
+                        "brand_id": state.get("brand_id"),
+                        "agent_name": agent,
+                        "model_alias": model,
+                        "model_resolved": resolved_model,
+                        "provider": provider,
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_cost_usd": cost,
+                        "latency_ms": latency_ms,
+                    },
+                )
+                await conn.commit()
+        except Exception as exc:
+            log.warning(
+                "cost_attribution_write_failed",
+                task=task,
+                campaign_id=campaign_id,
+                error=str(exc),
             )
-            await conn.commit()
 
     return content, {
         "cost": cost,
@@ -218,6 +230,6 @@ AGENT_WRITE_PERMISSIONS: dict[str, set[str]] = {
         "review_requests",
         "human_review_requested",
     },
-    "review_gate": {"variants", "current_phase"},
+    "review_gate": {"variants", "current_phase", "review_round"},
     "publishing_agent": {"publication_receipts", "variants", "current_phase", "errors"},
 }

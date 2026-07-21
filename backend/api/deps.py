@@ -1,11 +1,12 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from core.database import get_db
 from fastapi import Depends, HTTPException, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import text
 
 from api.middleware.auth import decode_access_token, hash_api_key, is_jti_revoked
-from core.database import get_db
 
 bearer_scheme = HTTPBearer(auto_error=False)
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -42,10 +43,12 @@ async def _authenticate_jwt(credentials: HTTPAuthorizationCredentials) -> UserCo
 async def _authenticate_api_key(raw_key: str) -> UserContext:
     key_hash = hash_api_key(raw_key)
     async with get_db() as conn:
-        result = await conn.exec_driver_sql(
-            "SELECT org_id, brand_id, scopes FROM api_keys "
-            "WHERE key_hash = %(key_hash)s AND revoked_at IS NULL "
-            "AND (expires_at IS NULL OR expires_at > NOW())",
+        result = await conn.execute(
+            text(
+                "SELECT org_id, brand_id, scopes FROM api_keys "
+                "WHERE key_hash = :key_hash AND revoked_at IS NULL "
+                "AND (expires_at IS NULL OR expires_at > NOW())"
+            ),
             {"key_hash": key_hash},
         )
         row = result.mappings().first()
