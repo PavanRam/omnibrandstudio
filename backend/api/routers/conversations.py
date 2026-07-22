@@ -21,6 +21,7 @@ from services.chat.conversation_planner import conversation_planner
 from services.chat.conversation_responder import conversation_responder
 from services.chat.session_manager import session_manager
 from services.chat.understanding_engine import understanding_engine
+from services import review_service
 
 router = APIRouter()
 
@@ -407,6 +408,7 @@ async def _process_turn(
 
     campaign_id: str | None = None
     campaign_copilot_message: str | None = None
+    pending_reviews: list[dict[str, Any]] = []
 
     if intent in {"check_status", "explain_progress", "show_agent_output", "view_history"}:
         campaign_copilot_message = await _campaign_copilot_reply(
@@ -415,6 +417,13 @@ async def _process_turn(
             intent=intent,
             user_message=user_message,
         )
+    elif intent == "list_reviews" and session.active_campaign_id:
+        pending_reviews = await _fetch_pending_reviews(session.active_campaign_id)
+        campaign_copilot_message = _pending_reviews_message(pending_reviews)
+    elif session.active_campaign_id:
+        # Surface pending reviews automatically whenever the active campaign
+        # is paused for review, regardless of what the user asked about.
+        pending_reviews = await _fetch_pending_reviews(session.active_campaign_id)
 
     # ── Confirmation gate ────────────────────────────────────────────────
     # A complete brief is NOT enqueued immediately. The assistant first plays
@@ -487,6 +496,7 @@ async def _process_turn(
         "brief_field_states": [state.model_dump() for state in planner_output.brief_field_states] if planner_output else [],
         "suggested_prompts": planner_output.suggested_prompts if planner_output else [],
         "correction_detected": planner_output.correction_detected if planner_output else False,
+        "pending_reviews": pending_reviews,
     }
 
 
@@ -668,6 +678,149 @@ async def _campaign_copilot_reply(
     if intent == "view_history":
         return _campaign_history_reply(conversation_id, campaign_id, summary)
     return None
+
+
+async def _fetch_pending_reviews(campaign_id: str) -> list[dict[str, Any]]:
+    from core.database import get_db
+
+    async with get_db() as conn:
+        rows = (
+            await conn.execute(
+                text(
+                    """
+                    SELECT rr.id AS review_request_id, rr.variant_id, rr.campaign_id,
+                           rr.routing_reason, rr.status, rr.sla_deadline, rr.scores_snapshot,
+                           cv.task_id, cv.locale, cv.channel, cv.segment,
+                           COALESCE(cv.final_content, cv.personalized_content,
+                                    cv.generated_content) AS content,
+                           a.weighted_mean AS composite_score
+                    FROM review_requests rr
+                    JOIN content_variants cv ON cv.id = rr.variant_id
+                    LEFT JOIN aggregated_scores a ON a.variant_id = rr.variant_id
+                    WHERE rr.status = 'pending' AND rr.campaign_id = CAST(:campaign_id AS UUID)
+                    ORDER BY rr.created_at ASC
+                    """
+                ),
+                {"campaign_id": campaign_id},
+            )
+        ).mappings().all()
+
+    return [
+        {
+            "review_request_id": str(r["review_request_id"]),
+            "variant_id": str(r["variant_id"]),
+            "campaign_id": str(r["campaign_id"]),
+            "task_id": r["task_id"],
+            "locale": r["locale"],
+            "channel": r["channel"],
+            "segment": r["segment"],
+            "status": r["status"],
+            "routing_reason": r["routing_reason"],
+            "sla_deadline": r["sla_deadline"].isoformat() if r["sla_deadline"] else None,
+            "content": r["content"],
+            "composite_score": (
+                float(r["composite_score"]) if r["composite_score"] is not None else None
+            ),
+            "scores_snapshot": r["scores_snapshot"],
+        }
+        for r in rows
+    ]
+
+
+def _pending_reviews_message(reviews: list[dict[str, Any]]) -> str:
+    if not reviews:
+        return "No content is currently waiting on your review."
+    lines = [f"{len(reviews)} variant(s) need your review before this campaign can publish:"]
+    for review in reviews:
+        score = review.get("composite_score")
+        score_text = f"{score:.2f}" if isinstance(score, float) else "n/a"
+        lines.append(
+            f"- {review['task_id']} (score {score_text}) — {review.get('routing_reason') or 'flagged'}"
+        )
+    lines.append("Reply with the review card's Approve / Reject / Edit action to decide.")
+    return "\n".join(lines)
+
+
+async def _process_review_action(
+    *,
+    session: ConversationSession,
+    conversation_id: str,
+    user: UserContext,
+    review_request_id: str,
+    decision: str,
+    reviewer_note: str | None,
+    edited_content: str | None,
+) -> dict[str, Any]:
+    """Handle a structured approve/reject/edit action sent from a review card.
+
+    This bypasses brief understanding entirely — the card already tells us
+    exactly which review and which decision, so there is nothing to classify.
+    """
+    campaign_id = session.active_campaign_id
+    user_summary = f"[review action] {decision} on {review_request_id}"
+    await session_manager.add_message(conversation_id, "user", user_summary)
+
+    try:
+        result = await review_service.apply_decision(
+            review_request_id,
+            decision,
+            reviewer_note,
+            edited_content,
+            actor_id=user.user_id,
+            brand_ids=user.brand_ids,
+        )
+    except (LookupError, PermissionError, ValueError) as exc:
+        message = f"Could not record that decision: {exc}"
+        await session_manager.add_message(conversation_id, "assistant", message, intent_classified="decide_review")
+        return {
+            "conversation_id": conversation_id,
+            "intent": "decide_review",
+            "message": message,
+            "campaign_id": campaign_id,
+            "error": str(exc),
+        }
+
+    if not result["all_decided"]:
+        remaining = await _fetch_pending_reviews(result["campaign_id"])
+        message = (
+            f"Got it — recorded '{decision}' for {result['task_id']}. "
+            f"{len(remaining)} more variant(s) still need a decision."
+        )
+        await session_manager.add_message(
+            conversation_id, "assistant", message, intent_classified="decide_review", campaign_id=result["campaign_id"]
+        )
+        return {
+            "conversation_id": conversation_id,
+            "intent": "decide_review",
+            "message": message,
+            "campaign_id": result["campaign_id"],
+            "campaign_status": "awaiting_review",
+            "pending_reviews": remaining,
+        }
+
+    campaign_status = await review_service.resume_campaign(result["campaign_id"])
+    if campaign_status == "published":
+        message = f"All reviews are in — campaign {result['campaign_id']} has published."
+    elif campaign_status == "awaiting_review":
+        message = "Rejected content is regenerating; a new review round is ready when you are."
+    else:
+        message = f"Campaign {result['campaign_id']} is now '{campaign_status}'."
+
+    pending_reviews = (
+        await _fetch_pending_reviews(result["campaign_id"]) if campaign_status == "awaiting_review" else []
+    )
+
+    await session_manager.add_message(
+        conversation_id, "assistant", message, intent_classified="decide_review", campaign_id=result["campaign_id"]
+    )
+    return {
+        "conversation_id": conversation_id,
+        "intent": "decide_review",
+        "message": message,
+        "campaign_id": result["campaign_id"],
+        "campaign_status": campaign_status,
+        "pending_reviews": pending_reviews,
+    }
 
 
 async def _load_campaign_trace(campaign_id: str) -> list[dict[str, Any]]:
@@ -1007,8 +1160,9 @@ async def conversation_ws(websocket: WebSocket, conversation_id: str) -> None:
     try:
         while True:
             payload = await websocket.receive_json()
+            review_request_id = payload.get("review_request_id")
             user_message = str(payload.get("message", "")).strip()
-            if not user_message:
+            if not user_message and not review_request_id:
                 await websocket.send_json({"error": "message is required"})
                 continue
 
@@ -1029,12 +1183,24 @@ async def conversation_ws(websocket: WebSocket, conversation_id: str) -> None:
                 continue
 
             _assert_brand_access(user, session.brand_id)
-            response_payload = await _process_turn(
-                session=session,
-                conversation_id=normalized_id,
-                user=user,
-                user_message=user_message,
-            )
+
+            if review_request_id:
+                response_payload = await _process_review_action(
+                    session=session,
+                    conversation_id=normalized_id,
+                    user=user,
+                    review_request_id=str(review_request_id),
+                    decision=str(payload.get("decision") or ""),
+                    reviewer_note=payload.get("reviewer_note"),
+                    edited_content=payload.get("edited_content"),
+                )
+            else:
+                response_payload = await _process_turn(
+                    session=session,
+                    conversation_id=normalized_id,
+                    user=user,
+                    user_message=user_message,
+                )
 
             await websocket.send_json(response_payload)
 

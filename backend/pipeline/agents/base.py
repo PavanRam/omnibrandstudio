@@ -264,6 +264,6 @@ AGENT_WRITE_PERMISSIONS: dict[str, set[str]] = {
         "human_review_requested",
     },
     "reflexion": {"variants", "brand_scores", "aggregated_scores", "errors"},
-    "review_gate": {"variants", "current_phase"},
+    "review_gate": {"variants", "current_phase", "review_round"},
     "publishing_agent": {"publication_receipts", "variants", "current_phase", "errors"},
 }

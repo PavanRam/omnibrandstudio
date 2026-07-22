@@ -8,10 +8,8 @@ from pipeline.agents.judge_planner import judge_gate, judge_gate_router
 from pipeline.agents.judges import judge_claude, judge_gpt4o, judge_llama
 from pipeline.agents.personalization import personalization_agent
 from pipeline.agents.reflexion import reflexion, reflexion_router
-from pipeline.agents.stubs import (
-    publishing_agent_stub,
-    review_gate_stub,
-)
+from pipeline.agents.review import review_gate, review_router
+from pipeline.agents.stubs import publishing_agent_stub
 from pipeline.agents.translation import translation_agent
 from pipeline.state import OmniBrandState
 
@@ -51,7 +49,7 @@ def build_graph(
     g.add_node("judge_llama", judge_llama)  # T3c — real judge (was stub)
     g.add_node("confidence_aggregator", confidence_aggregator)  # T3g — real (was stub)
     g.add_node("reflexion", reflexion)  # T3f — self-correction retry
-    g.add_node("review_gate", review_gate_stub)
+    g.add_node("review_gate", review_gate)  # T11 — real gate (was stub)
     g.add_node("publishing_agent", publishing_agent_stub)
 
     g.set_entry_point("intake_agent")
@@ -80,7 +78,11 @@ def build_graph(
         ["judge_claude", "judge_gpt4o", "judge_llama", "review_gate"],
     )
 
-    g.add_edge("review_gate", "publishing_agent")
+    g.add_conditional_edges(
+        "review_gate",
+        review_router,
+        ["content_generator", "publishing_agent"],
+    )
     g.add_edge("publishing_agent", END)
 
     compile_kwargs = {"checkpointer": checkpointer} if checkpointer is not None else {}

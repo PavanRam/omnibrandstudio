@@ -22,6 +22,16 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# .env lives at the repo root; this script is invoked as
+# `cd backend && uv run python ../scripts/seed_prompts.py` (see Makefile's
+# `seed` target), so a bare os.getenv("POSTGRES_DSN") below would never see
+# it and silently fall back to the placeholder password. Load it explicitly
+# by path so this works regardless of invocation CWD.
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 # Add backend/ to path so core/* + pipeline/* imports resolve
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))

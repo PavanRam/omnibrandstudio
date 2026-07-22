@@ -406,6 +406,35 @@ export async function deleteGoldenExample({ brandId, exampleId }) {
   return response.json();
 }
 
+export async function fetchPendingReviews({ status = 'pending', limit = 20, offset = 0 } = {}) {
+  const params = new URLSearchParams({ status, limit: String(limit), offset: String(offset) });
+  const response = await fetch(`${API_BASE}/reviews?${params.toString()}`, {
+    headers: authHeaders(),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(parseErrorMessage(body, `pending reviews fetch failed: ${response.status}`));
+  }
+  return body;
+}
+
+export async function decideReview(reviewRequestId, decision, { reviewerNote = null, editedContent = null } = {}) {
+  const response = await fetch(`${API_BASE}/reviews/${reviewRequestId}/decide`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({
+      decision,
+      reviewer_note: reviewerNote,
+      edited_content: editedContent,
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(parseErrorMessage(body, `review decision failed: ${response.status}`));
+  }
+  return body;
+}
+
 export async function listUsers() {
   const response = await fetchWithAutoRefresh(`${API_BASE}/users`, {
     headers: authHeaders(),

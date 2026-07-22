@@ -88,5 +88,7 @@ def build_initial_state(
         human_review_requested=False,
         publishing_paused=False,
         judge_mode="full",
+        review_round=0,
+        review_decisions={},
         token_cost_usd=0.0,
     )

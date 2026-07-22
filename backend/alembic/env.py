@@ -1,11 +1,19 @@
 import asyncio
 import os
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
+from dotenv import load_dotenv
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
+
+# .env lives at the repo root; alembic is invoked with CWD=backend/ (see
+# Makefile's `migrate` target), so os.environ.get(...) below would otherwise
+# only ever see the placeholder DSN in the fallback. Load it explicitly by
+# path so ALEMBIC_DSN/POSTGRES_DSN resolve regardless of invocation CWD.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 config = context.config
 

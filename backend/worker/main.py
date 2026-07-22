@@ -24,6 +24,7 @@ from core.tracing import setup_observability
 from pipeline.graph import build_graph
 from pipeline.initial_state import build_initial_state
 from pipeline.schemas import CreateCampaignRequest
+from services import review_service
 
 log = structlog.get_logger()
 
@@ -139,6 +140,7 @@ async def process_campaign(task_payload: dict) -> None:
 
         final_status = "running"
         mark_completed = False
+        paused_for_review = False
         if isinstance(final_state, dict):
             current_phase = str(final_state.get("current_phase") or "").lower()
             has_errors = bool(final_state.get("errors"))
@@ -154,24 +156,31 @@ async def process_campaign(task_payload: dict) -> None:
             else:
                 # Successful non-terminal runs are paused for human review.
                 final_status = "awaiting_review"
+                paused_for_review = True
 
-        async with get_db() as conn:
-            await conn.execute(
-                text(
-                    """
-                    UPDATE campaigns
-                    SET status = :status,
-                        completed_at = CASE WHEN :mark_completed THEN NOW() ELSE completed_at END
-                    WHERE id = CAST(:campaign_id AS UUID)
-                    """
-                ),
-                {
-                    "campaign_id": campaign_id,
-                    "status": final_status,
-                    "mark_completed": mark_completed,
-                },
-            )
-            await conn.commit()
+        if paused_for_review:
+            # Persists variants/aggregated_scores/review_requests and sets
+            # campaigns.status='awaiting_review' itself — skip the generic
+            # status UPDATE below for this case.
+            await review_service.persist_review_batch(final_state)
+        else:
+            async with get_db() as conn:
+                await conn.execute(
+                    text(
+                        """
+                        UPDATE campaigns
+                        SET status = :status,
+                            completed_at = CASE WHEN :mark_completed THEN NOW() ELSE completed_at END
+                        WHERE id = CAST(:campaign_id AS UUID)
+                        """
+                    ),
+                    {
+                        "campaign_id": campaign_id,
+                        "status": final_status,
+                        "mark_completed": mark_completed,
+                    },
+                )
+                await conn.commit()
 
         elapsed = (datetime.now(UTC) - start).total_seconds()
         campaign_duration.labels(org_id=org_id, status="completed").observe(elapsed)

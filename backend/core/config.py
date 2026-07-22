@@ -1,8 +1,19 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# .env lives at the repo root, but Makefile targets `cd backend` before running
+# (e.g. `cd backend && uv run python ../scripts/seed_prompts.py`), so a plain
+# relative "env_file" only resolves when the process CWD happens to be the
+# repo root. Anchor it to this file's location instead so every entrypoint
+# (host-side `make seed`/`migrate`/`run`, pytest, scripts/) loads the same
+# values regardless of CWD — the api/worker Docker containers are unaffected
+# since docker-compose injects POSTGRES_DSN etc. as real env vars directly.
+_REPO_ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=_REPO_ROOT_ENV, extra="ignore")
 
     # App
     APP_ENV: str = "development"
@@ -88,6 +99,14 @@ class Settings(BaseSettings):
     # Runtime
     MAX_CONCURRENT_CAMPAIGNS: int = 5
     CAMPAIGN_TIMEOUT_SECONDS: int = 300
+
+    # Human review gate
+    REVIEW_SLA_HOURS: int = 4
+    MAX_REVIEW_ROUNDS: int = 2
+    # Airtable outbound mirror (best-effort; no-op when any is unset)
+    AIRTABLE_API_KEY: str = ""
+    AIRTABLE_BASE_ID: str = ""
+    AIRTABLE_TABLE: str = "Reviews"
 
     @property
     def private_key(self) -> str:

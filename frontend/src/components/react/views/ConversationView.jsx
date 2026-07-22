@@ -55,6 +55,73 @@ function BriefChecklist({ brief }) {
   );
 }
 
+function ReviewCard({ review, onDecide, busy }) {
+  const [editing, setEditing] = useState(false);
+  const [editedContent, setEditedContent] = useState(review.content || '');
+
+  const score = typeof review.composite_score === 'number' ? review.composite_score.toFixed(2) : 'n/a';
+
+  return (
+    <div className="rounded-xl border border-warning/40 bg-warning/5 p-3 text-sm">
+      <div className="mb-1 flex flex-wrap items-center gap-2">
+        <Badge tone="warning">Needs review</Badge>
+        <span className="text-xs text-muted">{review.task_id}</span>
+        <span className="text-xs text-faint">score {score}</span>
+      </div>
+      {review.routing_reason ? (
+        <p className="mb-2 text-xs text-muted">{review.routing_reason}</p>
+      ) : null}
+      <p className="mb-2 whitespace-pre-wrap rounded-lg border border-border bg-surface px-2 py-2 text-xs text-fg">
+        {review.content || '(no content captured)'}
+      </p>
+      {editing ? (
+        <div className="mb-2 space-y-2">
+          <textarea
+            value={editedContent}
+            onChange={(e) => setEditedContent(e.target.value)}
+            className="h-24 w-full rounded-lg border border-border bg-surface-2 px-2 py-2 text-xs text-fg"
+          />
+          <div className="flex gap-2">
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={busy || !editedContent.trim()}
+              onClick={() => onDecide(review.review_request_id, 'edited', { editedContent })}
+            >
+              Submit edit
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setEditing(false)} disabled={busy}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={busy}
+            onClick={() => onDecide(review.review_request_id, 'approved')}
+          >
+            Approve
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            disabled={busy}
+            onClick={() => onDecide(review.review_request_id, 'rejected')}
+          >
+            Reject
+          </Button>
+          <Button variant="ghost" size="sm" disabled={busy} onClick={() => setEditing(true)}>
+            Edit
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BriefFieldStates({ fieldStates }) {
   if (!Array.isArray(fieldStates) || fieldStates.length === 0) {
     return null;
@@ -92,6 +159,9 @@ function ChatThreadPanel({
   sendMessage,
   chatPlaceholder,
   hasConversation,
+  pendingReviews = [],
+  onDecideReview,
+  reviewDecisionBusyId = '',
 }) {
   return (
     <section className="rounded-2xl border border-border bg-surface p-4 card-shadow">
@@ -163,6 +233,18 @@ function ChatThreadPanel({
           ))
         )}
       </div>
+      {pendingReviews.length > 0 ? (
+        <div className="mt-3 space-y-2">
+          {pendingReviews.map((review) => (
+            <ReviewCard
+              key={review.review_request_id}
+              review={review}
+              onDecide={onDecideReview}
+              busy={reviewDecisionBusyId === review.review_request_id}
+            />
+          ))}
+        </div>
+      ) : null}
       {suggestedPrompts.length > 0 && !campaignId ? (
         <div className="mt-2 flex flex-wrap gap-2">
           {suggestedPrompts.map((prompt) => (
@@ -845,6 +927,8 @@ export function ConversationView() {
   const [replayHasMore, setReplayHasMore] = useState(false);
   const [replayCursor, setReplayCursor] = useState(null);
   const [replayCursorValid, setReplayCursorValid] = useState(true);
+  const [pendingReviews, setPendingReviews] = useState([]);
+  const [reviewDecisionBusyId, setReviewDecisionBusyId] = useState('');
 
   const loadRecentConversations = useCallback(async () => {
     setRecentLoading(true);
@@ -897,6 +981,9 @@ export function ConversationView() {
     setClarificationTarget(parsed.clarificationTarget);
     setBriefFieldStates(parsed.briefFieldStates);
     setSuggestedPrompts(parsed.suggestedPrompts);
+    if (Array.isArray(payload.pending_reviews)) {
+      setPendingReviews(payload.pending_reviews);
+    }
   }, []);
 
   const { connected: wsConnected, send } = useWebSocket(createSocket, {
@@ -1086,6 +1173,26 @@ export function ConversationView() {
       setMessages,
     });
 
+  const decideReviewAction = (reviewRequestId, decision, { editedContent = null } = {}) => {
+    if (!wsConnected) {
+      setError('Chat is reconnecting. Please try again in a moment.');
+      return;
+    }
+    setReviewDecisionBusyId(reviewRequestId);
+    const sent = send({
+      review_request_id: reviewRequestId,
+      decision,
+      edited_content: editedContent,
+    });
+    if (!sent) {
+      setError('Chat socket is not connected yet');
+      setReviewDecisionBusyId('');
+      return;
+    }
+    setPendingReviews((prev) => prev.filter((r) => r.review_request_id !== reviewRequestId));
+    setReviewDecisionBusyId('');
+  };
+
   const streamBadgeTone = useMemo(() => (sseConnected ? 'success' : 'neutral'), [sseConnected]);
 
   const runRerun = () =>
@@ -1147,6 +1254,9 @@ export function ConversationView() {
           sendMessage={sendMessage}
           chatPlaceholder={chatPlaceholder}
           hasConversation={hasConversation}
+          pendingReviews={pendingReviews}
+          onDecideReview={decideReviewAction}
+          reviewDecisionBusyId={reviewDecisionBusyId}
         />
 
         <section className="rounded-2xl border border-border bg-surface p-4 card-shadow">

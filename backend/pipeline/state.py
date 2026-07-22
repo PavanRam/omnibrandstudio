@@ -169,5 +169,11 @@ class OmniBrandState(TypedDict):
     publishing_paused: bool
     judge_mode: str  # set by judge_gate: "skip" | "lite" | "full"
 
+    # Human review gate (plain channels, not fan-in — review_round is replaced
+    # on each aupdate_state resume; review_decisions is injected by the
+    # reviewer API/chat before resuming, keyed by variant task_id)
+    review_round: int
+    review_decisions: dict
+
     # Cost tracking
     token_cost_usd: float

@@ -20,6 +20,8 @@ UserIntent = Literal[
     "ask_product",
     "greeting",
     "other",
+    "list_reviews",
+    "decide_review",
 ]
 
 

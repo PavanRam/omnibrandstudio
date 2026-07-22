@@ -86,6 +86,7 @@ from api.routers import (  # noqa: E402
     health,
     knowledge,
     orgs,
+    reviews,
     users,
 )
 
@@ -97,6 +98,7 @@ app.include_router(orgs.router, prefix="/orgs", tags=["orgs"])
 app.include_router(users.router, prefix="/users", tags=["users"])
 app.include_router(knowledge.router, prefix="/knowledge", tags=["knowledge"])
 app.include_router(golden_dataset.router, prefix="/knowledge", tags=["golden-dataset"])
+app.include_router(reviews.router, prefix="/reviews", tags=["reviews"])
 
 if should_enable_local_eval():
     # TEMP_LOCAL_EVAL: Local eval endpoint is intentionally not registered by default.
