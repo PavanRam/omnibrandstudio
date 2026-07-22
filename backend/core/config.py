@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     GROQ_API_KEY: str = ""
     DEEPL_API_KEY: str = ""
+    HF_TOKEN: str = ""
+    TRANSLATION_HUMAN_ESCALATION_ENABLED: bool = False
 
     # Auth
     JWT_PRIVATE_KEY_PATH: str = "./certs/private_key.pem"
