@@ -78,6 +78,8 @@ up:
 	docker compose up -d createbuckets
 	# Keep DB schema current in the same runtime context the API uses.
 	$(MAKE) migrate-docker
+	# Ensure org/brand/prompt rows exist before admin-seed depends on them.
+	$(MAKE) seed
 	# Ensure default dev admin exists after startup/migration.
 	docker compose exec -T api python scripts/seed_dev_admin.py
 
@@ -99,7 +101,7 @@ certs:
 	@echo "JWT keys generated in certs/"
 
 # ── Full local setup (run once after cloning) ────────────────────────────────
-setup: install certs up migrate seed
+setup: install certs up
 	@echo ""
 	@echo "Foundation ready. Run 'make smoke' to verify."
 	@echo "Run 'make run' (API) + 'make worker' (worker) or 'make dev' (both)."
