@@ -6,15 +6,15 @@ from typing import Any
 
 import httpx
 import structlog
-
 from core.config import settings
 from core.database import get_db
 from core.langfuse import get_langfuse, start_langfuse_trace
 from core.metrics import llm_call_duration, llm_cost_usd_total, llm_tokens_total
 from core.redis import get_redis
 from core.tracing import get_tracer
-from pipeline.state import OmniBrandState
 from services.audit_service import write_audit  # re-exported for agent use
+
+from pipeline.state import OmniBrandState
 
 log = structlog.get_logger()
 
@@ -254,14 +254,16 @@ AGENT_WRITE_PERMISSIONS: dict[str, set[str]] = {
     },
     "personalization_agent": {"variants", "token_cost_usd", "errors"},
     "translation_agent": {"variants", "token_cost_usd", "errors"},
-    "judge_claude": {"brand_scores", "token_cost_usd", "errors"},
-    "judge_gpt4o": {"brand_scores", "token_cost_usd", "errors"},
-    "judge_llama": {"brand_scores", "token_cost_usd", "errors"},
+    "judge_gate": {"judge_mode"},
+    "judge_claude": {"brand_scores", "errors"},
+    "judge_gpt4o": {"brand_scores", "errors"},
+    "judge_llama": {"brand_scores", "errors"},
     "confidence_aggregator": {
         "aggregated_scores",
         "review_requests",
         "human_review_requested",
     },
+    "reflexion": {"variants", "brand_scores", "aggregated_scores", "errors"},
     "review_gate": {"variants", "current_phase"},
     "publishing_agent": {"publication_receipts", "variants", "current_phase", "errors"},
 }

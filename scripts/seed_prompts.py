@@ -5,9 +5,12 @@ without errors:
 
   • 1 test organisation
   • 1 test brand
-  • 1 platform-level user (seeder)
-  • 12 prompt templates (intake, generator, personalisation, translation,
-    judge × 3, aggregator, reflexion, review-gate, publisher, brief-validator)
+  • prompt templates (intake, generator, personalisation, translation,
+    judge panel, reflexion, aggregator, review-gate, publisher, brief-validator)
+
+Judge + reflexion prompts are sourced from the canonical templates in
+`pipeline/agents/prompts/judge_prompts.py`, so the DB copy and the in-code
+fallback used by the judges never drift.
 
 Run after every fresh `make migrate`.
 
@@ -20,21 +23,18 @@ import asyncio
 import os
 import sys
 
-# Add backend/ to path so core/* imports resolve
+# Add backend/ to path so core/* + pipeline/* imports resolve
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
-import uuid
-
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
-
-from pipeline.agents.prompts.judge_prompts import (
+from pipeline.agents.prompts.judge_prompts import (  # noqa: E402
     JUDGE_SYSTEM_TEMPLATE,
     JUDGE_USER_TEMPLATE,
     REFLEXION_SYSTEM_TEMPLATE,
     REFLEXION_USER_TEMPLATE,
     RUBRIC_TEXT,
 )
+from sqlalchemy import text  # noqa: E402
+from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
 POSTGRES_DSN: str = os.getenv(
     "POSTGRES_DSN",
@@ -43,7 +43,6 @@ POSTGRES_DSN: str = os.getenv(
 
 ORG_ID    = "00000000-0000-0000-0000-000000000001"
 BRAND_ID  = "00000000-0000-0000-0000-000000000002"
-USER_ID   = "00000000-0000-0000-0000-000000000003"
 
 # The judge panel system prompt is pre-rendered with the fixed rubric; the
 # {channel}/{locale} and {brand_guide}/{content} placeholders remain for the
@@ -159,7 +158,8 @@ async def seed() -> None:
                         "INSERT INTO prompt_registry "
                         "  (name, version, org_id, status, system_prompt, user_prompt, variables) "
                         "VALUES "
-                        "  (:name, '1.0.0', NULL, 'active', :system_prompt, :user_prompt, :variables)"
+                        "  (:name, '1.0.0', NULL, 'active', "
+                        ":system_prompt, :user_prompt, :variables)"
                     ),
                     {
                         "name": name,

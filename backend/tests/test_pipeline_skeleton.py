@@ -2,12 +2,13 @@ import asyncio
 import inspect
 
 import pytest
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-
 from core.config import settings
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pipeline.agents import stubs
 from pipeline.agents.base import AGENT_WRITE_PERMISSIONS
 from pipeline.agents.intake import intake_agent
+from pipeline.agents.judge_planner import judge_gate
+from pipeline.agents.reflexion import reflexion
 from pipeline.graph import build_graph
 from pipeline.state import OmniBrandState
 
@@ -55,6 +56,7 @@ def _empty_state(**overrides) -> OmniBrandState:
         current_phase="starting",
         human_review_requested=False,
         publishing_paused=False,
+        judge_mode="full",
         token_cost_usd=0.0,
     )
     base.update(overrides)
@@ -80,10 +82,12 @@ async def test_agent_write_permissions():
         "content_generator": stubs.content_generator_stub,
         "personalization_agent": stubs.personalization_agent_stub,
         "translation_agent": stubs.translation_agent_stub,
+        "judge_gate": judge_gate,
         "judge_claude": stubs.judge_claude_stub,
         "judge_gpt4o": stubs.judge_gpt4o_stub,
         "judge_llama": stubs.judge_llama_stub,
         "confidence_aggregator": stubs.confidence_aggregator_stub,
+        "reflexion": reflexion,
         "review_gate": stubs.review_gate_stub,
         "publishing_agent": stubs.publishing_agent_stub,
     }

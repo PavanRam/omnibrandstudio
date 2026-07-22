@@ -1,10 +1,11 @@
 from typing import Annotated
 
+from core.database import get_db
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from services import golden_dataset_service
+from services.rag.ingest import ingest_brand_guide, ingest_customer_segments, list_customer_segments
 
 from api.deps import UserContext, get_current_user
-from core.database import get_db
-from services.rag.ingest import ingest_brand_guide, ingest_customer_segments, list_customer_segments
 
 router = APIRouter()
 
@@ -49,8 +50,21 @@ async def upload_brand_guide(
             locale=locale,
             version=version,
         )
+        # Open a draft golden-dataset set pinned to this guide version so
+        # evaluation examples can be generated/curated against it (no LLM spend
+        # here — generation is a separate, explicit step).
+        set_id = await golden_dataset_service.open_draft_set(
+            conn,
+            org_id=user.org_id,
+            brand_id=brand_id,
+            locale=locale,
+            guide_version=version,
+            source="llm_generated",
+            created_by=user.user_id,
+        )
     return {
         "status": "indexed",
+        "golden_dataset_set_id": set_id,
         **result,
     }
 

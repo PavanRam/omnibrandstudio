@@ -70,6 +70,10 @@ class BrandScore(TypedDict):
     critical_violations: list[str]
     routing_decision: str
     evaluation_latency_ms: int
+    # Reflexion retry round this score belongs to (mirrors variant retry_count).
+    # Lets judges/aggregator stay idempotent under operator.add fan-in, which
+    # cannot delete stale entries when a variant is regenerated and re-scored.
+    evaluation_round: int
 
 
 class AggregatedScore(TypedDict):
@@ -83,6 +87,8 @@ class AggregatedScore(TypedDict):
     routing_decision: str
     routing_reason: str
     degraded_mode: bool
+    # Reflexion retry round this aggregate was computed for (see BrandScore).
+    evaluation_round: int
 
 
 class ReviewRequest(TypedDict):
@@ -161,6 +167,7 @@ class OmniBrandState(TypedDict):
     current_phase: str
     human_review_requested: bool
     publishing_paused: bool
+    judge_mode: str  # set by judge_gate: "skip" | "lite" | "full"
 
     # Cost tracking
     token_cost_usd: float

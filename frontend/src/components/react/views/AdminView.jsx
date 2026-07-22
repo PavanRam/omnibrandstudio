@@ -1,14 +1,20 @@
 import { useMemo, useState } from 'react';
-import { Building2, Users, Upload, RefreshCw, LockKeyhole } from 'lucide-react';
+import { Building2, Users, Upload, RefreshCw, LockKeyhole, Database, Star, Trash2 } from 'lucide-react';
 import { Page, SectionHeading } from '../Page.jsx';
 import { Button } from '../ui/Button.jsx';
 import { Badge } from '../ui/Badge.jsx';
 import { useAuth } from '../hooks/useAuth.js';
 import {
+  activateGoldenSet,
   createUser,
+  deleteGoldenExample,
   listBrandGuides,
   listCustomerSegments,
+  listGoldenExamples,
+  listGoldenSets,
   listUsers,
+  openGoldenSet,
+  promoteGoldenExample,
   uploadBrandGuide,
   uploadCustomerSegments,
 } from '@/lib/api.js';
@@ -462,6 +468,188 @@ export function AdminView({ onLock }) {
           )}
         </div>
       </section>
+
+      <GoldenDatasetPanel brandId={brandId} locale={locale} version={version} />
     </Page>
+  );
+}
+
+function GoldenDatasetPanel({ brandId, locale, version }) {
+  const [sets, setSets] = useState([]);
+  const [examples, setExamples] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [opening, setOpening] = useState(false);
+  const [status, setStatus] = useState('');
+  const [error, setError] = useState('');
+
+  const refresh = async () => {
+    setLoading(true);
+    setError('');
+    setStatus('');
+    try {
+      const [setsPayload, examplesPayload] = await Promise.all([
+        listGoldenSets(brandId.trim()),
+        listGoldenExamples(brandId.trim()),
+      ]);
+      setSets(setsPayload.items || []);
+      setExamples(examplesPayload.items || []);
+      setStatus(
+        `Loaded ${setsPayload.count || 0} dataset set(s) and ${examplesPayload.count || 0} example(s).`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load golden dataset');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openSet = async () => {
+    setOpening(true);
+    setError('');
+    setStatus('');
+    try {
+      const result = await openGoldenSet({
+        brandId: brandId.trim(),
+        locale: locale.trim(),
+        guideVersion: version.trim() || null,
+      });
+      setStatus(`Opened draft dataset set ${result.set_id?.slice(0, 8)}….`);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to open dataset set');
+    } finally {
+      setOpening(false);
+    }
+  };
+
+  const runAction = async (fn, message) => {
+    setError('');
+    setStatus('');
+    try {
+      await fn();
+      setStatus(message);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Action failed');
+    }
+  };
+
+  const activate = (setId) =>
+    runAction(
+      () => activateGoldenSet({ brandId: brandId.trim(), setId }),
+      `Activated dataset set ${setId.slice(0, 8)}….`,
+    );
+
+  const promote = (exampleId) =>
+    runAction(
+      () => promoteGoldenExample({ brandId: brandId.trim(), exampleId }),
+      `Promoted example ${exampleId.slice(0, 8)}… to golden.`,
+    );
+
+  const remove = (exampleId) =>
+    runAction(
+      () => deleteGoldenExample({ brandId: brandId.trim(), exampleId }),
+      `Deleted example ${exampleId.slice(0, 8)}….`,
+    );
+
+  return (
+    <section className="mt-4 rounded-2xl border border-border bg-surface p-4 card-shadow">
+      <SectionHeading
+        title="Golden Dataset"
+        description="Manage versioned evaluation sets used to calibrate the judge panel. Activate one set per locale; promote strong silver examples to golden."
+        action={
+          <div className="flex flex-wrap gap-2">
+            <Button variant="ghost" size="sm" onClick={refresh} disabled={loading}>
+              <RefreshCw size={14} aria-hidden="true" /> {loading ? 'Loading…' : 'Refresh'}
+            </Button>
+            <Button variant="outline" size="sm" onClick={openSet} disabled={opening}>
+              <Database size={14} aria-hidden="true" /> {opening ? 'Opening…' : 'New draft set'}
+            </Button>
+          </div>
+        }
+      />
+
+      {error ? (
+        <div className="mb-3 rounded-xl border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
+          {error}
+        </div>
+      ) : null}
+      {status ? (
+        <div className="mb-3 rounded-xl border border-success/40 bg-success/10 px-3 py-2 text-sm text-success">
+          {status}
+        </div>
+      ) : null}
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="rounded-xl border border-border bg-surface-2 p-3">
+          <h3 className="text-sm font-medium text-fg">Dataset sets</h3>
+          {sets.length === 0 ? (
+            <p className="mt-1 text-sm text-muted">No dataset sets loaded yet.</p>
+          ) : (
+            <ul className="mt-2 space-y-2 text-sm">
+              {sets.map((set) => (
+                <li
+                  key={set.id}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface px-2.5 py-2"
+                >
+                  <div>
+                    <p className="font-medium text-fg">
+                      {set.locale} · {set.guide_version || 'no guide version'}
+                    </p>
+                    <p className="text-muted">
+                      <Badge tone={set.status === 'active' ? 'success' : 'muted'}>{set.status}</Badge>{' '}
+                      {set.source}
+                    </p>
+                  </div>
+                  {set.status !== 'active' ? (
+                    <Button variant="ghost" size="sm" onClick={() => activate(set.id)}>
+                      Activate
+                    </Button>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="rounded-xl border border-border bg-surface-2 p-3">
+          <h3 className="text-sm font-medium text-fg">Examples</h3>
+          {examples.length === 0 ? (
+            <p className="mt-1 text-sm text-muted">No examples loaded yet.</p>
+          ) : (
+            <ul className="mt-2 space-y-2 text-sm">
+              {examples.map((example) => (
+                <li
+                  key={example.id}
+                  className="flex items-start justify-between gap-3 rounded-lg border border-border bg-surface px-2.5 py-2"
+                >
+                  <div className="min-w-0">
+                    <p className="font-medium text-fg">
+                      {example.channel || 'any-channel'} · {example.locale}
+                    </p>
+                    <p className="truncate text-muted">
+                      <Badge tone={example.status === 'golden' ? 'brand' : 'muted'}>
+                        {example.status}
+                      </Badge>{' '}
+                      {(example.expected_content || '').slice(0, 120)}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 gap-1">
+                    {example.status !== 'golden' ? (
+                      <Button variant="ghost" size="sm" onClick={() => promote(example.id)}>
+                        <Star size={14} aria-hidden="true" />
+                      </Button>
+                    ) : null}
+                    <Button variant="ghost" size="sm" onClick={() => remove(example.id)}>
+                      <Trash2 size={14} aria-hidden="true" />
+                    </Button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </section>
   );
 }

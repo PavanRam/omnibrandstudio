@@ -40,7 +40,7 @@ llm_call_duration = Histogram(
 llm_tokens_total = Counter(
     "omnibrand_llm_tokens_total",
     "Total tokens consumed",
-    ["agent", "model", "type"],  # type: input | output
+    ["agent", "model", "type"],  # label values: input | output
     registry=REGISTRY,
 )
 llm_cost_usd_total = Counter(

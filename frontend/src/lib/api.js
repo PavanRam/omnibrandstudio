@@ -326,6 +326,86 @@ export async function listCustomerSegments(brandId, locale, version = '') {
   return response.json();
 }
 
+export async function listGoldenSets(brandId) {
+  const response = await fetch(`${API_BASE}/knowledge/golden-dataset/sets/${brandId}`, {
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    throw new Error(`golden set list failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function openGoldenSet({ brandId, locale = 'en-US', guideVersion = null }) {
+  const response = await fetch(`${API_BASE}/knowledge/golden-dataset/sets`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ brand_id: brandId, locale, guide_version: guideVersion }),
+  });
+  if (!response.ok) {
+    throw new Error(`golden set create failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function activateGoldenSet({ brandId, setId }) {
+  const response = await fetch(
+    `${API_BASE}/knowledge/golden-dataset/sets/${setId}/activate`,
+    {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ brand_id: brandId }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`golden set activate failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function listGoldenExamples(brandId, { status = '', setId = '' } = {}) {
+  const params = new URLSearchParams();
+  if (status) params.set('status_filter', status);
+  if (setId) params.set('set_id', setId);
+  const qs = params.toString();
+  const suffix = qs ? `?${qs}` : '';
+  const response = await fetch(
+    `${API_BASE}/knowledge/golden-dataset/${brandId}${suffix}`,
+    { headers: authHeaders() },
+  );
+  if (!response.ok) {
+    throw new Error(`golden example list failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function promoteGoldenExample({ brandId, exampleId }) {
+  const response = await fetch(
+    `${API_BASE}/knowledge/golden-dataset/${exampleId}/promote`,
+    {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ brand_id: brandId }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`golden example promote failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function deleteGoldenExample({ brandId, exampleId }) {
+  const params = new URLSearchParams({ brand_id: brandId });
+  const response = await fetch(
+    `${API_BASE}/knowledge/golden-dataset/${exampleId}?${params.toString()}`,
+    { method: 'DELETE', headers: authHeaders() },
+  );
+  if (!response.ok) {
+    throw new Error(`golden example delete failed: ${response.status}`);
+  }
+  return response.json();
+}
+
 export async function listUsers() {
   const response = await fetchWithAutoRefresh(`${API_BASE}/users`, {
     headers: authHeaders(),

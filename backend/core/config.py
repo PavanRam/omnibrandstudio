@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     HF_TOKEN: str = ""
     TRANSLATION_HUMAN_ESCALATION_ENABLED: bool = False
 
+    # Judge panel tier. "free" -> Groq cross-family panel (judge-*-free), no
+    # paid spend; "paid" -> pinned Claude/GPT-4o/Groq panel (judge-1/2/3).
+    # Switching tiers is a config flip; it requires re-running judge
+    # calibration but no agent-code changes. See docs pre-deploy checklist.
+    JUDGE_TIER: str = "free"
+
     # Auth
     JWT_PRIVATE_KEY_PATH: str = "./certs/private_key.pem"
     JWT_PUBLIC_KEY_PATH: str = "./certs/public_key.pem"

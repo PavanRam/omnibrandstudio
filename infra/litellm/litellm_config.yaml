@@ -28,10 +28,44 @@ model_list:
     model: "openai/gpt-4o-2024-11-20"
     api_key: "os.environ/OPENAI_API_KEY"
 
+# judge-3 (paid panel) — was groq/llama-3.2-90b-vision-preview (DECOMMISSIONED
+# by Groq). Repointed to a currently-serveable Groq model so the paid panel
+# still has a distinct open-source family judge.
 - model_name: "judge-3"
   litellm_params:
-    model: "groq/llama-3.2-90b-vision-preview"
+    model: "groq/llama-3.3-70b-versatile"
     api_key: "os.environ/GROQ_API_KEY"
+
+# Free-tier judge panel (Groq) — three DISTINCT families for cross-family
+# disagreement signal, no paid spend. Selected when JUDGE_TIER=free.
+#   judge-1-free → GPT-OSS family   (lead)
+#   judge-2-free → Llama family     (diversity)
+#   judge-3-free → Qwen family      (open-source check, pinned, no cross-family fallback)
+- model_name: "judge-1-free"
+  litellm_params:
+    model: "groq/openai/gpt-oss-120b"
+    api_key: "os.environ/GROQ_API_KEY"
+  model_info: { id: "judge-1-free-gptoss" }
+- model_name: "judge-1-free"
+  litellm_params:
+    model: "groq/openai/gpt-oss-20b"
+    api_key: "os.environ/GROQ_API_KEY"
+
+- model_name: "judge-2-free"
+  litellm_params:
+    model: "groq/llama-3.3-70b-versatile"
+    api_key: "os.environ/GROQ_API_KEY"
+  model_info: { id: "judge-2-free-llama" }
+- model_name: "judge-2-free"
+  litellm_params:
+    model: "groq/llama-3.1-8b-instant"
+    api_key: "os.environ/GROQ_API_KEY"
+
+- model_name: "judge-3-free"
+  litellm_params:
+    model: "groq/qwen/qwen3-32b"
+    api_key: "os.environ/GROQ_API_KEY"
+  model_info: { id: "judge-3-free-qwen" }
 
 # Utility — cheap model for classification, summarisation
 - model_name: "util-fast"
