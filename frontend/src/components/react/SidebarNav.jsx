@@ -1,7 +1,9 @@
-import { Zap } from 'lucide-react';
-import { PRIMARY_NAV, SECONDARY_NAV } from '@/lib/nav.js';
-import { cn } from '@/lib/cn.js';
-import { withBase } from '@/lib/paths.js';
+import { useState } from "react";
+import { Heart } from "lucide-react";
+import { PRIMARY_NAV, SECONDARY_NAV } from "@/lib/nav.js";
+import { cn } from "@/lib/cn.js";
+import { withBase } from "@/lib/paths.js";
+import { CreditsModal } from "./CreditsModal.jsx";
 
 function NavItem({ item, active, collapsed, onNavigate }) {
   const Icon = item.icon;
@@ -10,14 +12,14 @@ function NavItem({ item, active, collapsed, onNavigate }) {
       <a
         href={withBase(item.href)}
         onClick={onNavigate}
-        aria-current={active ? 'page' : undefined}
+        aria-current={active ? "page" : undefined}
         title={collapsed ? item.label : undefined}
         className={cn(
-          'group relative flex items-center rounded-xl text-sm font-medium transition-colors',
-          collapsed ? 'h-11 w-11 justify-center' : 'h-11 gap-3 px-3',
+          "group relative flex items-center rounded-xl text-sm font-medium transition-colors",
+          collapsed ? "h-11 w-11 justify-center" : "h-11 gap-3 px-3",
           active
-            ? 'bg-brand-soft text-brand'
-            : 'text-muted hover:bg-surface-2 hover:text-fg',
+            ? "bg-brand-soft text-brand"
+            : "text-muted hover:bg-surface-2 hover:text-fg",
         )}
       >
         {active && (
@@ -59,6 +61,8 @@ function Section({ title, items, currentRoute, collapsed, onNavigate }) {
 
 /** Inner sidebar content, shared by the desktop rail and the mobile drawer. */
 export function SidebarNav({ currentRoute, collapsed = false, onNavigate }) {
+  const [creditsOpen, setCreditsOpen] = useState(false);
+
   return (
     <div className="flex h-full flex-col">
       <nav aria-label="Primary" className="flex-1 overflow-y-auto px-3 pb-4">
@@ -78,43 +82,37 @@ export function SidebarNav({ currentRoute, collapsed = false, onNavigate }) {
         />
       </nav>
 
-      {/* Credits widget */}
+      {/* Made with love — opens the team credits dialog */}
       <div className="px-3 pb-3">
         {collapsed ? (
-          <div
-            className="grid h-11 w-11 place-items-center rounded-xl bg-surface-2 text-brand"
-            title="420 of 500 credits left"
+          <button
+            type="button"
+            onClick={() => setCreditsOpen(true)}
+            title="Made with ♥ by Adobe Team"
+            aria-label="Made with love by Adobe Team — view credits"
+            className="grid h-11 w-11 place-items-center rounded-xl bg-surface-2 text-brand transition-colors hover:bg-brand-soft"
           >
-            <Zap size={18} aria-hidden="true" />
-          </div>
+            <Heart size={18} aria-hidden="true" fill="currentColor" />
+          </button>
         ) : (
-          <div className="rounded-2xl border border-border bg-surface-2 p-3">
-            <div className="flex items-center justify-between text-xs font-medium">
-              <span className="flex items-center gap-1.5 text-fg">
-                <Zap size={14} aria-hidden="true" className="text-brand" />
-                Credits
-              </span>
-              <span className="text-muted">420 / 500</span>
-            </div>
-            <div
-              className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-3"
-              role="progressbar"
-              aria-valuenow={420}
-              aria-valuemin={0}
-              aria-valuemax={500}
-              aria-label="Monthly generation credits used"
-            >
-              <div className="h-full w-[84%] rounded-full brand-gradient" />
-            </div>
-            <a
-              href={withBase('/gallery')}
-              className="mt-2.5 block text-center text-xs font-medium text-brand hover:underline"
-            >
-              Upgrade plan
-            </a>
-          </div>
+          <button
+            type="button"
+            onClick={() => setCreditsOpen(true)}
+            className="group cursor-pointer flex w-full items-center justify-center gap-1.5 rounded-2xl border border-border bg-surface-2 px-3 py-2.5 text-xs font-medium text-muted transition-colors hover:border-border-strong hover:text-fg"
+          >
+            Made with
+            <Heart
+              size={13}
+              aria-hidden="true"
+              fill="currentColor"
+              className="text-brand transition-transform group-hover:scale-125"
+            />
+            by <span className="font-semibold text-fg">Adobe Team</span>
+          </button>
         )}
       </div>
+
+      <CreditsModal open={creditsOpen} onClose={() => setCreditsOpen(false)} />
     </div>
   );
 }
