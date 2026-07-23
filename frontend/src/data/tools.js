@@ -13,7 +13,7 @@ import {
 export const TOOLS = [
   {
     id: 'text-to-image',
-    name: 'Text to Image',
+    name: 'Image Generation',
     desc: 'Generate images from a description.',
     icon: ImagePlus,
     href: '/text-to-image',

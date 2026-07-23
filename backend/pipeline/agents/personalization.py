@@ -5,7 +5,7 @@ adjusting tone, CTA style, and reading level for the persona — and writes the
 result into ``variant["personalized_content"]``.
 
 Subtasks (per the capstone task sheet):
-  T4.1  Segment loading   — enterprise / sme / consumer profiles from org_config
+  T4.1  Segment loading   — persona voice profiles from brand guidelines / org_config
   T4.2  PII scan          — redact PII from text before prompt construction
   T4.3  Personalization   — traced_llm_call() conditioned on the segment profile
   T4.4  Write + tests      — variants[].personalized_content; enterprise ≠ consumer
@@ -21,7 +21,9 @@ and returns only ``token_cost_usd`` — it appends nothing new to ``variants``.
 """
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 
 import structlog
 
@@ -39,33 +41,70 @@ log = structlog.get_logger()
 
 
 # ── T4.1 Segment profiles ─────────────────────────────────────────────────
-# Personas derived by the data track's K-Means clustering surface here as
-# fixed, auditable profiles. The agent reads them from org_config and falls
-# back to these defaults when a campaign does not override them.
-DEFAULT_SEGMENT_PROFILES: dict[str, dict[str, str]] = {
+# The real personas come from the data track's K-Means output, expressed as
+# brand-guideline files: tone_voice_per_persona.json (voice) + cta_library.json
+# (CTA). The agent loads them as its default persona profiles. A campaign can
+# still override any of them via org_config["segment_profiles"] (e.g. from RAG).
+_BRAND_GUIDELINES_DIR = (
+    Path(__file__).resolve().parents[2] / "data" / "datasets" / "processed" / "brand_guidelines"
+)
+
+# Minimal placeholder profiles, used only if the brand-guideline files are absent.
+_FALLBACK_PROFILES: dict[str, dict[str, str]] = {
     "enterprise": {
         "reading_level": "Grade 12",
-        "tone": "formal, authoritative, ROI-focused",
-        "cta_style": "consultative (e.g. 'Request a strategic briefing')",
+        "tone": "formal, authoritative",
+        "cta_style": "consultative",
     },
-    "sme": {
-        "reading_level": "Grade 10",
-        "tone": "clear, pragmatic, benefit-led",
-        "cta_style": "direct (e.g. 'Start your free trial')",
-    },
-    "consumer": {
-        "reading_level": "Grade 8",
-        "tone": "accessible, friendly, energetic",
-        "cta_style": "punchy (e.g. 'Get started today')",
-    },
+    "sme": {"reading_level": "Grade 10", "tone": "clear, pragmatic", "cta_style": "direct"},
+    "consumer": {"reading_level": "Grade 8", "tone": "accessible, friendly", "cta_style": "punchy"},
 }
 
-# Used when a variant's segment is unknown — never guess a persona silently.
-_FALLBACK_PROFILE = DEFAULT_SEGMENT_PROFILES["consumer"]
+# Used when a variant's segment isn't found in the loaded profiles.
+_FALLBACK_PROFILE = {
+    "tone": "clear, friendly, brand-appropriate",
+    "reading_level": "general",
+    "cta_style": "a clear call to action",
+}
+
+
+def _load_brand_personas() -> dict[str, dict[str, str]]:
+    """Load real persona voice profiles from the brand-guideline files.
+
+    Combines tone_voice_per_persona.json (tone, language style, sentence length)
+    with cta_library.json (call-to-action) into one profile per persona:
+    ``{tone, reading_level, cta_style}``. Returns {} if the files are unavailable,
+    in which case the caller falls back to ``_FALLBACK_PROFILES``."""
+    try:
+        tone_voice = json.loads(
+            (_BRAND_GUIDELINES_DIR / "tone_voice_per_persona.json").read_text(encoding="utf-8")
+        )
+        cta_lib = json.loads(
+            (_BRAND_GUIDELINES_DIR / "cta_library.json").read_text(encoding="utf-8")
+        )
+    except Exception as exc:  # missing/unreadable files — degrade gracefully
+        log.warning("brand_persona_files_unavailable", error=str(exc))
+        return {}
+
+    profiles: dict[str, dict[str, str]] = {}
+    for persona, tv in tone_voice.items():
+        cta_entry = cta_lib.get(persona, {})
+        primary_cta = (cta_entry.get("primary_ctas") or ["a clear call to action"])[0]
+        tone = f"{tv.get('tone', '')} | style: {tv.get('language_style', '')}".strip(" |")
+        profiles[persona] = {
+            "tone": tone,
+            "reading_level": tv.get("sentence_length", "general"),
+            "cta_style": primary_cta,
+        }
+    return profiles
+
+
+# Real personas from the brand guidelines; placeholders only if files are absent.
+DEFAULT_SEGMENT_PROFILES: dict[str, dict[str, str]] = _load_brand_personas() or _FALLBACK_PROFILES
 
 
 def load_segment_profiles(org_config: dict) -> dict[str, dict[str, str]]:
-    """T4.1 — merge org-supplied segment profiles over the built-in defaults."""
+    """T4.1 — merge org-supplied segment profiles over the loaded defaults."""
     profiles = {k: dict(v) for k, v in DEFAULT_SEGMENT_PROFILES.items()}
     for segment, overrides in (org_config or {}).get("segment_profiles", {}).items():
         profiles.setdefault(segment, {}).update(overrides)
