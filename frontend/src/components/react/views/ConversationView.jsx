@@ -1,8 +1,23 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { MessageSquareText, Send, Radio, CircleDot, RefreshCw } from 'lucide-react';
+import {
+  MessageSquareText,
+  Send,
+  Radio,
+  CircleDot,
+  RefreshCw,
+  Check,
+  Bot,
+  Sparkles,
+  ListChecks,
+  Activity,
+  Plus,
+  Wifi,
+  WifiOff,
+} from 'lucide-react';
 import { Page, SectionHeading } from '../Page.jsx';
 import { Button } from '../ui/Button.jsx';
 import { Badge } from '../ui/Badge.jsx';
+import { cn } from '@/lib/cn.js';
 import { useWebSocket } from '../hooks/useWebSocket.js';
 import { useSSE } from '../hooks/useSSE.js';
 import {
@@ -28,30 +43,112 @@ const RERUN_NODES = [
 const DEFAULT_BRAND_ID =
   import.meta.env.PUBLIC_DEFAULT_BRAND_ID || '00000000-0000-0000-0000-000000000002';
 
+function briefValue(brief, key) {
+  const v = brief?.[key];
+  if (key === 'token_budget') return Number(v || 0) > 0 ? `${Number(v).toLocaleString()} tokens` : '';
+  if (Array.isArray(v)) return v;
+  return typeof v === 'string' ? v : '';
+}
+
 function BriefChecklist({ brief }) {
-  const checks = [
-    { key: 'objective', ok: Boolean(brief?.objective) },
-    { key: 'channels', ok: Array.isArray(brief?.channels) && brief.channels.length > 0 },
-    { key: 'locales', ok: Array.isArray(brief?.locales) && brief.locales.length > 0 },
-    {
-      key: 'audience_segments',
-      ok: Array.isArray(brief?.audience_segments) && brief.audience_segments.length > 0,
-    },
-    { key: 'token_budget', ok: Number(brief?.token_budget || 0) > 0 },
-  ];
+  const STEPS = [
+    { key: 'objective', label: 'Objective' },
+    { key: 'channels', label: 'Channels' },
+    { key: 'locales', label: 'Locales' },
+    { key: 'audience_segments', label: 'Audience segments' },
+    { key: 'token_budget', label: 'Token budget' },
+  ].map((s) => {
+    const value = briefValue(brief, s.key);
+    const ok = Array.isArray(value) ? value.length > 0 : Boolean(value);
+    return { ...s, value, ok };
+  });
+
+  const done = STEPS.filter((s) => s.ok).length;
+  const pct = Math.round((done / STEPS.length) * 100);
+  const currentIndex = STEPS.findIndex((s) => !s.ok); // first incomplete = "up next"
+
   return (
-    <ul className="space-y-1.5 text-sm">
-      {checks.map((check) => (
-        <li key={check.key} className="flex items-center gap-2 text-muted">
-          {check.ok ? (
-            <CircleDot size={14} className="text-success" aria-hidden="true" />
-          ) : (
-            <CircleDot size={14} className="text-faint" aria-hidden="true" />
-          )}
-          <span>{check.key.replaceAll('_', ' ')}</span>
-        </li>
-      ))}
-    </ul>
+    <div>
+      <div className="mb-2 flex items-center justify-between text-xs">
+        <span className="font-medium text-muted">
+          {done} of {STEPS.length} complete
+        </span>
+        <span className="font-semibold text-fg">{pct}%</span>
+      </div>
+      <div className="mb-5 h-1.5 overflow-hidden rounded-full bg-surface-2">
+        <div
+          className={cn('h-full rounded-full transition-all duration-500', pct === 100 ? 'bg-success' : 'brand-gradient')}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+
+      <ol className="relative space-y-0">
+        {STEPS.map((step, i) => {
+          const isCurrent = i === currentIndex;
+          const isLast = i === STEPS.length - 1;
+          return (
+            <li key={step.key} className="relative flex gap-3 pb-4 last:pb-0">
+              {/* connector line */}
+              {!isLast && (
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    'absolute left-[11px] top-6 h-[calc(100%-1rem)] w-px',
+                    step.ok ? 'bg-success/40' : 'bg-border',
+                  )}
+                />
+              )}
+              {/* node */}
+              <span
+                className={cn(
+                  'z-10 grid h-6 w-6 shrink-0 place-items-center rounded-full text-[11px] font-semibold ring-2 transition-colors',
+                  step.ok
+                    ? 'bg-success/15 text-success ring-success/30'
+                    : isCurrent
+                      ? 'bg-brand text-brand-fg ring-brand/30'
+                      : 'bg-surface-2 text-faint ring-border',
+                )}
+              >
+                {step.ok ? <Check size={13} aria-hidden="true" /> : i + 1}
+              </span>
+              {/* content */}
+              <div className="min-w-0 flex-1 pt-0.5">
+                <div className="flex items-center gap-2">
+                  <p className={cn('text-sm font-medium', step.ok || isCurrent ? 'text-fg' : 'text-muted')}>
+                    {step.label}
+                  </p>
+                  {isCurrent && !step.ok && (
+                    <span className="rounded-full bg-brand-soft px-1.5 py-0.5 text-[10px] font-medium text-brand">
+                      up next
+                    </span>
+                  )}
+                </div>
+                {step.ok ? (
+                  Array.isArray(step.value) ? (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {step.value.map((v) => (
+                        <span
+                          key={String(v)}
+                          className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted"
+                        >
+                          {String(v)}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-0.5 truncate text-xs text-muted">{step.value}</p>
+                  )
+                ) : (
+                  <p className="mt-0.5 text-xs text-faint">
+                    {isCurrent ? 'Answer in chat to complete' : 'Pending'}
+                  </p>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
   );
 }
 
@@ -163,134 +260,185 @@ function ChatThreadPanel({
   onDecideReview,
   reviewDecisionBusyId = '',
 }) {
+  const stageBadges = [
+    conversationStage && { label: conversationStage.replaceAll('_', ' '), key: 'stage' },
+    primaryObjective && { label: primaryObjective.replaceAll('_', ' '), key: 'obj' },
+    turnType && { label: turnType.replaceAll('_', ' '), key: 'turn' },
+  ].filter(Boolean);
+
   return (
-    <section className="rounded-2xl border border-border bg-surface p-4 card-shadow">
-      <SectionHeading
-        title="Chat thread"
-        description={conversationId ? `Conversation ${conversationId}` : 'No active conversation'}
-      />
-      {conversationStage ? (
-        <div className="mb-2">
-          <Badge tone="neutral">Stage: {conversationStage.replaceAll('_', ' ')}</Badge>
+    <section className="flex h-[calc(100vh-13rem)] min-h-[32rem] flex-col overflow-hidden rounded-2xl border border-border bg-surface card-shadow">
+      {/* Header */}
+      <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg brand-gradient text-white">
+            <Sparkles size={16} aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold text-fg">Campaign copilot</h2>
+            <p className="truncate font-mono text-[11px] text-faint">
+              {conversationId ? conversationId : 'No active conversation'}
+            </p>
+          </div>
         </div>
-      ) : null}
-      {(primaryObjective || turnType) ? (
-        <div className="mb-2 flex flex-wrap gap-2">
-          {primaryObjective ? (
-            <Badge tone="neutral">Objective: {primaryObjective.replaceAll('_', ' ')}</Badge>
-          ) : null}
-          {turnType ? <Badge tone="neutral">Turn: {turnType.replaceAll('_', ' ')}</Badge> : null}
-        </div>
-      ) : null}
+        {stageBadges.length > 0 && (
+          <div className="hidden flex-wrap justify-end gap-1.5 sm:flex">
+            {stageBadges.map((b) => (
+              <Badge key={b.key} tone="neutral" className="capitalize">
+                {b.label}
+              </Badge>
+            ))}
+          </div>
+        )}
+      </header>
+
       {needsClarification ? (
-        <div className="mb-2 rounded-xl border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">
+        <div className="border-b border-warning/30 bg-warning/5 px-4 py-2 text-xs text-warning">
           Clarification needed{clarificationTarget ? `: ${clarificationTarget.replaceAll('_', ' ')}` : ''}
         </div>
       ) : null}
-      <div className="h-[22rem] space-y-3 overflow-y-auto rounded-xl border border-border bg-surface-2 p-3">
+
+      {/* Messages */}
+      <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
         {messages.length === 0 ? (
-          <p className="text-sm text-muted">Start a conversation to begin brief collection.</p>
+          <div className="flex h-full flex-col items-center justify-center text-center">
+            <span className="grid h-14 w-14 place-items-center rounded-2xl bg-brand-soft text-brand">
+              <MessageSquareText size={26} aria-hidden="true" />
+            </span>
+            <p className="mt-4 text-sm font-medium text-fg">Start collecting your brief</p>
+            <p className="mt-1 max-w-xs text-sm text-muted">
+              Describe your campaign objective in plain language — the copilot will ask for anything it needs.
+            </p>
+          </div>
         ) : (
-          messages.map((msg, idx) => (
-            <div
-              key={`${msg.role}-${idx}`}
-              className={`max-w-[92%] rounded-xl px-3 py-2 text-sm ${
-                msg.role === 'user'
-                  ? 'ml-auto bg-brand/15 text-fg'
-                  : 'bg-surface text-fg border border-border'
-              }`}
-            >
-              {msg.content}
-              {msg.role === 'assistant' && Array.isArray(msg.captured) && msg.captured.length > 0 ? (
-                <div className="mt-2 border-t border-border/70 pt-2">
-                  <p className="text-[11px] uppercase tracking-wide text-faint">Captured this turn</p>
-                  <div className="mt-1 flex flex-wrap gap-1.5">
-                    {msg.captured.map((item) => (
-                      <span
-                        key={`${idx}-${item}`}
-                        className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-[11px] text-muted"
-                      >
-                        {item}
-                      </span>
-                    ))}
-                  </div>
+          messages.map((msg, idx) => {
+            const isUser = msg.role === 'user';
+            return (
+              <div key={`${msg.role}-${idx}`} className={cn('flex gap-2.5', isUser && 'flex-row-reverse')}>
+                <span
+                  className={cn(
+                    'grid h-8 w-8 shrink-0 place-items-center rounded-full text-xs font-semibold',
+                    isUser ? 'bg-surface-2 text-muted' : 'brand-gradient text-white',
+                  )}
+                  aria-hidden="true"
+                >
+                  {isUser ? 'You' : <Bot size={16} />}
+                </span>
+                <div
+                  className={cn(
+                    'max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm',
+                    isUser
+                      ? 'rounded-tr-sm bg-brand text-brand-fg'
+                      : 'rounded-tl-sm border border-border bg-surface-2 text-fg',
+                  )}
+                >
+                  <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                  {!isUser && Array.isArray(msg.captured) && msg.captured.length > 0 ? (
+                    <div className="mt-2.5 border-t border-border/60 pt-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-faint">Captured</p>
+                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                        {msg.captured.map((item) => (
+                          <span
+                            key={`${idx}-${item}`}
+                            className="inline-flex items-center gap-1 rounded-full bg-success/12 px-2 py-0.5 text-[11px] font-medium text-success"
+                          >
+                            <Check size={10} aria-hidden="true" /> {item}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  {!isUser && Array.isArray(msg.changes) && msg.changes.length > 0 ? (
+                    <div className="mt-2.5 border-t border-border/60 pt-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-faint">Updated</p>
+                      <div className="mt-1 space-y-1">
+                        {msg.changes.map((change, changeIdx) => (
+                          <p key={`${idx}-${change.field || 'field'}-${changeIdx}`} className="text-[11px] text-muted">
+                            <span className="font-medium text-fg">
+                              {String(change.field || '').replaceAll('_', ' ')}:
+                            </span>{' '}
+                            {formatChangeSummary(change)}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
-              ) : null}
-              {msg.role === 'assistant' && Array.isArray(msg.changes) && msg.changes.length > 0 ? (
-                <div className="mt-2 border-t border-border/70 pt-2">
-                  <p className="text-[11px] uppercase tracking-wide text-faint">Updated this turn</p>
-                  <div className="mt-1 space-y-1">
-                    {msg.changes.map((change, changeIdx) => (
-                      <p key={`${idx}-${change.field || 'field'}-${changeIdx}`} className="text-[11px] text-muted">
-                        <span className="font-medium text-fg">{String(change.field || '').replaceAll('_', ' ')}:</span>{' '}
-                        {formatChangeSummary(change)}
-                      </p>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          ))
+              </div>
+            );
+          })
         )}
+
+        {pendingReviews.length > 0 ? (
+          <div className="space-y-2">
+            {pendingReviews.map((review) => (
+              <ReviewCard
+                key={review.review_request_id}
+                review={review}
+                onDecide={onDecideReview}
+                busy={reviewDecisionBusyId === review.review_request_id}
+              />
+            ))}
+          </div>
+        ) : null}
       </div>
-      {pendingReviews.length > 0 ? (
-        <div className="mt-3 space-y-2">
-          {pendingReviews.map((review) => (
-            <ReviewCard
-              key={review.review_request_id}
-              review={review}
-              onDecide={onDecideReview}
-              busy={reviewDecisionBusyId === review.review_request_id}
-            />
-          ))}
-        </div>
-      ) : null}
-      {suggestedPrompts.length > 0 && !campaignId ? (
-        <div className="mt-2 flex flex-wrap gap-2">
-          {suggestedPrompts.map((prompt) => (
-            <Button
-              key={prompt}
-              variant="ghost"
-              size="sm"
-              onClick={() => sendPrompt(prompt)}
-              disabled={!canChat}
-            >
-              {prompt}
-            </Button>
-          ))}
-        </div>
-      ) : null}
-      <div className="mt-3 flex gap-2">
-        <input
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') sendMessage();
-          }}
-          placeholder={chatPlaceholder}
-          className="h-10 flex-1 rounded-xl border border-border bg-surface-2 px-3 text-sm text-fg"
-        />
-        <Button variant="secondary" onClick={sendMessage} disabled={!hasConversation}>
-          <Send size={15} aria-hidden="true" /> Send
-        </Button>
-      </div>
-      {campaignId ? (
-        <div className="mt-2 flex flex-wrap gap-2">
-          <Button variant="ghost" size="sm" onClick={() => sendPrompt('What is the current campaign status?')}>
-            What is the current campaign status?
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => sendPrompt('What happened in the last step?')}>
-            What happened in the last step?
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => sendPrompt('Show outputs from content_generator')}
+
+      {/* Composer */}
+      <div className="border-t border-border bg-surface px-4 py-3">
+        {suggestedPrompts.length > 0 && !campaignId ? (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {suggestedPrompts.map((prompt) => (
+              <button
+                key={prompt}
+                type="button"
+                onClick={() => sendPrompt(prompt)}
+                disabled={!canChat}
+                className="rounded-full border border-border bg-surface px-2.5 py-1 text-xs text-muted transition-colors hover:border-brand hover:text-brand disabled:opacity-50"
+              >
+                {prompt}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {campaignId ? (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {[
+              'What is the current campaign status?',
+              'What happened in the last step?',
+              'Show outputs from content_generator',
+            ].map((q) => (
+              <button
+                key={q}
+                type="button"
+                onClick={() => sendPrompt(q)}
+                className="rounded-full border border-border bg-surface px-2.5 py-1 text-xs text-muted transition-colors hover:border-brand hover:text-brand"
+              >
+                {q}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <div className="flex items-end gap-2 rounded-2xl border border-border bg-surface-2 p-1.5 focus-within:border-brand">
+          <input
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') sendMessage();
+            }}
+            placeholder={chatPlaceholder}
+            className="h-9 flex-1 bg-transparent px-2.5 text-sm text-fg placeholder:text-faint focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={sendMessage}
+            disabled={!hasConversation || !message.trim()}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-xl brand-gradient text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:brightness-100"
+            aria-label="Send message"
           >
-            Show outputs from content_generator
-          </Button>
+            <Send size={16} aria-hidden="true" />
+          </button>
         </div>
-      ) : null}
+      </div>
     </section>
   );
 }
@@ -303,35 +451,56 @@ function RecentConversationsPanel({
   conversationId,
 }) {
   return (
-    <section className="rounded-2xl border border-border bg-surface p-4 card-shadow">
-      <SectionHeading
-        title="Recent conversations"
-        action={
-          <Button variant="ghost" size="sm" onClick={loadRecentConversations} disabled={recentLoading}>
-            <RefreshCw size={12} aria-hidden="true" /> {recentLoading ? 'Loading…' : 'Refresh'}
-          </Button>
-        }
-      />
-      <div className="h-[22rem] space-y-2 overflow-y-auto rounded-xl border border-border bg-surface-2 p-2.5">
+    <section className="flex h-[calc(100vh-13rem)] min-h-[32rem] flex-col overflow-hidden rounded-2xl border border-border bg-surface card-shadow">
+      <header className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
+        <h2 className="text-sm font-semibold text-fg">Conversations</h2>
+        <button
+          type="button"
+          onClick={loadRecentConversations}
+          disabled={recentLoading}
+          className="grid h-7 w-7 place-items-center rounded-lg text-muted transition-colors hover:bg-surface-2 hover:text-fg"
+          aria-label="Refresh conversations"
+        >
+          <RefreshCw size={14} aria-hidden="true" className={recentLoading ? 'animate-spin' : ''} />
+        </button>
+      </header>
+      <div className="flex-1 space-y-1 overflow-y-auto p-2">
         {recentConversations.length === 0 ? (
-          <p className="text-sm text-muted">No recent conversations.</p>
+          <div className="flex h-full flex-col items-center justify-center px-3 text-center">
+            <MessageSquareText size={22} aria-hidden="true" className="text-faint" />
+            <p className="mt-2 text-sm text-muted">No conversations yet</p>
+          </div>
         ) : (
           recentConversations.map((session) => {
             const isActive = session.conversation_id === conversationId;
-            const updated = session.updated_at ? new Date(session.updated_at).toLocaleString() : 'unknown';
+            const updated = session.updated_at ? relativeTime(session.updated_at) : '';
             return (
               <button
                 key={session.conversation_id}
                 type="button"
                 onClick={() => selectConversation(session)}
-                className={`w-full rounded-lg border px-2.5 py-2 text-left text-xs transition ${
+                className={cn(
+                  'w-full rounded-xl border px-3 py-2.5 text-left transition-colors',
                   isActive
-                    ? 'border-brand bg-brand/10 text-fg'
-                    : 'border-border bg-surface text-muted hover:border-border-strong hover:text-fg'
-                }`}
+                    ? 'border-brand/40 bg-brand-soft'
+                    : 'border-transparent hover:border-border hover:bg-surface-2',
+                )}
               >
-                <p className="truncate font-medium">{session.conversation_id}</p>
-                <p className="mt-0.5 text-[11px]">{session.status || 'collecting'} · {updated}</p>
+                <div className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      'h-1.5 w-1.5 shrink-0 rounded-full',
+                      (session.status || 'collecting') === 'collecting' ? 'bg-warning' : 'bg-success',
+                    )}
+                  />
+                  <p className={cn('truncate font-mono text-xs', isActive ? 'text-brand' : 'text-fg')}>
+                    {session.conversation_id.slice(0, 12)}…
+                  </p>
+                </div>
+                <p className="mt-1 flex items-center gap-1.5 pl-3.5 text-[11px] text-faint">
+                  <span className="capitalize">{session.status || 'collecting'}</span>
+                  {updated && <span>· {updated}</span>}
+                </p>
               </button>
             );
           })
@@ -339,6 +508,18 @@ function RecentConversationsPanel({
       </div>
     </section>
   );
+}
+
+function relativeTime(value) {
+  const then = new Date(value).getTime();
+  if (Number.isNaN(then)) return '';
+  const diff = Date.now() - then;
+  const min = Math.round(diff / 60000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  return `${Math.round(hr / 24)}d ago`;
 }
 
 function CampaignStreamPanel({
@@ -362,18 +543,28 @@ function CampaignStreamPanel({
 }) {
   const hasCampaign = Boolean(campaignId);
 
+  if (!hasCampaign) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center px-4 py-10 text-center">
+        <span className="grid h-12 w-12 place-items-center rounded-2xl bg-surface-2 text-faint">
+          <Activity size={22} aria-hidden="true" />
+        </span>
+        <p className="mt-3 text-sm font-medium text-fg">No campaign running</p>
+        <p className="mt-1 max-w-[15rem] text-sm text-muted">
+          Complete the brief and say “run campaign” — pipeline events stream here live.
+        </p>
+      </div>
+    );
+  }
+
   return (
-    <section className="rounded-2xl border border-border bg-surface p-4 card-shadow">
-      <SectionHeading
-        title="Campaign stream"
-        action={
-          <Badge tone={streamBadgeTone}>
-            <Radio size={12} aria-hidden="true" /> {sseConnected ? 'live' : 'idle'}
-          </Badge>
-        }
-      />
-      <div className="mb-3 text-xs text-faint">
-        {hasCampaign ? `Campaign ${campaignId}` : 'No campaign yet'}
+    <div>
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <span className="truncate font-mono text-[11px] text-faint">Campaign {campaignId.slice(0, 12)}…</span>
+        <Badge tone={streamBadgeTone}>
+          <Radio size={12} aria-hidden="true" className={sseConnected ? 'animate-pulse' : ''} />
+          {sseConnected ? 'Live' : 'Idle'}
+        </Badge>
       </div>
       <ReplayStatusBanner
         hasCampaign={hasCampaign}
@@ -421,6 +612,57 @@ function CampaignStreamPanel({
         </div>
       ) : null}
       <CampaignEventsList events={events} />
+    </div>
+  );
+}
+
+function WorkspaceInspector({ brief, briefFieldStates, stream }) {
+  const [tab, setTab] = useState('brief');
+  return (
+    <section className="flex h-[calc(100vh-13rem)] min-h-[32rem] flex-col overflow-hidden rounded-2xl border border-border bg-surface card-shadow">
+      <div className="flex items-center gap-1 border-b border-border p-1.5">
+        {[
+          { key: 'brief', label: 'Brief', icon: ListChecks },
+          { key: 'pipeline', label: 'Pipeline', icon: Activity },
+        ].map((t) => {
+          const Icon = t.icon;
+          const active = tab === t.key;
+          return (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setTab(t.key)}
+              className={cn(
+                'inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-sm font-medium transition-colors',
+                active ? 'bg-brand text-brand-fg' : 'text-muted hover:bg-surface-2 hover:text-fg',
+              )}
+            >
+              <Icon size={15} aria-hidden="true" />
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+      <div className="flex-1 overflow-y-auto p-4">
+        {tab === 'brief' ? (
+          <>
+            {briefFieldStates.length > 0 ? (
+              <BriefFieldStates fieldStates={briefFieldStates} />
+            ) : (
+              <BriefChecklist brief={brief} />
+            )}
+            <div className="mt-4 flex items-start gap-2 rounded-xl border border-border bg-surface-2 p-3">
+              <Sparkles size={15} aria-hidden="true" className="mt-0.5 shrink-0 text-brand" />
+              <p className="text-xs text-muted">
+                When every field is complete, send{' '}
+                <span className="font-medium text-fg">“run campaign”</span> to enqueue execution.
+              </p>
+            </div>
+          </>
+        ) : (
+          stream
+        )}
+      </div>
     </section>
   );
 }
@@ -1213,13 +1455,25 @@ export function ConversationView() {
     <Page
       wide
       eyebrow="Workspace"
-      title="Conversation Orchestrator"
-      description="Collect campaign brief inputs over chat, then monitor pipeline progress in real time."
+      title="Campaign Copilot"
+      description="Chat to build a brief, then watch the pipeline run in real time."
       actions={
-        <Button variant="primary" onClick={startConversation} disabled={status === 'creating'}>
-          <MessageSquareText size={16} aria-hidden="true" />
-          {status === 'creating' ? 'Creating…' : 'New conversation'}
-        </Button>
+        <div className="flex items-center gap-2">
+          <span
+            className={cn(
+              'hidden items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset sm:inline-flex',
+              wsConnected ? 'bg-success/12 text-success ring-success/20' : 'bg-surface-2 text-muted ring-border',
+            )}
+            title={wsConnected ? 'Chat connected' : 'Chat disconnected'}
+          >
+            {wsConnected ? <Wifi size={12} aria-hidden="true" /> : <WifiOff size={12} aria-hidden="true" />}
+            Chat
+          </span>
+          <Button variant="primary" onClick={startConversation} disabled={status === 'creating'}>
+            <Plus size={16} aria-hidden="true" />
+            {status === 'creating' ? 'Creating…' : 'New conversation'}
+          </Button>
+        </div>
       }
     >
       {error ? (
@@ -1228,7 +1482,7 @@ export function ConversationView() {
         </div>
       ) : null}
 
-      <div className="grid gap-4 lg:grid-cols-[0.85fr_1.25fr_0.9fr_1fr]">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,240px)_minmax(0,1fr)_minmax(0,380px)]">
         <RecentConversationsPanel
           recentConversations={recentConversations}
           recentLoading={recentLoading}
@@ -1259,39 +1513,30 @@ export function ConversationView() {
           reviewDecisionBusyId={reviewDecisionBusyId}
         />
 
-        <section className="rounded-2xl border border-border bg-surface p-4 card-shadow">
-          <SectionHeading title="Brief completeness" />
-          {briefFieldStates.length > 0 ? (
-            <BriefFieldStates fieldStates={briefFieldStates} />
-          ) : (
-            <BriefChecklist brief={brief} />
-          )}
-          <div className="mt-4 rounded-xl border border-border bg-surface-2 p-3">
-            <p className="text-xs uppercase tracking-wide text-faint">Tip</p>
-            <p className="mt-1 text-sm text-muted">
-              Once all fields are complete, send “run campaign” to enqueue execution.
-            </p>
-          </div>
-        </section>
-
-        <CampaignStreamPanel
-          streamBadgeTone={streamBadgeTone}
-          sseConnected={sseConnected}
-          campaignId={campaignId}
-          rerunNode={rerunNode}
-          setRerunNode={setRerunNode}
-          rerunReason={rerunReason}
-          setRerunReason={setRerunReason}
-          rerunSubmitting={rerunSubmitting}
-          runRerun={runRerun}
-          rerunStatus={rerunStatus}
-          replayLoading={replayLoading}
-          replayLoadingOlder={replayLoadingOlder}
-          replayHasMore={replayHasMore}
-          replayCursorValid={replayCursorValid}
-          loadOlderReplay={loadOlderReplay}
-          statusSummary={statusSummary}
-          events={mergedEvents}
+        <WorkspaceInspector
+          brief={brief}
+          briefFieldStates={briefFieldStates}
+          stream={
+            <CampaignStreamPanel
+              streamBadgeTone={streamBadgeTone}
+              sseConnected={sseConnected}
+              campaignId={campaignId}
+              rerunNode={rerunNode}
+              setRerunNode={setRerunNode}
+              rerunReason={rerunReason}
+              setRerunReason={setRerunReason}
+              rerunSubmitting={rerunSubmitting}
+              runRerun={runRerun}
+              rerunStatus={rerunStatus}
+              replayLoading={replayLoading}
+              replayLoadingOlder={replayLoadingOlder}
+              replayHasMore={replayHasMore}
+              replayCursorValid={replayCursorValid}
+              loadOlderReplay={loadOlderReplay}
+              statusSummary={statusSummary}
+              events={mergedEvents}
+            />
+          }
         />
       </div>
     </Page>
