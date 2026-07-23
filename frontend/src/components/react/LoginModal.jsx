@@ -1,29 +1,41 @@
 import { useId, useState } from 'react';
-import { Sparkles, Mail, Lock } from 'lucide-react';
+import { Sparkles, Mail, Lock, Eye, EyeOff } from 'lucide-react';
 import { Modal } from './ui/Modal.jsx';
 import { Button } from './ui/Button.jsx';
 import { cn } from '@/lib/cn.js';
 
-/** Demo sign-in dialog. Any valid-looking input "logs in" the user. */
+// Local dev credentials, prefilled for convenience.
+const DEFAULT_EMAIL = 'admin@omnibrand.local';
+const DEFAULT_PASSWORD = 'OmniBrand!123';
+
+/** Sign-in dialog. */
 export function LoginModal({ open, onClose, onLogin }) {
   const emailId = useId();
   const pwId = useId();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [email, setEmail] = useState(DEFAULT_EMAIL);
+  const [password, setPassword] = useState(DEFAULT_PASSWORD);
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
-  const submit = (e) => {
+  const submit = async (e) => {
     e.preventDefault();
-    if (!email.includes('@') || password.length < 4) {
-      setError('Enter a valid email and a password of at least 4 characters.');
+    if (!email.includes('@') || password.length < 8) {
+      setError('Enter a valid email and a password of at least 8 characters.');
       return;
     }
-    const name = email
-      .split('@')[0]
-      .replace(/[._-]+/g, ' ')
-      .replace(/\b\w/g, (c) => c.toUpperCase());
-    onLogin({ name, email, initials: name.slice(0, 1).toUpperCase() });
-    onClose();
+
+    setError('');
+    setSubmitting(true);
+    try {
+      await onLogin({ email, password });
+      onClose();
+      setPassword('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Login failed');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -76,16 +88,29 @@ export function LoginModal({ open, onClose, onLogin }) {
             />
             <input
               id={pwId}
-              type="password"
+              type={showPassword ? 'text' : 'password'}
               autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
               className={cn(
-                'h-11 w-full rounded-xl border border-border bg-surface-2 pl-9 pr-3 text-sm text-fg',
+                'h-11 w-full rounded-xl border border-border bg-surface-2 pl-9 pr-10 text-sm text-fg',
                 'transition-colors focus:border-brand focus:bg-surface',
               )}
             />
+            <button
+              type="button"
+              onClick={() => setShowPassword((v) => !v)}
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+              aria-pressed={showPassword}
+              className="absolute right-2 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-lg text-faint transition-colors hover:text-fg focus:text-fg focus:outline-none"
+            >
+              {showPassword ? (
+                <EyeOff size={16} aria-hidden="true" />
+              ) : (
+                <Eye size={16} aria-hidden="true" />
+              )}
+            </button>
           </div>
         </div>
 
@@ -95,14 +120,10 @@ export function LoginModal({ open, onClose, onLogin }) {
           </p>
         )}
 
-        <Button type="submit" variant="primary" size="lg" className="w-full">
-          Sign in
+        <Button type="submit" variant="primary" size="lg" className="w-full" disabled={submitting}>
+          {submitting ? 'Signing in...' : 'Sign in'}
         </Button>
       </form>
-
-      <p className="mt-4 text-center text-xs text-muted">
-        Demo only — no credentials are checked or stored on a server.
-      </p>
     </Modal>
   );
 }

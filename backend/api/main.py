@@ -1,14 +1,14 @@
 import time
 from contextlib import asynccontextmanager
 
+from core.config import settings
+from core.metrics import REGISTRY, http_request_duration, http_requests_total
+from core.tracing import instrument_fastapi, setup_observability
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from api.middleware.request_id import RequestIDMiddleware
-from core.config import settings
-from core.metrics import REGISTRY, http_request_duration, http_requests_total
-from core.tracing import instrument_fastapi, setup_observability
 
 
 @asynccontextmanager
@@ -16,11 +16,13 @@ async def lifespan(app: FastAPI):
     from core.database import close_db, init_db
     from core.langfuse import get_langfuse
     from core.redis import close_redis, init_redis
+    from services.dev.bootstrap import ensure_dev_bootstrap
 
     setup_observability("omnibrand-api")
     instrument_fastapi(app)
 
     await init_db()
+    await ensure_dev_bootstrap()
     await init_redis()
     yield
     await close_db()
@@ -41,6 +43,7 @@ def should_enable_local_eval() -> bool:
 
 # ── Middleware stack (order matters: outermost first) ────────────────────────────
 
+app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -48,7 +51,6 @@ app.add_middleware(
     allow_headers=["*", "X-Request-ID"],
     expose_headers=["X-Request-ID"],
 )
-app.add_middleware(RequestIDMiddleware)
 
 
 # ── HTTP metrics (lightweight inline middleware) ────────────────────────────────
@@ -76,13 +78,27 @@ async def metrics() -> Response:
 
 # ── Routers ──────────────────────────────────────────────────────────────────────────
 
-from api.routers import auth, campaigns, health, knowledge, orgs  # noqa: E402
+from api.routers import (  # noqa: E402
+    auth,
+    campaigns,
+    conversations,
+    golden_dataset,
+    health,
+    knowledge,
+    orgs,
+    reviews,
+    users,
+)
 
 app.include_router(health.router)
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(campaigns.router, prefix="/campaigns", tags=["campaigns"])
+app.include_router(conversations.router, tags=["conversations"])
 app.include_router(orgs.router, prefix="/orgs", tags=["orgs"])
+app.include_router(users.router, prefix="/users", tags=["users"])
 app.include_router(knowledge.router, prefix="/knowledge", tags=["knowledge"])
+app.include_router(golden_dataset.router, prefix="/knowledge", tags=["golden-dataset"])
+app.include_router(reviews.router, prefix="/reviews", tags=["reviews"])
 
 if should_enable_local_eval():
     # TEMP_LOCAL_EVAL: Local eval endpoint is intentionally not registered by default.

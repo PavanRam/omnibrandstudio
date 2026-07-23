@@ -131,7 +131,8 @@ async def confidence_aggregator_stub(state: OmniBrandState) -> dict:
 async def review_gate_stub(state: OmniBrandState) -> dict:
     await _yield_once()
     log.info("agent_stub", agent="review_gate", campaign_id=state.get("campaign_id"))
-    return {"variants": [], "current_phase": "review_complete"}
+    # Preserve upstream variants; this stub only advances phase state.
+    return {"current_phase": "review_complete"}
 
 
 async def publishing_agent_stub(state: OmniBrandState) -> dict:
@@ -139,7 +140,6 @@ async def publishing_agent_stub(state: OmniBrandState) -> dict:
     log.info("agent_stub", agent="publishing_agent", campaign_id=state.get("campaign_id"))
     return {
         "publication_receipts": [],
-        "variants": [],
         "current_phase": "published",
     }
 

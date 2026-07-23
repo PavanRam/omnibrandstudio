@@ -55,7 +55,7 @@ services:
     depends_on:
       redis: {condition: service_healthy}
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:4000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health', timeout=5)"]
       interval: 15s
 
   langfuse:
@@ -140,19 +140,30 @@ services:
     env_file: .env
     environment:
       UV_CACHE_DIR: /tmp/uv-cache
+      ENABLE_CONVERSATION_PLANNER: ${ENABLE_CONVERSATION_PLANNER:-0}
+      DEV_BOOTSTRAP_ADMIN_ENABLED: ${DEV_BOOTSTRAP_ADMIN_ENABLED:-1}
+      DEV_ADMIN_ORG_ID: ${DEV_ADMIN_ORG_ID:-00000000-0000-0000-0000-000000000001}
+      DEV_ADMIN_BRAND_ID: ${DEV_ADMIN_BRAND_ID:-00000000-0000-0000-0000-000000000002}
+      DEV_ADMIN_EMAIL: ${DEV_ADMIN_EMAIL:-admin@omnibrand.local}
+      DEV_ADMIN_PASSWORD: ${DEV_ADMIN_PASSWORD:-OmniBrand!123}
       POSTGRES_DSN: postgresql+asyncpg://omnibrand:${POSTGRES_PASSWORD}@postgres:5432/omnibrand
+      ALEMBIC_DSN: postgresql+asyncpg://omnibrand:${POSTGRES_PASSWORD}@postgres:5432/omnibrand
       REDIS_URL: redis://redis:6379
       CHROMA_PERSIST_PATH: /app/data/chroma
       LITELLM_BASE_URL: http://litellm:4000
       LANGFUSE_HOST: http://langfuse:3000
       S3_ENDPOINT_URL: http://minio:9000
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      JWT_PRIVATE_KEY_PATH: /app/certs/private_key.pem
+      JWT_PUBLIC_KEY_PATH: /app/certs/public_key.pem
     ports: ["8000:8000"]
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
     command: python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
-    volumes: ["./backend:/app"]
+    volumes:
+      - "./backend:/app"
+      - "./certs:/app/certs:ro"
 
   worker:
     build: {context: ., dockerfile: backend/Dockerfile, target: runtime}
@@ -165,11 +176,15 @@ services:
       LITELLM_BASE_URL: http://litellm:4000
       LANGFUSE_HOST: http://langfuse:3000
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      JWT_PRIVATE_KEY_PATH: /app/certs/private_key.pem
+      JWT_PUBLIC_KEY_PATH: /app/certs/public_key.pem
     command: python -m worker.main
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
-    volumes: ["./backend:/app"]
+    volumes:
+      - "./backend:/app"
+      - "./certs:/app/certs:ro"
 
 volumes:
   postgres_data:

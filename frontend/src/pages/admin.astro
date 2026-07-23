@@ -3,6 +3,10 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 import App from '../components/react/App.jsx';
 ---
 
-<BaseLayout title="Admin Panel" description="Restricted operations dashboard for OmniBrand Studio.">
+<BaseLayout
+  title="Admin Panel"
+  description="Restricted operations dashboard for OmniBrand Studio."
+  requireAuth={true}
+>
   <App client:load route="admin" />
 </BaseLayout>

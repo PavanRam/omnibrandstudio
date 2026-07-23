@@ -12,9 +12,17 @@ from services.rag.vector_store import VectorPoint
 @dataclass
 class _FakeVectorStore:
     upserts: list[tuple[str, list[VectorPoint]]] = field(default_factory=list)
+    deletes: list[tuple[str, dict]] = field(default_factory=list)
 
     async def upsert(self, collection: str, points: list[VectorPoint]) -> None:
         self.upserts.append((collection, points))
+
+    async def delete_by_filter(self, collection: str, filters: dict) -> None:
+        self.deletes.append((collection, filters))
+
+    async def get_documents(self, collection: str, filters: dict, limit: int | None = None):
+        _ = collection, filters, limit
+        return []
 
 
 @dataclass
@@ -123,3 +131,39 @@ async def test_ingest_seed_datasets_scopes_all_collections_by_brand(
             assert point.metadata["brand_id"] == "brand-a"
             assert point.metadata["locale"] == "en-US"
             assert point.metadata["active"] is True
+
+
+@pytest.mark.asyncio
+async def test_ingest_customer_segments_scopes_segments_collection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_store = _FakeVectorStore()
+
+    monkeypatch.setattr(ingest_mod, "get_vector_store", lambda: fake_store)
+    monkeypatch.setattr(ingest_mod, "chunk_text", lambda text: [text])
+
+    async def _fake_embed_texts(texts: list[str]) -> list[list[float]]:
+        return [[0.3] for _ in texts]
+
+    monkeypatch.setattr(ingest_mod, "embed_texts", _fake_embed_texts)
+
+    content = "segment,size\nSMB,120\nEnterprise,20\n".encode("utf-8")
+    result = await ingest_mod.ingest_customer_segments(
+        brand_id="brand-a",
+        file_bytes=content,
+        filename="segments.csv",
+        locale="en-US",
+        version="v1",
+    )
+
+    assert result["collection"] == "brand_brand-a_segments"
+    assert result["records_indexed"] == 2
+    assert len(fake_store.deletes) == 1
+    assert fake_store.deletes[0][0] == "brand_brand-a_segments"
+
+    assert len(fake_store.upserts) == 1
+    _, points = fake_store.upserts[0]
+    for point in points:
+        assert point.metadata["brand_id"] == "brand-a"
+        assert point.metadata["locale"] == "en-US"
+        assert point.metadata["content_type"] == "segment_profile"

@@ -1,0 +1,8 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import App from '../components/react/App.jsx';
+---
+
+<BaseLayout title="Workspace" requireAuth={true}>
+  <App client:load route="app" />
+</BaseLayout>

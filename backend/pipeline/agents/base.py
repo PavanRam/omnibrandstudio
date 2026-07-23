@@ -1,17 +1,20 @@
+import json
 import time
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 import structlog
-
 from core.config import settings
 from core.database import get_db
 from core.langfuse import get_langfuse, start_langfuse_trace
 from core.metrics import llm_call_duration, llm_cost_usd_total, llm_tokens_total
+from core.redis import get_redis
 from core.tracing import get_tracer
-from pipeline.state import OmniBrandState
 from services.audit_service import write_audit  # re-exported for agent use
+
+from pipeline.state import OmniBrandState
 
 log = structlog.get_logger()
 
@@ -19,8 +22,40 @@ __all__ = [
     "traced_llm_call",
     "write_audit",
     "safe_agent_run",
+    "publish_campaign_event",
     "AGENT_WRITE_PERMISSIONS",
 ]
+
+
+async def publish_campaign_event(
+    *,
+    campaign_id: str | None,
+    agent: str,
+    phase: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    if not campaign_id:
+        return
+
+    event_payload = {
+        "campaign_id": campaign_id,
+        "agent": agent,
+        "phase": phase,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "payload": payload or {},
+    }
+
+    try:
+        channel = f"campaign:{campaign_id}:events"
+        await get_redis().publish(channel, json.dumps(event_payload))
+    except Exception as exc:
+        log.warning(
+            "campaign_event_publish_failed",
+            campaign_id=campaign_id,
+            agent=agent,
+            phase=phase,
+            error=str(exc),
+        )
 
 
 def _fallback_content_from_messages(messages: list[dict]) -> str:
@@ -128,34 +163,43 @@ async def traced_llm_call(
         async with get_db() as conn:
             from sqlalchemy import text
 
-            await conn.execute(
-                text(
-                    """
-                    INSERT INTO campaign_cost_attribution
-                        (campaign_id, org_id, brand_id, agent_name, model_alias,
-                         model_resolved, provider, input_tokens, output_tokens,
-                         total_cost_usd, latency_ms)
-                    VALUES
-                        (:campaign_id, :org_id, :brand_id, :agent_name, :model_alias,
-                         :model_resolved, :provider, :input_tokens, :output_tokens,
-                         :total_cost_usd, :latency_ms)
-                    """
-                ),
-                {
-                    "campaign_id": campaign_id,
-                    "org_id": state.get("org_id"),
-                    "brand_id": state.get("brand_id"),
-                    "agent_name": agent,
-                    "model_alias": model,
-                    "model_resolved": resolved_model,
-                    "provider": provider,
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_cost_usd": cost,
-                    "latency_ms": latency_ms,
-                },
-            )
-            await conn.commit()
+            try:
+                await conn.execute(
+                    text(
+                        """
+                        INSERT INTO campaign_cost_attribution
+                            (campaign_id, org_id, brand_id, agent_name, model_alias,
+                             model_resolved, provider, input_tokens, output_tokens,
+                             total_cost_usd, latency_ms)
+                        VALUES
+                            (:campaign_id, :org_id, :brand_id, :agent_name, :model_alias,
+                             :model_resolved, :provider, :input_tokens, :output_tokens,
+                             :total_cost_usd, :latency_ms)
+                        """
+                    ),
+                    {
+                        "campaign_id": campaign_id,
+                        "org_id": state.get("org_id"),
+                        "brand_id": state.get("brand_id"),
+                        "agent_name": agent,
+                        "model_alias": model,
+                        "model_resolved": resolved_model,
+                        "provider": provider,
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_cost_usd": cost,
+                        "latency_ms": latency_ms,
+                    },
+                )
+                await conn.commit()
+            except Exception as exc:
+                await conn.rollback()
+                log.warning(
+                    "campaign_cost_attribution_write_failed",
+                    campaign_id=campaign_id,
+                    agent=agent,
+                    error=str(exc),
+                )
 
     return content, {
         "cost": cost,
@@ -210,14 +254,16 @@ AGENT_WRITE_PERMISSIONS: dict[str, set[str]] = {
     },
     "personalization_agent": {"variants", "token_cost_usd", "errors"},
     "translation_agent": {"variants", "token_cost_usd", "errors"},
-    "judge_claude": {"brand_scores", "token_cost_usd", "errors"},
-    "judge_gpt4o": {"brand_scores", "token_cost_usd", "errors"},
-    "judge_llama": {"brand_scores", "token_cost_usd", "errors"},
+    "judge_gate": {"judge_mode"},
+    "judge_claude": {"brand_scores", "errors"},
+    "judge_gpt4o": {"brand_scores", "errors"},
+    "judge_llama": {"brand_scores", "errors"},
     "confidence_aggregator": {
         "aggregated_scores",
         "review_requests",
         "human_review_requested",
     },
-    "review_gate": {"variants", "current_phase"},
+    "reflexion": {"variants", "brand_scores", "aggregated_scores", "errors"},
+    "review_gate": {"variants", "current_phase", "review_round"},
     "publishing_agent": {"publication_receipts", "variants", "current_phase", "errors"},
 }

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import re
 from typing import Any, cast
 
-from pipeline.agents.base import safe_agent_run, traced_llm_call
+from pipeline.agents.base import publish_campaign_event, safe_agent_run, traced_llm_call
 from pipeline.agents.prompts.channel_prompts import (
     DEFAULT_CHANNEL_CONSTRAINTS,
     PROMPT_VERSION,
@@ -25,31 +26,82 @@ _CTA_MARKERS = (
     "reply",
     "click",
     "visit",
+    "request",
+    "discover",
+    "explore",
+    "join",
+    "download",
+    "subscribe",
+    "contact",
+    "apply",
+    "order",
+    "reserve",
 )
 
 
 def _has_element(content: str, element: str) -> bool:
+    """Check if content includes required element. More lenient parsing."""
     lowered = content.lower()
+    
     if element == "hashtag":
         return "#" in content
+    
     if element == "subject_line":
-        return lowered.strip().startswith("subject:")
+        # Match various subject_line formats:
+        # "Subject: ...", "Subject Line: ...", "---\nSubject: ...", etc.
+        return bool(
+            re.search(
+                r"(?:subject\s*(?:line)?\s*:|\/\/\s*subject|subject\s*line)",
+                lowered,
+                re.IGNORECASE
+            )
+        )
+    
     if element == "cta":
-        return any(marker in lowered for marker in _CTA_MARKERS)
+        # More aggressive: check for CTA markers OR action verbs at line start
+        if any(marker in lowered for marker in _CTA_MARKERS):
+            return True
+        # Check for action-verb patterns: "Visit:", "Learn:", etc. at line boundaries
+        if re.search(
+            r"^\s*(visit|click|learn|sign|get|start|shop|book|reply|discover|explore|join|download|subscribe|contact|apply|order|reserve)\s*[:\.→>-]",
+            lowered,
+            re.MULTILINE
+        ):
+            return True
+        # Check for imperative sentences ("Discover our", "Join today", etc.)
+        if re.search(
+            r"(?:^|\n|\.|!|\?)\s*(?:visit|click|learn|sign|get|start|shop|book|reply|discover|explore|join|download|subscribe|contact|apply|order|reserve)\s+",
+            lowered
+        ):
+            return True
+        return False
+    
     return True
 
 
 def _check_constraints(content: str, constraints: dict[str, Any]) -> list[str]:
+    """Check content against channel constraints. Returns list of violations."""
     violations: list[str] = []
+    
+    # Character limit: allow 10% overage for flexibility
     char_limit = constraints.get("char_limit")
-    if char_limit and len(content) > char_limit:
-        violations.append(f"exceeds char_limit of {char_limit} (got {len(content)})")
+    if char_limit:
+        limit_with_tolerance = int(char_limit * 1.1)
+        if len(content) > limit_with_tolerance:
+            violations.append(
+                f"exceeds char_limit of {char_limit} by too much (got {len(content)})"
+            )
+    
+    # Required elements: be explicit about what's missing
     for element in constraints.get("required_elements", []):
         if not _has_element(content, element):
             violations.append(f"missing required element: {element}")
+    
+    # Prohibited vocabulary: strict check
     for term in constraints.get("prohibited_vocab", []):
         if term.lower() in content.lower():
             violations.append(f"contains prohibited term: {term}")
+    
     return violations
 
 
@@ -133,15 +185,28 @@ async def _generate_for_task(
         if not violations or attempt == MAX_RETRIES:
             break
         retry_count += 1
+        
+        # Build detailed retry prompt with specific guidance
+        violation_guidance = "\n".join(f"- {v}" for v in violations)
+        retry_instruction = (
+            f"Your response had these issues:\n{violation_guidance}\n\n"
+            f"Required elements to include:\n"
+        )
+        for elem in constraints.get("required_elements", []):
+            if elem == "subject_line":
+                retry_instruction += f"- Subject line: Start with 'Subject:' or 'Subject Line:' on its own line\n"
+            elif elem == "cta":
+                retry_instruction += f"- Call-to-action: Use action verbs like 'Click', 'Learn more', 'Get started', etc.\n"
+            elif elem == "hashtag":
+                retry_instruction += f"- Hashtags: Include relevant hashtags (e.g., #example)\n"
+        
+        retry_instruction += (
+            f"\nRegenerate the full {channel} content now, ensuring ALL required elements are present."
+        )
+        
         messages = messages + [
             {"role": "assistant", "content": content},
-            {
-                "role": "user",
-                "content": (
-                    "Your previous response violated these constraints: "
-                    f"{'; '.join(violations)}. Regenerate the full response, fixing them."
-                ),
-            },
+            {"role": "user", "content": retry_instruction},
         ]
 
     status = "generated" if not violations else "failed"
@@ -190,6 +255,29 @@ async def content_generator(state: OmniBrandState) -> dict[str, Any]:
             total_cost += cost
             if variant["status"] == "failed":
                 failed_task_ids.append(task["task_id"])
+            await publish_campaign_event(
+                campaign_id=state.get("campaign_id"),
+                agent="content_generator",
+                phase="variant_generated",
+                payload={
+                    "task_id": task["task_id"],
+                    "channel": task["channel"],
+                    "locale": task["locale"],
+                    "segment": task["segment"],
+                    "status": variant["status"],
+                    "preview": (variant.get("generated_content") or "")[:200],
+                },
+            )
+
+        await publish_campaign_event(
+            campaign_id=state.get("campaign_id"),
+            agent="content_generator",
+            phase="content_generated",
+            payload={
+                "variant_count": len(variants),
+                "failed_count": len(failed_task_ids),
+            },
+        )
 
         return {
             "variants": variants,

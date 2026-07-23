@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import operator
-from typing import Annotated, TypedDict
+from typing import Annotated, NotRequired, TypedDict
 
 
 class CampaignBrief(TypedDict):
@@ -24,6 +24,13 @@ class GenerationTask(TypedDict):
     channel_constraints: dict
 
 
+class TranslationCheckResult(TypedDict):
+    name: str
+    value: float
+    threshold: float
+    passed: bool
+
+
 class ContentVariant(TypedDict):
     task_id: str
     locale: str
@@ -42,6 +49,10 @@ class ContentVariant(TypedDict):
     retry_count: int
     reflexion_applied: bool
     failure_reason: str | None
+    translation_retry_count: NotRequired[int]
+    translation_gate_status: NotRequired[str]
+    translation_checks: NotRequired[list[TranslationCheckResult]]
+    translation_content_safety_violations: NotRequired[list[str]]
 
 
 class CriterionScore(TypedDict):
@@ -59,6 +70,10 @@ class BrandScore(TypedDict):
     critical_violations: list[str]
     routing_decision: str
     evaluation_latency_ms: int
+    # Reflexion retry round this score belongs to (mirrors variant retry_count).
+    # Lets judges/aggregator stay idempotent under operator.add fan-in, which
+    # cannot delete stale entries when a variant is regenerated and re-scored.
+    evaluation_round: int
 
 
 class AggregatedScore(TypedDict):
@@ -72,6 +87,8 @@ class AggregatedScore(TypedDict):
     routing_decision: str
     routing_reason: str
     degraded_mode: bool
+    # Reflexion retry round this aggregate was computed for (see BrandScore).
+    evaluation_round: int
 
 
 class ReviewRequest(TypedDict):
@@ -150,6 +167,13 @@ class OmniBrandState(TypedDict):
     current_phase: str
     human_review_requested: bool
     publishing_paused: bool
+    judge_mode: str  # set by judge_gate: "skip" | "lite" | "full"
+
+    # Human review gate (plain channels, not fan-in — review_round is replaced
+    # on each aupdate_state resume; review_decisions is injected by the
+    # reviewer API/chat before resuming, keyed by variant task_id)
+    review_round: int
+    review_decisions: dict
 
     # Cost tracking
     token_cost_usd: float
