@@ -165,6 +165,8 @@ services:
       LITELLM_BASE_URL: http://litellm:4000
       LANGFUSE_HOST: http://langfuse:3000
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      PUBLISH_SMTP_HOST: mailhog
+      PUBLISH_SMTP_PORT: 1025
     command: python -m worker.main
     depends_on:
       postgres: {condition: service_healthy}

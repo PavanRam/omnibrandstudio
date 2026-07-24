@@ -4,12 +4,12 @@ from langgraph.graph.state import CompiledStateGraph
 from pipeline.agents.content_generator import content_generator
 from pipeline.agents.intake import intake_agent
 from pipeline.agents.personalization import personalization_agent
+from pipeline.agents.publishing import publishing_agent
 from pipeline.agents.stubs import (
     confidence_aggregator_stub,
     judge_claude_stub,
     judge_gpt4o_stub,
     judge_llama_stub,
-    publishing_agent_stub,
     reflexion_router_stub,
     review_gate_stub,
     translation_agent_stub,
@@ -51,7 +51,7 @@ def build_graph(
     g.add_node("judge_llama", judge_llama_stub)
     g.add_node("confidence_aggregator", confidence_aggregator_stub)
     g.add_node("review_gate", review_gate_stub)
-    g.add_node("publishing_agent", publishing_agent_stub)
+    g.add_node("publishing_agent", publishing_agent)
 
     g.set_entry_point("intake_agent")
     g.add_edge("intake_agent", "content_generator")

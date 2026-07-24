@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: str = ""
     S3_BUCKET: str = "brand-assets"
 
+    # Publishing — SMTP demo delivery via MailHog
+    PUBLISH_SMTP_HOST: str = "mailhog"          # use "localhost" when running outside Docker
+    PUBLISH_SMTP_PORT: int = 1025               # MailHog SMTP port; no auth, no TLS
+    PUBLISH_RECIPIENT_EMAILS: str = ""          # comma-separated: "demo@acme.com,qa@acme.com"
+
     # Runtime
     MAX_CONCURRENT_CAMPAIGNS: int = 5
     CAMPAIGN_TIMEOUT_SECONDS: int = 300

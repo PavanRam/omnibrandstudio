@@ -37,6 +37,11 @@ DEFAULT_CHANNEL_CONSTRAINTS: dict[str, dict[str, object]] = {
         "required_elements": [],
         "cta_pattern": "a direct, personal CTA, e.g. 'Reply YES to claim your offer'",
     },
+    "sms": {
+        "char_limit": 160,
+        "required_elements": [],
+        "cta_pattern": "a short, direct CTA with a link, e.g. 'Click here: {link} Reply STOP to opt out'",
+    },
 }
 
 _SYSTEM_TEMPLATE = (
