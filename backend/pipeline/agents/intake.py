@@ -188,7 +188,7 @@ async def intake_agent(state: OmniBrandState) -> dict:
             "prior_campaigns": prior_campaigns,
             "tasks": tasks if (brief_valid and budget_ok) else [],
             "current_phase": "intake_complete",
-            "token_cost_usd": 0.0,
+            "token_cost_usd": float(state.get("token_cost_usd", 0.0) or 0.0),
         }
 
     return await safe_agent_run(_impl, state)

@@ -240,6 +240,6 @@ async def personalization_agent(state: OmniBrandState) -> dict:
                 "personalized": personalized,
             },
         )
-        return {"token_cost_usd": total_cost}
+        return {"token_cost_usd": float(state.get("token_cost_usd", 0.0) or 0.0) + total_cost}
 
     return await safe_agent_run(_impl, state)

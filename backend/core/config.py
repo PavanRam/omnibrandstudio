@@ -58,6 +58,10 @@ class Settings(BaseSettings):
 
     # LLM
     LITELLM_BASE_URL: str = "http://localhost:4000"
+    # If true, estimate cost from LiteLLM model pricing when response cost is
+    # missing but tokens are present. Defaults to false so provider-reported
+    # cost remains the single source of truth.
+    ENABLE_COST_ESTIMATION_FALLBACK: bool = False
     ANTHROPIC_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
     GROQ_API_KEY: str = ""
@@ -75,7 +79,7 @@ class Settings(BaseSettings):
     JWT_PRIVATE_KEY_PATH: str = "./certs/private_key.pem"
     JWT_PUBLIC_KEY_PATH: str = "./certs/public_key.pem"
     JWT_ALGORITHM: str = "RS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
     # Observability — Langfuse

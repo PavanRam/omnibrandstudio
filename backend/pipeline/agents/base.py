@@ -26,6 +26,8 @@ __all__ = [
     "AGENT_WRITE_PERMISSIONS",
 ]
 
+_MODEL_PRICING_CACHE: dict[str, tuple[float, float] | None] = {}
+
 
 async def publish_campaign_event(
     *,
@@ -66,6 +68,146 @@ def _fallback_content_from_messages(messages: list[dict]) -> str:
                 snippet = text[:220]
                 return f"[fallback-generated] {snippet}"
     return "[fallback-generated]"
+
+
+def _to_float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_response_cost(payload: dict[str, Any], usage: dict[str, Any]) -> float:
+    candidates = (
+        payload.get("_hidden_params", {}).get("response_cost"),
+        payload.get("response_cost"),
+        payload.get("cost"),
+        usage.get("total_cost"),
+        usage.get("cost"),
+    )
+    for candidate in candidates:
+        parsed = _to_float_or_none(candidate)
+        if parsed is not None:
+            return parsed
+    return 0.0
+
+
+def _extract_pricing_from_model_info(
+    model_info: dict[str, Any] | None,
+) -> tuple[float, float] | None:
+    if not model_info:
+        return None
+    input_rate = _to_float_or_none(model_info.get("input_cost_per_token"))
+    output_rate = _to_float_or_none(model_info.get("output_cost_per_token"))
+    if input_rate is None or output_rate is None:
+        return None
+    return input_rate, output_rate
+
+
+def _parse_model_info_candidates(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    raw_items = payload.get("data") or payload.get("model_list") or []
+    if not isinstance(raw_items, list):
+        return []
+    return [item for item in raw_items if isinstance(item, dict)]
+
+
+def _candidate_pricing(item: dict[str, Any]) -> tuple[float, float] | None:
+    info = item.get("model_info") if isinstance(item.get("model_info"), dict) else None
+    return _extract_pricing_from_model_info(info)
+
+
+def _candidate_matches_model(item: dict[str, Any], model_alias: str, resolved_model: str) -> bool:
+    info = item.get("model_info") if isinstance(item.get("model_info"), dict) else {}
+    item_alias = str(item.get("model_name") or "")
+    item_resolved = str((item.get("litellm_params") or {}).get("model") or info.get("key") or "")
+    return item_alias == model_alias or item_resolved == resolved_model
+
+
+def _select_pricing_candidate(
+    candidates: list[dict[str, Any]], model_alias: str, resolved_model: str
+) -> tuple[float, float] | None:
+    for item in candidates:
+        if not _candidate_matches_model(item, model_alias, resolved_model):
+            continue
+        pricing = _candidate_pricing(item)
+        if pricing is not None:
+            return pricing
+
+    for item in candidates:
+        pricing = _candidate_pricing(item)
+        if pricing is not None:
+            return pricing
+
+    return None
+
+
+async def _fetch_pricing_per_token(model_alias: str, resolved_model: str) -> tuple[float, float] | None:
+    cache_key = f"{model_alias}|{resolved_model}"
+    if cache_key in _MODEL_PRICING_CACHE:
+        return _MODEL_PRICING_CACHE[cache_key]
+
+    try:
+        async with httpx.AsyncClient(base_url=settings.LITELLM_BASE_URL, timeout=20) as client:
+            response = await client.get("/model/info", params={"model": model_alias})
+            response.raise_for_status()
+            payload = response.json()
+    except Exception as exc:
+        log.warning(
+            "llm_model_info_unavailable",
+            model_alias=model_alias,
+            resolved_model=resolved_model,
+            error=str(exc),
+        )
+        _MODEL_PRICING_CACHE[cache_key] = None
+        return None
+
+    candidates = _parse_model_info_candidates(payload)
+    pricing = _select_pricing_candidate(candidates, model_alias, resolved_model)
+    if pricing is not None:
+        _MODEL_PRICING_CACHE[cache_key] = pricing
+        return pricing
+
+    _MODEL_PRICING_CACHE[cache_key] = None
+    return None
+
+
+async def _estimate_missing_cost(
+    *,
+    cost: float,
+    input_tokens: int,
+    output_tokens: int,
+    model: str,
+    resolved_model: str,
+    agent: str,
+    task: str,
+) -> float:
+    if not settings.ENABLE_COST_ESTIMATION_FALLBACK:
+        return cost
+
+    if cost or (not input_tokens and not output_tokens) or resolved_model.startswith("fallback/"):
+        return cost
+
+    pricing = await _fetch_pricing_per_token(model_alias=model, resolved_model=resolved_model)
+    if pricing is None:
+        return cost
+
+    input_rate, output_rate = pricing
+    estimated_cost = (input_tokens * input_rate) + (output_tokens * output_rate)
+    log.info(
+        "llm_cost_estimated_from_model_info",
+        agent=agent,
+        task=task,
+        model=model,
+        resolved_model=resolved_model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        estimated_cost_usd=estimated_cost,
+    )
+    return estimated_cost
 
 
 async def traced_llm_call(
@@ -137,9 +279,30 @@ async def traced_llm_call(
     usage = payload.get("usage", {})
     input_tokens = usage.get("prompt_tokens", 0)
     output_tokens = usage.get("completion_tokens", 0)
-    cost = float(payload.get("_hidden_params", {}).get("response_cost", 0.0) or 0.0)
+    cost = _extract_response_cost(payload, usage)
     resolved_model = str(payload.get("model") or model)
     provider = resolved_model.split("/")[0]
+
+    cost = await _estimate_missing_cost(
+        cost=cost,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        model=model,
+        resolved_model=resolved_model,
+        agent=agent,
+        task=task,
+    )
+
+    if (not cost) and (input_tokens or output_tokens):
+        log.info(
+            "llm_cost_missing_from_response",
+            agent=agent,
+            task=task,
+            model=model,
+            resolved_model=resolved_model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
 
     llm_call_duration.labels(agent=agent, model=model, task=task).observe(latency_ms / 1000)
     llm_tokens_total.labels(agent=agent, model=model, type="input").inc(input_tokens)

@@ -10,7 +10,6 @@ import {
   Sparkles,
   Layers,
   DollarSign,
-  Search,
   Copy,
   Check,
   ArrowUpRight,
@@ -43,7 +42,14 @@ const TONE_CLASSES = {
 
 const metaFor = (status) => STATUS_META[(status || '').toLowerCase()] || STATUS_META.draft;
 
-const IN_PROGRESS = new Set(['queued', 'running', 'awaiting_review']);
+const TERMINAL_STATUSES = new Set(['published', 'failed', 'cancelled', 'archived']);
+
+function isInProgressStatus(status) {
+  const normalized = String(status || '').toLowerCase();
+  if (!normalized) return false;
+  if (TERMINAL_STATUSES.has(normalized)) return false;
+  return normalized !== 'draft';
+}
 
 function relativeTime(value) {
   if (!value) return '—';
@@ -185,7 +191,6 @@ export function CampaignsGalleryView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [filter, setFilter] = useState('all');
-  const [query, setQuery] = useState('');
 
   const load = async () => {
     setLoading(true);
@@ -207,7 +212,7 @@ export function CampaignsGalleryView() {
   const stats = useMemo(() => {
     const total = campaigns.length;
     const published = campaigns.filter((c) => (c.status || '').toLowerCase() === 'published').length;
-    const active = campaigns.filter((c) => IN_PROGRESS.has((c.status || '').toLowerCase())).length;
+    const active = campaigns.filter((c) => isInProgressStatus(c.status)).length;
     const variants = campaigns.reduce((n, c) => n + (c.variant_count || 0), 0);
     const spend = campaigns.reduce((n, c) => n + Number(c.cost_usd || 0), 0);
     return { total, published, active, variants, spend };
@@ -229,22 +234,50 @@ export function CampaignsGalleryView() {
   );
 
   const visible = useMemo(() => {
-    const q = query.trim().toLowerCase();
     return campaigns.filter((c) => {
       const status = (c.status || '').toLowerCase();
       const matchesFilter =
         filter === 'all' ||
         (filter === 'published' && status === 'published') ||
-        (filter === 'active' && IN_PROGRESS.has(status)) ||
+        (filter === 'active' && isInProgressStatus(status)) ||
         (filter === 'failed' && ['failed', 'cancelled'].includes(status));
-      const matchesQuery =
-        !q ||
-        c.campaign_id?.toLowerCase().includes(q) ||
-        c.brand_id?.toLowerCase().includes(q) ||
-        status.includes(q);
-      return matchesFilter && matchesQuery;
+      return matchesFilter;
     });
-  }, [campaigns, filter, query]);
+  }, [campaigns, filter]);
+
+  let content = null;
+  if (loading) {
+    content = (
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {Array.from({ length: 8 }).map((_, i) => (
+          <CardSkeleton key={i} />
+        ))}
+      </div>
+    );
+  } else if (visible.length > 0) {
+    content = (
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {visible.map((c) => (
+          <CampaignCard key={c.campaign_id} campaign={c} />
+        ))}
+      </div>
+    );
+  } else if (campaigns.length === 0) {
+    content = (
+      <EmptyState
+        title="No campaigns yet"
+        body="Kick off your first campaign from the workspace — it'll show up here with live status and results."
+        cta
+      />
+    );
+  } else {
+    content = (
+      <EmptyState
+        title="Nothing matches your filters"
+        body="Try a different status filter."
+      />
+    );
+  }
 
   return (
     <Page
@@ -277,8 +310,8 @@ export function CampaignsGalleryView() {
         />
       </div>
 
-      {/* Toolbar: filters + search */}
-      <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      {/* Toolbar: filters */}
+      <div className="mt-6">
         <div className="flex flex-wrap items-center gap-1.5">
           {filters.map((f) => (
             <button
@@ -304,20 +337,6 @@ export function CampaignsGalleryView() {
             </button>
           ))}
         </div>
-
-        <div className="relative w-full sm:w-64">
-          <Search
-            size={15}
-            aria-hidden="true"
-            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-faint"
-          />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search by ID, brand, status…"
-            className="h-9 w-full rounded-xl border border-border bg-surface pl-9 pr-3 text-sm text-fg transition-colors hover:border-border-strong focus:border-brand focus:outline-none"
-          />
-        </div>
       </div>
 
       {error && (
@@ -327,32 +346,7 @@ export function CampaignsGalleryView() {
       )}
 
       {/* Content */}
-      <div className="mt-5">
-        {loading ? (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {Array.from({ length: 8 }).map((_, i) => (
-              <CardSkeleton key={i} />
-            ))}
-          </div>
-        ) : visible.length > 0 ? (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {visible.map((c) => (
-              <CampaignCard key={c.campaign_id} campaign={c} />
-            ))}
-          </div>
-        ) : campaigns.length === 0 ? (
-          <EmptyState
-            title="No campaigns yet"
-            body="Kick off your first campaign from the workspace — it'll show up here with live status and results."
-            cta
-          />
-        ) : (
-          <EmptyState
-            title="Nothing matches your filters"
-            body="Try a different status filter or clear your search."
-          />
-        )}
-      </div>
+      <div className="mt-5">{content}</div>
     </Page>
   );
 }

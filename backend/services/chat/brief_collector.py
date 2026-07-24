@@ -15,6 +15,7 @@ _EXTRACTION_PROMPT = (
     "Use null for unknown scalars and [] for unknown arrays."
 )
 _STRIP_CHARS = " \t\r\n\"'"
+_LLM_CONFIDENCE_THRESHOLD = 0.8
 
 
 class BriefCollector:
@@ -52,8 +53,67 @@ class BriefCollector:
             for key, value in fallback_confidence.items():
                 meta.field_confidence.setdefault(key, value)
 
+        patch = self._ground_patch(
+            llm_patch=patch,
+            fallback_patch=fallback_patch,
+            confidence=meta.field_confidence,
+            user_message=user_message,
+        )
+
+        if not patch and user_message.strip() and not self._is_non_brief_turn(user_message):
+            patch = {"key_messages": [user_message.strip()]}
+            meta.field_confidence.setdefault("key_messages", 0.7)
+
         merged = self._merge(current, patch, user_message)
         return merged, meta
+
+    def _ground_patch(
+        self,
+        *,
+        llm_patch: dict[str, Any],
+        fallback_patch: dict[str, Any],
+        confidence: dict[str, float],
+        user_message: str,
+    ) -> dict[str, Any]:
+        grounded: dict[str, Any] = {}
+
+        for field in ("channels", "locales", "audience_segments", "token_budget"):
+            if field in fallback_patch:
+                grounded[field] = fallback_patch[field]
+
+        for field in ("objective", "target_audience", "tone_override", "key_messages"):
+            if field in fallback_patch:
+                grounded[field] = fallback_patch[field]
+                continue
+
+            value = llm_patch.get(field)
+            if not self._has_patch_value(value):
+                continue
+
+            field_confidence = confidence.get(field, 0.0)
+            if field_confidence >= _LLM_CONFIDENCE_THRESHOLD and self._message_has_signal(user_message):
+                grounded[field] = value
+
+        return grounded
+
+    def _has_patch_value(self, value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, list):
+            return len(value) > 0
+        if isinstance(value, int):
+            return value > 0
+        return True
+
+    def _message_has_signal(self, text: str) -> bool:
+        normalized = text.strip()
+        if not normalized:
+            return False
+
+        words = [w for w in re.split(r"\s+", normalized) if w]
+        return len(words) >= 4 or ":" in normalized or "," in normalized
 
     async def update_partial_brief(
         self,

@@ -91,11 +91,16 @@ export function useAuth() {
   }, []);
 
   const logout = useCallback(async () => {
-    await logoutSession();
-    clearStoredAuth();
-    removeSession(KEY);
-    setUser(null);
-    window.dispatchEvent(new Event('obs:authchange'));
+    try {
+      await logoutSession();
+    } catch {
+      // Local sign-out should still complete even if the server call fails.
+    } finally {
+      clearStoredAuth();
+      removeSession(KEY);
+      setUser(null);
+      window.dispatchEvent(new Event('obs:authchange'));
+    }
   }, []);
 
   return { user, login, logout, ready };

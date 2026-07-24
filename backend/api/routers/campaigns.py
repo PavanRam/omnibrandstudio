@@ -103,6 +103,21 @@ async def _load_cost_attribution(campaign_id: str) -> dict[str, list[dict[str, A
     return cost_data
 
 
+async def _fetch_campaign_cost_usd(conn: Any, campaign_id: str) -> float:
+    result = await conn.execute(
+        text(
+            """
+            SELECT COALESCE(SUM(total_cost_usd), 0)::DOUBLE PRECISION AS token_cost_usd
+            FROM campaign_cost_attribution
+            WHERE campaign_id = CAST(:campaign_id AS UUID)
+            """
+        ),
+        {"campaign_id": campaign_id},
+    )
+    row = result.mappings().first()
+    return float((row or {}).get("token_cost_usd") or 0.0)
+
+
 def _summarise_variants(variants: list) -> list[dict]:
     def _preview(value: Any, limit: int = 280) -> str | None:
         if not isinstance(value, str):
@@ -584,7 +599,12 @@ async def approve_campaign(campaign_id: str, body: ReviewDecision) -> dict:
                 """
                 UPDATE campaigns
                 SET status = :status,
-                    completed_at = NOW()
+                    completed_at = NOW(),
+                    token_cost_usd = COALESCE((
+                        SELECT SUM(total_cost_usd)
+                        FROM campaign_cost_attribution
+                        WHERE campaign_id = campaigns.id
+                    ), 0)
                 WHERE id = :campaign_id
                 """
             ),
@@ -644,13 +664,14 @@ async def get_campaign(campaign_id: str) -> dict:
             {"campaign_id": normalized_campaign_id},
         )
         variant_rows = variants_result.mappings().all()
+        total_cost_usd = await _fetch_campaign_cost_usd(conn, normalized_campaign_id)
 
     return {
         "id": str(campaign_row["id"]),
         "org_id": str(campaign_row["org_id"]),
         "brand_id": str(campaign_row["brand_id"]),
         "status": str(campaign_row["status"]),
-        "token_cost_usd": float(campaign_row["token_cost_usd"]),
+        "token_cost_usd": total_cost_usd,
         "created_at": campaign_row["created_at"],
         "started_at": campaign_row["started_at"],
         "completed_at": campaign_row["completed_at"],
@@ -689,6 +710,7 @@ async def get_campaign_status(campaign_id: str) -> dict:
             {"campaign_id": normalized_campaign_id},
         )
         row = result.mappings().first()
+        total_cost_usd = await _fetch_campaign_cost_usd(conn, normalized_campaign_id)
 
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=CAMPAIGN_NOT_FOUND)
@@ -698,7 +720,7 @@ async def get_campaign_status(campaign_id: str) -> dict:
         "status": str(row["status"]),
         "started_at": row["started_at"],
         "completed_at": row["completed_at"],
-        "token_cost_usd": float(row["token_cost_usd"]),
+        "token_cost_usd": total_cost_usd,
         "created_at": row["created_at"],
     }
 

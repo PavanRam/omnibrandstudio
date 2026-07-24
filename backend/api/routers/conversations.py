@@ -407,54 +407,43 @@ async def _process_turn(
     brief_updates = _brief_updates(previous_brief, brief)
 
     campaign_id: str | None = None
-    campaign_copilot_message: str | None = None
-    pending_reviews: list[dict[str, Any]] = []
+    campaign_summary_payload: dict[str, Any] | None = None
 
-    if intent in {"check_status", "explain_progress", "show_agent_output", "view_history"}:
-        campaign_copilot_message = await _campaign_copilot_reply(
-            conversation_id=conversation_id,
-            session=session,
-            intent=intent,
-            user_message=user_message,
-        )
-    elif intent == "list_reviews" and session.active_campaign_id:
-        pending_reviews = await _fetch_pending_reviews(session.active_campaign_id)
-        campaign_copilot_message = _pending_reviews_message(pending_reviews)
-    elif session.active_campaign_id:
-        # Surface pending reviews automatically whenever the active campaign
-        # is paused for review, regardless of what the user asked about.
-        pending_reviews = await _fetch_pending_reviews(session.active_campaign_id)
+    copilot_context = await _resolve_campaign_turn_context(
+        conversation_id=conversation_id,
+        session=session,
+        intent=intent,
+        user_message=user_message,
+    )
+    campaign_copilot_message = copilot_context["campaign_copilot_message"]
+    pending_reviews = copilot_context["pending_reviews"]
 
     # ── Confirmation gate ────────────────────────────────────────────────
     # A complete brief is NOT enqueued immediately. The assistant first plays
     # the brief back and waits; the campaign runs only after the user confirms.
-    brief_complete = brief.is_complete()
-    was_awaiting = session.status == "awaiting_confirmation"
-    explicit_run = ("run" in user_message.lower() and "campaign" in user_message.lower()) or intent == "submit_campaign"
-    affirmative = _is_affirmative(user_message)
+    gate = _confirmation_gate_decision(
+        brief=brief,
+        session=session,
+        user_message=user_message,
+        intent=intent,
+        campaign_copilot_message=campaign_copilot_message,
+    )
+    confirm_playback = bool(gate["confirm_playback"])
 
-    should_run = False
-    confirm_playback = False
-    if brief_complete and not session.active_campaign_id and not campaign_copilot_message:
-        if was_awaiting and (affirmative or explicit_run):
-            should_run = True
-        else:
-            confirm_playback = True
+    campaign_id = await _apply_confirmation_gate(
+        gate=gate,
+        conversation_id=conversation_id,
+        user=user,
+        session=session,
+        brief=brief,
+    )
 
-    if should_run:
-        campaign_id = await _enqueue_campaign(
-            user=user,
-            brand_id=session.brand_id,
-            brief=brief,
-            request_id=new_request_id(),
-        )
-        await session_manager.attach_campaign(conversation_id, campaign_id)
-    elif confirm_playback:
-        if not was_awaiting:
-            await session_manager.set_status(conversation_id, "awaiting_confirmation")
-    elif was_awaiting and not brief_complete:
-        # User edited the brief back into an incomplete state; resume collecting.
-        await session_manager.set_status(conversation_id, "collecting")
+    # A recap request should play the captured brief back to the user. The
+    # responder produces a natural LLM summary and falls back to a deterministic
+    # playback if the model call fails, so a recap never loops on the submit
+    # prompt. Skip when a campaign just started or a copilot reply already applies.
+    if _is_recap_request(user_message) and not campaign_id and not campaign_copilot_message:
+        confirm_playback = True
 
     assistant_message = await _compose_assistant_message(
         campaign_id=campaign_id,
@@ -467,6 +456,9 @@ async def _process_turn(
         context=context,
         confirm_playback=confirm_playback,
     )
+
+    active_campaign_for_summary = campaign_id or session.active_campaign_id
+    campaign_summary_payload = await _load_campaign_summary_payload_safe(active_campaign_for_summary)
 
     await session_manager.add_message(
         conversation_id,
@@ -497,7 +489,117 @@ async def _process_turn(
         "suggested_prompts": planner_output.suggested_prompts if planner_output else [],
         "correction_detected": planner_output.correction_detected if planner_output else False,
         "pending_reviews": pending_reviews,
+        "campaign_summary": campaign_summary_payload,
     }
+
+
+async def _resolve_campaign_turn_context(
+    *,
+    conversation_id: str,
+    session: ConversationSession,
+    intent: str,
+    user_message: str,
+) -> dict[str, Any]:
+    campaign_copilot_message: str | None = None
+    pending_reviews: list[dict[str, Any]] = []
+
+    if intent in {"check_status", "explain_progress", "show_agent_output", "view_history"}:
+        campaign_copilot_message = await _campaign_copilot_reply(
+            conversation_id=conversation_id,
+            session=session,
+            intent=intent,
+            user_message=user_message,
+        )
+    elif intent == "list_reviews" and session.active_campaign_id:
+        pending_reviews = await _fetch_pending_reviews(session.active_campaign_id)
+        campaign_copilot_message = _pending_reviews_message(pending_reviews)
+    elif session.active_campaign_id and _is_explicit_run(user_message, intent):
+        # A campaign is already attached; an explicit "run campaign" cannot start
+        # another. Tell the user clearly instead of looping on the submit prompt.
+        pending_reviews = await _fetch_pending_reviews(session.active_campaign_id)
+        campaign_copilot_message = (
+            f"A campaign is already running for this conversation (id {session.active_campaign_id}). "
+            "Ask me for its status, or start a new conversation to launch another campaign."
+        )
+    elif session.active_campaign_id:
+        # Surface pending reviews automatically whenever the active campaign
+        # is paused for review, regardless of what the user asked about.
+        pending_reviews = await _fetch_pending_reviews(session.active_campaign_id)
+
+    return {
+        "campaign_copilot_message": campaign_copilot_message,
+        "pending_reviews": pending_reviews,
+    }
+
+
+def _confirmation_gate_decision(
+    *,
+    brief: PartialBrief,
+    session: ConversationSession,
+    user_message: str,
+    intent: str,
+    campaign_copilot_message: str | None,
+) -> dict[str, Any]:
+    brief_complete = brief.is_complete()
+    was_awaiting = session.status == "awaiting_confirmation"
+    explicit_run = _is_explicit_run(user_message, intent)
+    affirmative = _is_affirmative(user_message)
+
+    should_run = False
+    confirm_playback = False
+    if brief_complete and not session.active_campaign_id and not campaign_copilot_message:
+        # Explicit "run campaign" (or a submit intent) starts immediately in a
+        # single step. A bare affirmative only runs when we already asked the
+        # user to confirm on a previous turn.
+        should_run = bool(explicit_run or (was_awaiting and affirmative))
+        confirm_playback = not should_run
+
+    return {
+        "brief_complete": brief_complete,
+        "was_awaiting": was_awaiting,
+        "should_run": should_run,
+        "confirm_playback": confirm_playback,
+    }
+
+
+async def _apply_confirmation_gate(
+    *,
+    gate: dict[str, Any],
+    conversation_id: str,
+    user: UserContext,
+    session: ConversationSession,
+    brief: PartialBrief,
+) -> str | None:
+    if gate["should_run"]:
+        campaign_id = await _enqueue_campaign(
+            user=user,
+            brand_id=session.brand_id,
+            brief=brief,
+            request_id=new_request_id(),
+        )
+        await session_manager.attach_campaign(conversation_id, campaign_id)
+        return campaign_id
+
+    if gate["confirm_playback"]:
+        if not gate["was_awaiting"]:
+            await session_manager.set_status(conversation_id, "awaiting_confirmation")
+        return None
+
+    if gate["was_awaiting"] and not gate["brief_complete"]:
+        # User edited the brief back into an incomplete state; resume collecting.
+        await session_manager.set_status(conversation_id, "collecting")
+    return None
+
+
+async def _load_campaign_summary_payload_safe(
+    campaign_id: str | None,
+) -> dict[str, Any] | None:
+    if not campaign_id:
+        return None
+    try:
+        return await _load_campaign_summary_payload(campaign_id)
+    except Exception:
+        return None
 
 
 async def _understand_turn(
@@ -570,6 +672,29 @@ def _is_affirmative(message: str) -> bool:
     )
 
 
+def _is_explicit_run(message: str, intent: str) -> bool:
+    """True when the user explicitly asks to run/launch the campaign."""
+    normalized = message.lower()
+    if intent == "submit_campaign":
+        return True
+    return "campaign" in normalized and any(
+        verb in normalized for verb in ("run", "start", "launch", "execute", "kick off", "go")
+    )
+
+
+def _is_recap_request(message: str) -> bool:
+    """True when the user asks to recap / summarize / read back the brief."""
+    normalized = " ".join(message.lower().strip().split())
+    if any(kw in normalized for kw in ("recap", "read back", "read it back", "recite")):
+        return True
+    if "brief" in normalized and any(
+        w in normalized
+        for w in ("summar", "show", "review", "go over", "what's in", "whats in", "remind")
+    ):
+        return True
+    return False
+
+
 async def _compose_assistant_message(
     *,
     campaign_id: str | None,
@@ -630,18 +755,9 @@ async def _campaign_copilot_reply(
 
     from core.database import get_db
 
+    content_generator_preview: dict[str, Any] | None = None
     async with get_db() as conn:
-        campaign_result = await conn.execute(
-            text(
-                """
-                SELECT id, status, started_at, completed_at, token_cost_usd, created_at
-                FROM campaigns
-                WHERE id = :campaign_id
-                """
-            ),
-            {"campaign_id": campaign_id},
-        )
-        campaign_row = campaign_result.mappings().first()
+        campaign_row = await _fetch_campaign_row(conn, campaign_id)
 
         if campaign_row is None:
             return (
@@ -663,6 +779,23 @@ async def _campaign_copilot_reply(
         )
         variant_rows = variants_result.mappings().all()
 
+        if intent == "show_agent_output" and _extract_requested_agent(user_message) == "content_generator":
+            preview_result = await conn.execute(
+                text(
+                    """
+                    SELECT task_id, channel, locale, segment,
+                           COALESCE(generated_content, personalized_content, final_content) AS content
+                    FROM content_variants
+                    WHERE campaign_id = :campaign_id
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {"campaign_id": campaign_id},
+            )
+            preview_row = preview_result.mappings().first()
+            content_generator_preview = dict(preview_row) if preview_row else None
+
     trace: list[dict[str, Any]] = []
     if intent in {"explain_progress", "show_agent_output", "view_history"}:
         trace = await _load_campaign_trace(campaign_id)
@@ -674,10 +807,96 @@ async def _campaign_copilot_reply(
     if intent == "explain_progress":
         return _campaign_progress_reply(campaign_id, summary)
     if intent == "show_agent_output":
-        return _campaign_agent_output_reply(campaign_id, user_message, summary, trace)
+        return _campaign_agent_output_reply(
+            campaign_id,
+            user_message,
+            summary,
+            trace,
+            content_generator_preview,
+        )
     if intent == "view_history":
         return _campaign_history_reply(conversation_id, campaign_id, summary)
     return None
+
+
+async def _fetch_campaign_row(conn: Any, campaign_id: str) -> dict[str, Any] | None:
+    campaign_result = await conn.execute(
+        text(
+            """
+            SELECT id, status, started_at, completed_at, token_cost_usd, created_at
+            FROM campaigns
+            WHERE id = :campaign_id
+            """
+        ),
+        {"campaign_id": campaign_id},
+    )
+    row = campaign_result.mappings().first()
+    return dict(row) if row else None
+
+
+async def _load_campaign_summary_payload(campaign_id: str) -> dict[str, Any] | None:
+    from core.database import get_db
+
+    async with get_db() as conn:
+        campaign_row = await _fetch_campaign_row(conn, campaign_id)
+        token_usage = await _fetch_campaign_token_usage(conn, campaign_id)
+
+    if campaign_row is None:
+        return None
+
+    updated_at = (
+        campaign_row.get("completed_at")
+        or campaign_row.get("started_at")
+        or campaign_row.get("created_at")
+    )
+    updated_at_text = (
+        updated_at.isoformat() if hasattr(updated_at, "isoformat") and updated_at is not None else None
+    )
+    return {
+        "campaign_id": str(campaign_row["id"]),
+        "status": str(campaign_row["status"]),
+        "token_cost_usd": float(token_usage.get("cost_usd") or 0.0),
+        "input_tokens": token_usage.get("input_tokens"),
+        "output_tokens": token_usage.get("output_tokens"),
+        "total_tokens": token_usage.get("total_tokens"),
+        "updated_at": updated_at_text,
+    }
+
+
+async def _fetch_campaign_token_usage(conn: Any, campaign_id: str) -> dict[str, int | None]:
+    try:
+        result = await conn.execute(
+            text(
+                """
+                SELECT
+                    COALESCE(SUM(input_tokens), 0)::BIGINT AS input_tokens,
+                    COALESCE(SUM(output_tokens), 0)::BIGINT AS output_tokens,
+                    COALESCE(SUM(total_cost_usd), 0)::DOUBLE PRECISION AS cost_usd
+                FROM campaign_cost_attribution
+                WHERE campaign_id = CAST(:campaign_id AS UUID)
+                """
+            ),
+            {"campaign_id": campaign_id},
+        )
+        row = result.mappings().first()
+        if not row:
+            return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cost_usd": 0.0}
+
+        input_tokens = int(row.get("input_tokens") or 0)
+        output_tokens = int(row.get("output_tokens") or 0)
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "cost_usd": float(row.get("cost_usd") or 0.0),
+        }
+    except Exception:
+        return {
+            "input_tokens": None,
+            "output_tokens": None,
+            "total_tokens": None,
+            "cost_usd": None,
+        }
 
 
 async def _fetch_pending_reviews(campaign_id: str) -> list[dict[str, Any]]:
@@ -848,6 +1067,7 @@ def _campaign_summary(
         "variants_breakdown": variants_breakdown,
         "trace_phase": trace_phase,
         "recent_agents": recent_agents,
+        "has_started": campaign_row.get("started_at") is not None,
     }
 
 
@@ -885,10 +1105,30 @@ def _campaign_agent_output_reply(
     user_message: str,
     summary: dict[str, Any],
     trace: list[dict[str, Any]],
+    content_generator_preview: dict[str, Any] | None = None,
 ) -> str:
     requested_agent = _extract_requested_agent(user_message)
+    has_started = bool(summary.get("has_started", True))
+
+    if not requested_agent and not has_started:
+        return (
+            f"Campaign {campaign_id} has not started yet, so there are no agent outputs to show. "
+            "Say 'run campaign' to start execution."
+        )
+
     if requested_agent:
         trace_line = _agent_trace_line(trace, requested_agent)
+        if requested_agent == "content_generator":
+            content_reply = _content_generator_output_reply(
+                campaign_id=campaign_id,
+                summary=summary,
+                has_started=has_started,
+                trace_line=trace_line,
+                content_generator_preview=content_generator_preview,
+            )
+            if content_reply:
+                return content_reply
+
         if trace_line:
             return (
                 f"Campaign {campaign_id} latest {requested_agent} output: {trace_line}. "
@@ -905,6 +1145,73 @@ def _campaign_agent_output_reply(
     )
 
 
+def _content_generator_output_reply(
+    *,
+    campaign_id: str,
+    summary: dict[str, Any],
+    has_started: bool,
+    trace_line: str | None,
+    content_generator_preview: dict[str, Any] | None,
+) -> str | None:
+    if not has_started:
+        return (
+            f"Campaign {campaign_id} has not started yet, so content_generator has no output yet. "
+            "Say 'run campaign' to start execution."
+        )
+
+    preview_text = _content_preview_line(content_generator_preview)
+    if preview_text:
+        if trace_line:
+            return (
+                f"Campaign {campaign_id} latest content_generator output: {preview_text}. "
+                f"Trace context: {trace_line}. Overall status is '{summary['status']}' "
+                f"with {summary['total_variants']} variants."
+            )
+        return (
+            f"Campaign {campaign_id} latest content_generator output: {preview_text}. "
+            f"Overall status is '{summary['status']}' with {summary['total_variants']} variants."
+        )
+
+    if summary["total_variants"] == 0:
+        return (
+            f"Campaign {campaign_id} is '{summary['status']}', but content_generator has not produced "
+            "a variant yet."
+        )
+    return None
+
+
+def _content_preview_line(preview: dict[str, Any] | None) -> str | None:
+    if not isinstance(preview, dict):
+        return None
+
+    content = str(preview.get("content") or "").strip()
+    if not content:
+        return None
+
+    snippet = " ".join(content.split())
+    if len(snippet) > 220:
+        snippet = snippet[:217].rstrip() + "..."
+
+    task_id = str(preview.get("task_id") or "").strip()
+    channel = str(preview.get("channel") or "").strip()
+    locale = str(preview.get("locale") or "").strip()
+    segment = str(preview.get("segment") or "").strip()
+
+    metadata = []
+    if task_id:
+        metadata.append(f"task {task_id}")
+    if channel:
+        metadata.append(channel)
+    if locale:
+        metadata.append(locale)
+    if segment:
+        metadata.append(segment)
+
+    if metadata:
+        return f"({', '.join(metadata)}) \"{snippet}\""
+    return f"\"{snippet}\""
+
+
 def _campaign_history_reply(conversation_id: str, campaign_id: str, summary: dict[str, Any]) -> str:
     recent_agents = summary.get("recent_agents") or []
     recent_agents_text = ", ".join(recent_agents) if recent_agents else "none recorded"
@@ -918,18 +1225,42 @@ def _campaign_history_reply(conversation_id: str, campaign_id: str, summary: dic
 
 
 def _extract_requested_agent(user_message: str) -> str | None:
-    requested = user_message.lower()
-    for agent_name in (
-        "content_generator",
-        "personalization_agent",
-        "translation_agent",
-        "judge_claude",
-        "judge_gpt4o",
-        "judge_llama",
-        "confidence_aggregator",
-        "review_gate",
-        "publishing_agent",
-    ):
+    requested = " ".join(user_message.lower().strip().split())
+    if not requested:
+        return None
+
+    aliases: dict[str, tuple[str, ...]] = {
+        "content_generator": ("content_generator", "content generator", "content gen", "generator"),
+        "personalization_agent": ("personalization_agent", "personalization agent", "personalization"),
+        "translation_agent": ("translation_agent", "translation agent", "translation"),
+        "judge_claude": ("judge_claude", "judge claude", "claude judge"),
+        "judge_gpt4o": ("judge_gpt4o", "judge gpt4o", "gpt4o judge", "gpt-4o judge"),
+        "judge_llama": ("judge_llama", "judge llama", "llama judge"),
+        "confidence_aggregator": (
+            "confidence_aggregator",
+            "confidence aggregator",
+            "aggregator",
+            "score aggregator",
+        ),
+        "review_gate": ("review_gate", "review gate", "review"),
+        "publishing_agent": ("publishing_agent", "publishing agent", "publish", "publishing"),
+    }
+
+    best_agent: str | None = None
+    best_score = 0
+    for agent_name, tokens in aliases.items():
+        score = 0
+        for token in tokens:
+            if token in requested:
+                score = max(score, len(token))
+        if score > best_score:
+            best_score = score
+            best_agent = agent_name
+
+    if best_agent:
+        return best_agent
+
+    for agent_name in aliases:
         if agent_name.replace("_", " ") in requested or agent_name in requested:
             return agent_name
     return None

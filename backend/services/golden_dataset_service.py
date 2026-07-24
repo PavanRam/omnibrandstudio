@@ -20,6 +20,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from services.audit_service import write_audit
+from services.rag.ingest import list_brand_guides_from_store
 
 
 async def open_draft_set(
@@ -86,6 +87,65 @@ async def list_sets(
         {"org_id": org_id, "brand_id": brand_id},
     )
     return [dict(row) for row in result.mappings().all()]
+
+
+async def backfill_sets_from_guide_versions(
+    conn: AsyncConnection,
+    *,
+    org_id: str,
+    brand_id: str,
+    created_by: str | None = None,
+) -> int:
+    existing_sets = await list_sets(conn, org_id=org_id, brand_id=brand_id)
+    existing_keys = {
+        (str(item.get("locale") or ""), str(item.get("guide_version") or ""))
+        for item in existing_sets
+    }
+
+    result = await conn.execute(
+        text(
+            """
+            SELECT DISTINCT bg.locale, bg.version
+            FROM brand_guides bg
+            JOIN brands b ON b.id = bg.brand_id
+            WHERE bg.brand_id = CAST(:brand_id AS UUID)
+              AND b.org_id = CAST(:org_id AS UUID)
+              AND bg.active = TRUE
+            ORDER BY bg.locale, bg.version
+            """
+        ),
+        {"org_id": org_id, "brand_id": brand_id},
+    )
+    guide_rows = [dict(row) for row in result.mappings().all()]
+
+    if not guide_rows:
+        guide_rows = await list_brand_guides_from_store(brand_id=brand_id)
+
+    inserted = 0
+    seen_keys: set[tuple[str, str]] = set()
+    for row in guide_rows:
+        locale = str(row.get("locale") or "").strip()
+        guide_version = str(row.get("version") or "").strip()
+        if not locale or not guide_version:
+            continue
+
+        key = (locale, guide_version)
+        if key in seen_keys or key in existing_keys:
+            continue
+
+        await open_draft_set(
+            conn,
+            org_id=org_id,
+            brand_id=brand_id,
+            locale=locale,
+            guide_version=guide_version,
+            source="llm_generated",
+            created_by=created_by,
+        )
+        seen_keys.add(key)
+        inserted += 1
+
+    return inserted
 
 
 async def activate_set(

@@ -282,7 +282,7 @@ async def content_generator(state: OmniBrandState) -> dict[str, Any]:
         return {
             "variants": variants,
             "failed_task_ids": failed_task_ids,
-            "token_cost_usd": total_cost,
+            "token_cost_usd": float(state.get("token_cost_usd", 0.0) or 0.0) + total_cost,
             "current_phase": "content_generated",
         }
 

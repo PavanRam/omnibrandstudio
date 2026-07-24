@@ -4,7 +4,7 @@ import { CampaignsGalleryView } from './views/CampaignsGalleryView.jsx';
 import { AdminView } from './views/AdminView.jsx';
 
 const ROUTES = {
-  app: { title: 'Campaign Copilot', View: ConversationView },
+  app: { title: 'Campaign Studio', View: ConversationView },
   gallery: { title: 'Campaign Gallery', View: CampaignsGalleryView },
   admin: { title: 'Admin Panel', View: AdminView },
 };

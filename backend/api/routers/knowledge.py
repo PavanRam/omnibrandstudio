@@ -2,8 +2,14 @@ from typing import Annotated
 
 from core.database import get_db
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from sqlalchemy import text
 from services import golden_dataset_service
-from services.rag.ingest import ingest_brand_guide, ingest_customer_segments, list_customer_segments
+from services.rag.ingest import (
+    ingest_brand_guide,
+    ingest_customer_segments,
+    list_brand_guides_from_store,
+    list_customer_segments,
+)
 
 from api.deps import UserContext, get_current_user
 
@@ -17,8 +23,8 @@ async def _assert_brand_access(conn, user: UserContext, brand_id: str) -> None:
 
     # For org-scoped users without explicit brand_ids, enforce org->brand ownership.
     if not user.brand_ids:
-        result = await conn.exec_driver_sql(
-            "SELECT 1 FROM brands WHERE id = %(brand_id)s AND org_id = %(org_id)s",
+        result = await conn.execute(
+            text("SELECT 1 FROM brands WHERE id = CAST(:brand_id AS UUID) AND org_id = CAST(:org_id AS UUID)"),
             {"brand_id": brand_id, "org_id": user.org_id},
         )
         if result.mappings().first() is None:
@@ -62,6 +68,7 @@ async def upload_brand_guide(
             source="llm_generated",
             created_by=user.user_id,
         )
+        await conn.commit()
     return {
         "status": "indexed",
         "golden_dataset_set_id": set_id,
@@ -81,23 +88,26 @@ async def list_brand_guides(
         if include_inactive:
             query = (
                 "SELECT id, locale, version, source_filename, indexed_at, active, chunk_count, created_at "
-                "FROM brand_guides WHERE brand_id = %(brand_id)s "
+                "FROM brand_guides WHERE brand_id = CAST(:brand_id AS UUID) "
                 "ORDER BY created_at DESC"
             )
             params = {"brand_id": brand_id}
         else:
             query = (
                 "SELECT id, locale, version, source_filename, indexed_at, active, chunk_count, created_at "
-                "FROM brand_guides WHERE brand_id = %(brand_id)s AND active = TRUE "
+                "FROM brand_guides WHERE brand_id = CAST(:brand_id AS UUID) AND active = TRUE "
                 "ORDER BY created_at DESC"
             )
             params = {"brand_id": brand_id}
 
         try:
-            result = await conn.exec_driver_sql(query, params)
+            result = await conn.execute(text(query), params)
             rows = [dict(row) for row in result.mappings().all()]
         except Exception as exc:
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from exc
+
+    if not rows:
+        rows = await list_brand_guides_from_store(brand_id=brand_id)
 
     return {
         "brand_id": brand_id,
@@ -154,6 +164,13 @@ async def list_segments(
         version=version,
         limit=limit,
     )
+    if not items and version:
+        items = await list_customer_segments(
+            brand_id=brand_id,
+            locale=locale,
+            version=None,
+            limit=limit,
+        )
     return {
         "brand_id": brand_id,
         "locale": locale,

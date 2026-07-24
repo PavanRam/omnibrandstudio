@@ -7,6 +7,7 @@ import re
 from uuid import uuid4
 
 import pandas as pd
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 import structlog
 
@@ -120,8 +121,8 @@ async def ingest_brand_guide(
         raise ValueError("Uploaded guide exceeds maximum allowed size")
 
     raw_text = _extract_text(file_bytes, filename)
-    text = _sanitize_text(raw_text)
-    chunks = chunk_text(text)
+    guide_text = _sanitize_text(raw_text)
+    chunks = chunk_text(guide_text)
     if not chunks:
         raise ValueError("No extractable text content found in uploaded guide")
 
@@ -145,13 +146,15 @@ async def ingest_brand_guide(
 
     await get_vector_store().upsert(collection=_collection_name(brand_id, "guidelines"), points=points)
 
-    await db.exec_driver_sql(
-        "UPDATE brand_guides SET active = FALSE WHERE brand_id = %(brand_id)s AND locale = %(locale)s AND active = TRUE",
+    await db.execute(
+        text("UPDATE brand_guides SET active = FALSE WHERE brand_id = CAST(:brand_id AS UUID) AND locale = :locale AND active = TRUE"),
         {"brand_id": brand_id, "locale": locale},
     )
-    await db.exec_driver_sql(
-        "INSERT INTO brand_guides (brand_id, locale, version, source_filename, indexed_at, active, chunk_count) "
-        "VALUES (%(brand_id)s, %(locale)s, %(version)s, %(source_filename)s, NOW(), TRUE, %(chunk_count)s)",
+    await db.execute(
+        text(
+            "INSERT INTO brand_guides (brand_id, locale, version, source_filename, indexed_at, active, chunk_count) "
+            "VALUES (CAST(:brand_id AS UUID), :locale, :version, :source_filename, NOW(), TRUE, :chunk_count)"
+        ),
         {
             "brand_id": brand_id,
             "locale": locale,
@@ -292,6 +295,51 @@ async def ingest_customer_segments(
     }
 
 
+async def list_brand_guides_from_store(
+    *,
+    brand_id: str,
+    limit: int = 1000,
+) -> list[dict]:
+    docs = await get_vector_store().get_documents(
+        collection=_collection_name(brand_id, "guidelines"),
+        filters={"brand_id": brand_id, "active": True},
+        limit=limit,
+    )
+
+    grouped: dict[tuple[str, str, str], dict] = {}
+    for doc in docs:
+        metadata = doc.metadata or {}
+        locale = str(metadata.get("locale") or "unknown")
+        version = str(metadata.get("version") or "unknown")
+        source_filename = str(
+            metadata.get("source")
+            or metadata.get("source_filename")
+            or metadata.get("content_type")
+            or "vector_store"
+        )
+        key = (locale, version, source_filename)
+        item = grouped.setdefault(
+            key,
+            {
+                "id": f"rag:{brand_id}:{locale}:{version}:{source_filename}",
+                "locale": locale,
+                "version": version,
+                "source_filename": source_filename,
+                "indexed_at": None,
+                "active": True,
+                "chunk_count": 0,
+                "created_at": None,
+                "origin": "rag",
+            },
+        )
+        item["chunk_count"] += 1
+
+    return sorted(
+        grouped.values(),
+        key=lambda item: (item["locale"], item["version"], item["source_filename"]),
+    )
+
+
 async def list_customer_segments(
     *,
     brand_id: str,
@@ -309,7 +357,14 @@ async def list_customer_segments(
         filters["version"] = version
 
     collection = _collection_name(brand_id, "segments")
-    docs = await get_vector_store().get_documents(collection=collection, filters=filters, limit=limit)
+    store = get_vector_store()
+    docs = await store.get_documents(collection=collection, filters=filters, limit=limit)
+    if not docs:
+        legacy_filters = {**filters, "content_type": "segments"}
+        docs = await store.get_documents(collection=collection, filters=legacy_filters, limit=limit)
+    if not docs:
+        broad_filters = {k: v for k, v in filters.items() if k != "content_type"}
+        docs = await store.get_documents(collection=collection, filters=broad_filters, limit=limit)
     return [
         {
             "id": doc.id,

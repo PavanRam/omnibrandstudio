@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Building2,
   Users,
@@ -127,6 +127,11 @@ export function AdminView({ onLock }) {
   const { user } = useAuth();
   const [tab, setTab] = useState('overview');
 
+  const scopedBrandIds = useMemo(() => {
+    const values = Array.isArray(user?.brand_ids) ? user.brand_ids : [];
+    return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+  }, [user?.brand_ids]);
+
   const [brandId, setBrandId] = useState(DEFAULT_BRAND_ID);
   const [locale, setLocale] = useState('en-US');
   const [version, setVersion] = useState('v1');
@@ -153,6 +158,24 @@ export function AdminView({ onLock }) {
   const [userCreating, setUserCreating] = useState(false);
 
   const isAdmin = Boolean(user?.roles?.includes('admin'));
+  const hasScopedBrandOptions = scopedBrandIds.length > 0;
+  let brandContextLabel = 'Using the configured default brand for this environment.';
+  if (hasScopedBrandOptions) {
+    if (scopedBrandIds.length > 1) {
+      brandContextLabel = 'Select a brand from your account scope.';
+    } else {
+      brandContextLabel = 'Brand is scoped from your account.';
+    }
+  }
+
+  useEffect(() => {
+    setBrandId((current) => {
+      if (scopedBrandIds.length === 0) {
+        return current.trim() || DEFAULT_BRAND_ID;
+      }
+      return scopedBrandIds.includes(current) ? current : scopedBrandIds[0];
+    });
+  }, [scopedBrandIds]);
 
   const canUpload = useMemo(
     () => Boolean(brandId.trim() && locale.trim() && version.trim() && file),
@@ -217,20 +240,29 @@ export function AdminView({ onLock }) {
     }
   };
 
-  const refreshGuides = async () => {
+  const refreshGuides = useCallback(async ({ quiet = false } = {}) => {
+    if (!brandId.trim()) return;
     setLoadingGuides(true);
     setError('');
-    setStatus('');
+    if (!quiet) setStatus('');
     try {
       const payload = await listBrandGuides(brandId.trim());
-      setGuides(payload.items || []);
-      setStatus(`Loaded ${payload.count || 0} guide record(s).`);
+      const nextGuides = payload.items || [];
+      setGuides(nextGuides);
+      const availableVersions = new Set(
+        nextGuides.map((guide) => String(guide?.version || '').trim()).filter(Boolean),
+      );
+      const preferredVersion = nextGuides[0]?.version?.trim();
+      if (preferredVersion && !availableVersions.has(version.trim())) {
+        setVersion(preferredVersion);
+      }
+      if (!quiet) setStatus(`Loaded ${payload.count || 0} guide record(s).`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load brand guides');
     } finally {
       setLoadingGuides(false);
     }
-  };
+  }, [brandId, version]);
 
   const submitGuide = async (event) => {
     event.preventDefault();
@@ -256,20 +288,21 @@ export function AdminView({ onLock }) {
     }
   };
 
-  const refreshSegments = async () => {
+  const refreshSegments = useCallback(async ({ quiet = false } = {}) => {
+    if (!brandId.trim() || !locale.trim()) return;
     setLoadingSegments(true);
     setError('');
-    setStatus('');
+    if (!quiet) setStatus('');
     try {
       const payload = await listCustomerSegments(brandId.trim(), locale.trim(), version.trim());
       setSegments(payload.items || []);
-      setStatus(`Loaded ${payload.count || 0} segment record(s).`);
+      if (!quiet) setStatus(`Loaded ${payload.count || 0} segment record(s).`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load segments');
     } finally {
       setLoadingSegments(false);
     }
-  };
+  }, [brandId, locale, version]);
 
   const submitSegments = async (event) => {
     event.preventDefault();
@@ -297,13 +330,18 @@ export function AdminView({ onLock }) {
     }
   };
 
-  // Populate KPI counts once when an admin opens the console.
   useEffect(() => {
     if (!isAdmin) return;
     refreshUsers({ showStatus: false });
-    refreshGuides();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin || !brandId.trim()) return;
+    if (tab === 'knowledge') {
+      refreshGuides({ quiet: true });
+      refreshSegments({ quiet: true });
+    }
+  }, [brandId, isAdmin, refreshGuides, refreshSegments, tab, locale, version]);
 
   if (!isAdmin) {
     return (
@@ -369,8 +407,8 @@ export function AdminView({ onLock }) {
       <div className="mt-5">
         {tab === 'overview' && (
           <OverviewPanel
-            orgId={DEFAULT_ORG_ID}
-            brandId={DEFAULT_BRAND_ID}
+            orgId={user?.org_id || DEFAULT_ORG_ID}
+            brandId={brandId || DEFAULT_BRAND_ID}
             users={managedUsers}
             guides={guides}
             segments={segments}
@@ -404,7 +442,9 @@ export function AdminView({ onLock }) {
         {(tab === 'knowledge' || tab === 'golden') && (
           <ContextBar
             brandId={brandId}
+            brandIds={scopedBrandIds}
             setBrandId={setBrandId}
+            brandContextLabel={brandContextLabel}
             locale={locale}
             setLocale={setLocale}
             version={version}
@@ -629,23 +669,41 @@ function UsersPanel({ users, loading, error, status, onRefresh, form, canCreate,
 
 /* --------------------------------------------------------------- Context bar */
 
-function ContextBar({ brandId, setBrandId, locale, setLocale, version, setVersion }) {
+function ContextBar({ brandId, brandIds, setBrandId, brandContextLabel, locale, setLocale, version, setVersion }) {
+  const brandCount = brandIds.length;
+  const showBrandSelect = brandCount > 1;
+
   return (
     <div className="mb-4 rounded-2xl border border-border bg-surface-2/60 p-3">
       <div className="mb-2 flex items-center gap-1.5 px-1 text-xs font-semibold uppercase tracking-wide text-faint">
         <Building2 size={12} aria-hidden="true" /> Working context
       </div>
       <div className="grid gap-2 sm:grid-cols-[2fr_1fr_1fr]">
-        <input
-          className={cn(inputCls, 'font-mono text-xs')}
-          value={brandId}
-          onChange={(e) => setBrandId(e.target.value)}
-          placeholder="Brand ID"
-          aria-label="Brand ID"
-        />
+        {showBrandSelect ? (
+          <select
+            className={cn(inputCls, 'font-mono text-xs')}
+            value={brandId}
+            onChange={(e) => setBrandId(e.target.value)}
+            aria-label="Brand"
+          >
+            {brandIds.map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            className={cn(inputCls, 'font-mono text-xs text-muted')}
+            value={brandId}
+            readOnly
+            aria-label="Brand"
+          />
+        )}
         <input className={inputCls} value={locale} onChange={(e) => setLocale(e.target.value)} aria-label="Locale" placeholder="Locale" />
         <input className={inputCls} value={version} onChange={(e) => setVersion(e.target.value)} aria-label="Version" placeholder="Version" />
       </div>
+      <p className="mt-2 px-1 text-xs text-faint">{brandContextLabel}</p>
     </div>
   );
 }
@@ -778,10 +836,11 @@ function GoldenDatasetPanel({ brandId, locale, version }) {
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
 
-  const refresh = async () => {
+  const refresh = useCallback(async ({ quiet = false } = {}) => {
+    if (!brandId.trim()) return;
     setLoading(true);
     setError('');
-    setStatus('');
+    if (!quiet) setStatus('');
     try {
       const [setsPayload, examplesPayload] = await Promise.all([
         listGoldenSets(brandId.trim()),
@@ -789,15 +848,22 @@ function GoldenDatasetPanel({ brandId, locale, version }) {
       ]);
       setSets(setsPayload.items || []);
       setExamples(examplesPayload.items || []);
-      setStatus(
-        `Loaded ${setsPayload.count || 0} dataset set(s) and ${examplesPayload.count || 0} example(s).`,
-      );
+      if (!quiet) {
+        setStatus(
+          `Loaded ${setsPayload.count || 0} dataset set(s) and ${examplesPayload.count || 0} example(s).`,
+        );
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load golden dataset');
     } finally {
       setLoading(false);
     }
-  };
+  }, [brandId]);
+
+  useEffect(() => {
+    if (!brandId.trim()) return;
+    refresh({ quiet: true });
+  }, [brandId, refresh]);
 
   const openSet = async () => {
     setOpening(true);

@@ -124,3 +124,29 @@ async def test_update_partial_brief_with_meta_complements_partial_llm_patch(monk
     assert merged.audience_segments == ["enterprise", "sme"]
     assert merged.token_budget == 4000
     assert meta.field_confidence["channels"] == 0.65
+
+
+async def test_update_partial_brief_blocks_ungrounded_structured_autofill(monkeypatch) -> None:
+    async def _fake_traced_llm_call(**_: object):
+        return (
+            '{"channels":["email"],"locales":["en-US"],"audience_segments":["core"],'
+            '"token_budget":5000,"field_confidence":{"channels":0.95,"locales":0.95,'
+            '"audience_segments":0.95,"token_budget":0.95}}',
+            {},
+        )
+
+    monkeypatch.setattr("services.chat.brief_collector.traced_llm_call", _fake_traced_llm_call)
+
+    merged, _ = await brief_collector.update_partial_brief_with_meta(
+        current=PartialBrief(),
+        user_message="A compelling opening line or mystery that immediately draws the audience in.",
+        state={"model_aliases": {"brief_collector": "brief-collector"}},
+    )
+
+    assert merged.channels == []
+    assert merged.locales == []
+    assert merged.audience_segments == []
+    assert merged.token_budget is None
+    assert merged.key_messages == [
+        "A compelling opening line or mystery that immediately draws the audience in."
+    ]

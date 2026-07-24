@@ -53,6 +53,7 @@ async def open_draft_set(
             source=body.source,
             created_by=user.user_id,
         )
+        await conn.commit()
     return {"status": "created", "set_id": set_id}
 
 
@@ -64,6 +65,16 @@ async def list_sets(
     async with get_db() as conn:
         await _assert_brand_access(conn, user, brand_id)
         sets = await svc.list_sets(conn, org_id=user.org_id, brand_id=brand_id)
+        if not sets:
+            inserted = await svc.backfill_sets_from_guide_versions(
+                conn,
+                org_id=user.org_id,
+                brand_id=brand_id,
+                created_by=user.user_id,
+            )
+            if inserted:
+                await conn.commit()
+                sets = await svc.list_sets(conn, org_id=user.org_id, brand_id=brand_id)
     return {"brand_id": brand_id, "count": len(sets), "items": sets}
 
 
@@ -83,6 +94,7 @@ async def activate_set(
                 set_id=set_id,
                 actor_id=user.user_id,
             )
+            await conn.commit()
         except ValueError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     return {"status": "activated", "set_id": set_id}
@@ -106,6 +118,7 @@ async def bulk_insert_examples(
                 status=body.status,
                 created_by=user.user_id,
             )
+            await conn.commit()
         except ValueError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     return {"status": "inserted", "count": count}
@@ -146,6 +159,7 @@ async def promote_example(
                 example_id=example_id,
                 actor_id=user.user_id,
             )
+            await conn.commit()
         except ValueError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     return {"status": "promoted", "example_id": example_id}
@@ -167,6 +181,7 @@ async def delete_example(
                 example_id=example_id,
                 actor_id=user.user_id,
             )
+            await conn.commit()
         except ValueError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     return {"status": "deleted", "example_id": example_id}
