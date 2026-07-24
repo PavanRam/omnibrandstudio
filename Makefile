@@ -1,4 +1,4 @@
-.PHONY: install install-dev run worker dev frontend dev-full run-local-eval test-local-eval check-local-eval test test-unit test-integration smoke lint format migrate migrate-docker migrate-down migrate-history seed seed-admin check-env up down down-reset logs certs setup
+.PHONY: install install-dev run worker dev run-local-eval test-local-eval check-local-eval test test-unit test-integration smoke lint format migrate migrate-docker migrate-down migrate-history seed seed-admin check-env up down down-reset logs certs setup poll-reviews
 
 # ── Dependencies ─────────────────────────────────────────────────────────────
 install:
@@ -16,12 +16,6 @@ worker:
 
 dev:
 	honcho start
-
-frontend:
-	cd frontend && npm run dev
-
-dev-full: up
-	cd frontend && npm run dev
 
 run-local-eval:
 	# TEMP_LOCAL_EVAL: Local-only startup path that bypasses docker dependencies.
@@ -47,6 +41,11 @@ test-integration:
 
 smoke:
 	uv run python scripts/smoke_test.py
+
+# Free-plan-friendly alternative to an Airtable webhook Automation: polls the
+# Reviews table for reviewer decisions and applies them via /airtable-decide.
+poll-reviews:
+	uv run python scripts/airtable_poll_reviews.py
 
 # ── Code quality ──────────────────────────────────────────────────────────────
 lint:
@@ -109,21 +108,11 @@ up: check-env
 	docker compose up -d createbuckets
 	# Re-check now that postgres is confirmed up (first run above may have
 	# skipped the password check if postgres wasn't running yet).
-	@if docker compose ps postgres --format '{{.State}}' 2>/dev/null | grep -q running; then \
-		. ./.env; \
-		if ! docker run --rm --network omnibrandstudio_default -e PGPASSWORD="$$POSTGRES_PASSWORD" postgres:16-alpine \
-			psql -h postgres -U omnibrand -d omnibrand -c "SELECT 1" >/dev/null 2>&1; then \
-			echo "ERROR: postgres rejected the password currently in .env. Your omnibrandstudio_postgres_data"; \
-			echo "       volume was likely initialized with a different POSTGRES_PASSWORD than .env has now."; \
-			echo "       Fix: docker compose down -v postgres   (drops only the postgres volume/data)"; \
-			echo "       then re-run: make up"; \
-			exit 1; \
-		fi; \
-	fi
+	$(MAKE) check-env
 	# Keep DB schema current in the same runtime context the API uses.
-	docker compose exec -T api sh -lc "cd /app && PYTHONPATH=/opt/venv/lib/python3.12/site-packages python -m alembic upgrade head"
+	$(MAKE) migrate-docker
 	# Ensure org/brand/prompt rows exist before admin-seed depends on them.
-	cd backend && uv run python ../scripts/seed_prompts.py
+	$(MAKE) seed
 	# Ensure default dev admin exists after startup/migration.
 	docker compose exec -T api python scripts/seed_dev_admin.py
 
