@@ -83,7 +83,9 @@ broader `admin`/`editor`/`reviews:decide` set the human `/decide` route uses. Gi
 | `Requester Email` | Email | system | who requested the campaign that generated this content |
 | `campaign_id` | Single line text | system | cross-reference |
 | `variant_id` | Single line text | system | cross-reference |
-| `Content` | Long text | system | the generated content itself |
+| `Generated Content` | Long text | system | raw output of the content generator agent |
+| `Personalized Content` | Long text | system | output of the personalization agent (blank if that stage didn't run/apply) |
+| `Translated Content` | Long text | system | output of the translation agent (blank for the source locale) |
 | `routing_reason` | Long text | system | why this was flagged for review |
 | `Decision` | Single select: `Pending/Approved/Rejected/Edited` | **reviewer** | the actionable dropdown |
 | `Reviewer Note` | Long text | reviewer | required when `Decision = Rejected` |
@@ -351,7 +353,9 @@ from services import airtable_service
 asyncio.run(airtable_service.sync_review({
     "review_request_id": "<the id just inserted>",
     "campaign_id": "<campaign_id>", "variant_id": "<content_variants.id>",
-    "routing_reason": "manual test row", "Content": "...", "Generated At": "...Z",
+    "routing_reason": "manual test row",
+    "Generated Content": "...", "Personalized Content": "...", "Translated Content": "...",
+    "Generated At": "...Z",
     "Requester Email": "admin@omnibrand.local", "Decision": "Pending", "Sync Status": "Not Synced",
 }))
 ```
