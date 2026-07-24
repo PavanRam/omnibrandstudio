@@ -12,12 +12,18 @@ export default defineConfig({
   site: process.env.SITE || undefined,
   base: process.env.BASE_PATH || '/',
   integrations: [react()],
+  build: {
+    inlineStylesheets: 'never',
+  },
   vite: {
     plugins: [tailwindcss()],
     resolve: {
       alias: {
         '@': fileURLToPath(new URL('./src', import.meta.url)),
       },
+    },
+    build: {
+      cssCodeSplit: false,
     },
   },
 });

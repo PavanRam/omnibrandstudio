@@ -171,6 +171,155 @@ async def ingest_brand_guide(
     }
 
 
+def _segment_records_from_csv_bytes(file_bytes: bytes, filename: str) -> list[dict]:
+    df = pd.read_csv(BytesIO(file_bytes))
+    out: list[dict] = []
+    for idx, row in df.iterrows():
+        row_map = {k: (v.item() if hasattr(v, "item") else v) for k, v in row.to_dict().items()}
+        text = " ".join(f"{k}: {v}" for k, v in row_map.items())
+        out.append(
+            {
+                "text": text,
+                "section_type": "segments",
+                "content_type": "segment_profile",
+                "source": filename,
+                "row_index": int(idx),
+                **row_map,
+            }
+        )
+    return out
+
+
+def _segment_records_from_json_bytes(file_bytes: bytes, filename: str) -> list[dict]:
+    payload = json.loads(file_bytes.decode("utf-8", errors="replace"))
+    if isinstance(payload, dict):
+        payload = [payload]
+    if not isinstance(payload, list):
+        raise ValueError("Segment JSON must be an object or list of objects")
+
+    out: list[dict] = []
+    for idx, row in enumerate(payload):
+        if not isinstance(row, dict):
+            continue
+        text = " ".join(f"{k}: {v}" for k, v in row.items())
+        out.append(
+            {
+                "text": text,
+                "section_type": "segments",
+                "content_type": "segment_profile",
+                "source": filename,
+                "row_index": int(idx),
+                **row,
+            }
+        )
+    return out
+
+
+def _segment_records_from_text_bytes(file_bytes: bytes, filename: str) -> list[dict]:
+    lines = [line.strip() for line in file_bytes.decode("utf-8", errors="replace").splitlines()]
+    out: list[dict] = []
+    for idx, line in enumerate(lines):
+        if not line:
+            continue
+        out.append(
+            {
+                "text": line,
+                "section_type": "segments",
+                "content_type": "segment_profile",
+                "source": filename,
+                "row_index": int(idx),
+                "segment": line,
+            }
+        )
+    return out
+
+
+def _segment_records_from_upload(file_bytes: bytes, filename: str) -> list[dict]:
+    lower_name = filename.lower()
+    if lower_name.endswith(".csv"):
+        return _segment_records_from_csv_bytes(file_bytes, filename)
+    if lower_name.endswith(".json"):
+        return _segment_records_from_json_bytes(file_bytes, filename)
+    if lower_name.endswith((".txt", ".md")):
+        return _segment_records_from_text_bytes(file_bytes, filename)
+    raise ValueError("Unsupported segment format; allowed: .csv, .json, .txt, .md")
+
+
+async def ingest_customer_segments(
+    *,
+    brand_id: str,
+    file_bytes: bytes,
+    filename: str,
+    locale: str,
+    version: str,
+) -> dict:
+    if len(file_bytes) > settings.RAG_MAX_UPLOAD_BYTES:
+        raise ValueError("Uploaded segment file exceeds maximum allowed size")
+
+    records = _segment_records_from_upload(file_bytes, filename)
+    if not records:
+        raise ValueError("No segment records found in upload")
+
+    points = _build_points(
+        brand_id=brand_id,
+        locale=locale,
+        version=version,
+        kind="segments",
+        records=records,
+    )
+    points = await _embed_points(points)
+
+    collection = _collection_name(brand_id, "segments")
+    store = get_vector_store()
+    await store.delete_by_filter(
+        collection,
+        {
+            "brand_id": brand_id,
+            "locale": locale,
+            "active": True,
+            "content_type": "segment_profile",
+        },
+    )
+    await store.upsert(collection=collection, points=points)
+
+    return {
+        "brand_id": brand_id,
+        "locale": locale,
+        "version": version,
+        "records_indexed": len(records),
+        "chunks_indexed": len(points),
+        "collection": collection,
+    }
+
+
+async def list_customer_segments(
+    *,
+    brand_id: str,
+    locale: str,
+    version: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    filters: dict[str, object] = {
+        "brand_id": brand_id,
+        "locale": locale,
+        "active": True,
+        "content_type": "segment_profile",
+    }
+    if version:
+        filters["version"] = version
+
+    collection = _collection_name(brand_id, "segments")
+    docs = await get_vector_store().get_documents(collection=collection, filters=filters, limit=limit)
+    return [
+        {
+            "id": doc.id,
+            "text": doc.text,
+            "metadata": doc.metadata,
+        }
+        for doc in docs
+    ]
+
+
 def _guidelines_records_from_json(seed_dir: Path) -> list[dict]:
     records: list[dict] = []
     for path in sorted(seed_dir.glob("*.json")):

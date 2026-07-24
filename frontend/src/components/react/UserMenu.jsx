@@ -45,24 +45,38 @@ export function UserMenu() {
 
   return (
     <div ref={ref} className="relative">
-      <button
-        type="button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-controls={menuId}
-        onClick={() => setOpen((v) => !v)}
-        className={cn(
-          'flex items-center gap-2 rounded-xl p-1 pr-2 transition-colors hover:bg-surface-2',
-          open && 'bg-surface-2',
-        )}
-      >
-        <span className="grid h-8 w-8 place-items-center rounded-full brand-gradient text-sm font-semibold text-white">
-          {user.initials}
-        </span>
-        <span className="hidden max-w-28 truncate text-sm font-medium text-fg sm:block">
-          {user.name}
-        </span>
-      </button>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-controls={menuId}
+          onClick={() => setOpen((v) => !v)}
+          className={cn(
+            'flex items-center gap-2 rounded-xl p-1 pr-2 transition-colors hover:bg-surface-2',
+            open && 'bg-surface-2',
+          )}
+        >
+          <span className="grid h-8 w-8 place-items-center rounded-full brand-gradient text-sm font-semibold text-white">
+            {user.initials}
+          </span>
+          <span className="hidden max-w-28 truncate text-sm font-medium text-fg sm:block">
+            {user.name}
+          </span>
+        </button>
+
+        <Button
+          variant="outline"
+          size="sm"
+          className="hidden sm:inline-flex"
+          onClick={async () => {
+            await logout();
+            setOpen(false);
+          }}
+        >
+          <LogOut size={15} aria-hidden="true" /> Log out
+        </Button>
+      </div>
 
       {open && (
         <div
@@ -80,7 +94,7 @@ export function UserMenu() {
               <p className="truncate text-xs text-muted">{user.email}</p>
             </div>
           </div>
-          <div className="my-1 h-px bg-border" role="separator" />
+          <hr className="my-1 border-border" />
           {MENU_LINKS.map(({ label, icon: Icon, href }) => (
             <a
               key={label}
@@ -92,12 +106,12 @@ export function UserMenu() {
               {label}
             </a>
           ))}
-          <div className="my-1 h-px bg-border" role="separator" />
+          <hr className="my-1 border-border" />
           <button
             type="button"
             role="menuitem"
-            onClick={() => {
-              logout();
+            onClick={async () => {
+              await logout();
               setOpen(false);
             }}
             className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-sm text-danger transition-colors hover:bg-danger/10"

@@ -11,7 +11,7 @@ import re
 
 import structlog
 
-from pipeline.agents.base import safe_agent_run
+from pipeline.agents.base import publish_campaign_event, safe_agent_run
 from pipeline.intake_validation import check_budget, screen_for_injection
 from services.rag import get_retriever
 from pipeline.state import CampaignBrief, GenerationTask, OmniBrandState
@@ -163,6 +163,17 @@ async def intake_agent(state: OmniBrandState) -> dict:
             budget_ok=budget_ok,
             task_count=len(tasks),
             errors=errors,
+        )
+
+        await publish_campaign_event(
+            campaign_id=state.get("campaign_id"),
+            agent="intake_agent",
+            phase="intake_complete",
+            payload={
+                "brief_valid": brief_valid,
+                "budget_ok": budget_ok,
+                "task_count": len(tasks),
+            },
         )
 
         # ------------------------------------------------------------------

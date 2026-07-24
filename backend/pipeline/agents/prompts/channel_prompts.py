@@ -49,7 +49,12 @@ _SYSTEM_TEMPLATE = (
     "Channel: {channel}. Hard character limit: {char_limit}. "
     "Required elements: {required_elements}. "
     "Never use these prohibited words or phrases: {prohibited_vocab}. "
-    "Call-to-action style: {cta_pattern}."
+    "Call-to-action style: {cta_pattern}.\n\n"
+    "CRITICAL FORMATTING RULES:\n"
+    "- If 'subject_line' is required: Include a line that starts with 'Subject:' or 'Subject Line:'\n"
+    "- If 'cta' (call-to-action) is required: Include action verbs like 'Click', 'Learn more', 'Get started', 'Book a demo', 'Discover', 'Join', etc.\n"
+    "- If 'hashtag' is required: Include hashtags prefixed with # (e.g., #SustainableInnovation)\n"
+    "Ensure ALL required elements are present in your output."
 )
 
 _USER_TEMPLATE = (
@@ -60,7 +65,8 @@ _USER_TEMPLATE = (
     "Locale: {locale}\n\n"
     "Brand guide excerpts to follow (highest priority):\n{brand_guidance}\n\n"
     "Examples of strong past {channel} content for this brand:\n{few_shot_examples}\n\n"
-    "Write one new {channel} post that follows the system instructions exactly."
+    "Write one new {channel} post that follows the system instructions exactly.\n"
+    "Ensure the output includes ALL required elements with proper formatting."
 )
 
 

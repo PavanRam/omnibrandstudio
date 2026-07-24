@@ -77,6 +77,22 @@
           "legendFormat": "{{decision}} / min"
         }
       ]
+    },
+    {
+      "id": 5,
+      "title": "Cumulative Tokens Consumed by Agent",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "right"}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+          "expr": "sum by (agent) (omnibrand_llm_tokens_total)",
+          "legendFormat": "{{agent}}"
+        }
+      ]
     }
   ],
   "refresh": "30s",
@@ -87,5 +103,5 @@
   "timezone": "browser",
   "title": "LLM and Judge Quality",
   "uid": "omnibrand-llm",
-  "version": 1
+  "version": 2
 }

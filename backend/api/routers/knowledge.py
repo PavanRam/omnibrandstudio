@@ -1,10 +1,11 @@
 from typing import Annotated
 
+from core.database import get_db
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from services import golden_dataset_service
+from services.rag.ingest import ingest_brand_guide, ingest_customer_segments, list_customer_segments
 
 from api.deps import UserContext, get_current_user
-from core.database import get_db
-from services.rag.ingest import ingest_brand_guide
 
 router = APIRouter()
 
@@ -49,8 +50,21 @@ async def upload_brand_guide(
             locale=locale,
             version=version,
         )
+        # Open a draft golden-dataset set pinned to this guide version so
+        # evaluation examples can be generated/curated against it (no LLM spend
+        # here — generation is a separate, explicit step).
+        set_id = await golden_dataset_service.open_draft_set(
+            conn,
+            org_id=user.org_id,
+            brand_id=brand_id,
+            locale=locale,
+            guide_version=version,
+            source="llm_generated",
+            created_by=user.user_id,
+        )
     return {
         "status": "indexed",
+        "golden_dataset_set_id": set_id,
         **result,
     }
 
@@ -89,4 +103,61 @@ async def list_brand_guides(
         "brand_id": brand_id,
         "count": len(rows),
         "items": rows,
+    }
+
+
+@router.post("/segments")
+async def upload_customer_segments(
+    brand_id: Annotated[str, Form(...)],
+    locale: Annotated[str, Form(...)],
+    version: Annotated[str, Form(...)],
+    segment_file: Annotated[UploadFile, File(...)],
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    """Ingest customer-segment records into brand-scoped segments collection."""
+    file_bytes = await segment_file.read()
+    async with get_db() as conn:
+        await _assert_brand_access(conn, user, brand_id)
+
+    try:
+        result = await ingest_customer_segments(
+            brand_id=brand_id,
+            file_bytes=file_bytes,
+            filename=segment_file.filename or "uploaded.segments",
+            locale=locale,
+            version=version,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+    return {
+        "status": "indexed",
+        **result,
+    }
+
+
+@router.get("/segments/{brand_id}")
+async def list_segments(
+    brand_id: str,
+    user: Annotated[UserContext, Depends(get_current_user)],
+    locale: str,
+    version: str | None = None,
+    limit: int = 50,
+) -> dict:
+    """List indexed customer-segment documents for a brand/locale."""
+    async with get_db() as conn:
+        await _assert_brand_access(conn, user, brand_id)
+
+    items = await list_customer_segments(
+        brand_id=brand_id,
+        locale=locale,
+        version=version,
+        limit=limit,
+    )
+    return {
+        "brand_id": brand_id,
+        "locale": locale,
+        "version": version,
+        "count": len(items),
+        "items": items,
     }

@@ -3,6 +3,6 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 import App from '../components/react/App.jsx';
 ---
 
-<BaseLayout title="My Gallery">
+<BaseLayout title="My Gallery" requireAuth={true}>
   <App client:load route="gallery" />
 </BaseLayout>

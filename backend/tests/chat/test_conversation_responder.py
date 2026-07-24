@@ -1,0 +1,125 @@
+from __future__ import annotations
+
+import pytest
+
+from pipeline.conversation_models import ConversationPlannerOutput, PartialBrief
+from services.chat.conversation_responder import conversation_responder
+
+
+def test_responder_fallback_uses_greeting_question() -> None:
+    planner_output = ConversationPlannerOutput(
+        stage="greeting",
+        objective="Open collaboratively",
+        reply_strategy="greeting",
+        next_question="Hey, what are you launching?",
+    )
+
+    message = conversation_responder._fallback_message(
+        planner_output,
+        PartialBrief(),
+        [],
+        "hi",
+    )
+
+    assert message == "Hey, what are you launching?"
+
+
+def test_responder_fallback_acknowledges_changes() -> None:
+    planner_output = ConversationPlannerOutput(
+        stage="audience_discovery",
+        objective="Understand audience",
+        reply_strategy="high_value_followup",
+        next_question="Who should we prioritize first?",
+    )
+
+    message = conversation_responder._fallback_message(
+        planner_output,
+        PartialBrief(objective="Launch"),
+        [{"field": "objective", "change_type": "added", "before": None, "after": "Launch"}],
+        "objective is launch",
+    )
+
+    assert "captured the campaign objective" in message
+    assert message.endswith("Who should we prioritize first?")
+
+
+@pytest.mark.asyncio
+async def test_responder_ignores_fallback_generated_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_traced_llm_call(**_: object):
+        return "[fallback-generated] {\"planner\": {\"stage\": \"greeting\"}}", {}
+
+    monkeypatch.setattr("services.chat.conversation_responder.traced_llm_call", _fake_traced_llm_call)
+
+    planner_output = ConversationPlannerOutput(
+        stage="greeting",
+        objective="Open collaboratively",
+        reply_strategy="greeting",
+        next_question="Hey, what are you launching?",
+    )
+
+    message = await conversation_responder.respond(
+        planner_output=planner_output,
+        brief=PartialBrief(),
+        brief_changes=[],
+        user_message="hi",
+        state={"model_aliases": {"responder": "eval-model"}},
+    )
+
+    assert message == "Hey, what are you launching?"
+
+
+@pytest.mark.asyncio
+async def test_responder_greeting_uses_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def _fake_traced_llm_call(**kwargs: object):
+        captured.update(kwargs)
+        return "Hey there. What are you launching first?", {}
+
+    monkeypatch.setattr("services.chat.conversation_responder.traced_llm_call", _fake_traced_llm_call)
+
+    planner_output = ConversationPlannerOutput(
+        stage="greeting",
+        objective="Open collaboratively",
+        reply_strategy="greeting",
+        next_question="Hey, what are you launching?",
+    )
+
+    message = await conversation_responder.respond(
+        planner_output=planner_output,
+        brief=PartialBrief(),
+        brief_changes=[],
+        user_message="hello",
+        state={"model_aliases": {"responder": "eval-model"}},
+    )
+
+    assert message == "Hey there. What are you launching first?"
+    assert captured.get("task") == "conversation_responder"
+
+
+@pytest.mark.asyncio
+async def test_responder_filters_meta_reasoning_leak(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_traced_llm_call(**_: object):
+        return (
+            "You've acknowledged the captured fields. Can you confirm the primary objective and secondary objectives?",
+            {},
+        )
+
+    monkeypatch.setattr("services.chat.conversation_responder.traced_llm_call", _fake_traced_llm_call)
+
+    planner_output = ConversationPlannerOutput(
+        stage="objective_discovery",
+        objective="Clarify launch context",
+        reply_strategy="high_value_followup",
+        next_question="What concrete outcome should this campaign drive first?",
+    )
+
+    message = await conversation_responder.respond(
+        planner_output=planner_output,
+        brief=PartialBrief(),
+        brief_changes=[],
+        user_message="we are launching a compliance copilot",
+        state={"model_aliases": {"responder": "util-fast"}},
+    )
+
+    assert message == "Thanks, that helps. What concrete outcome should this campaign drive first?"

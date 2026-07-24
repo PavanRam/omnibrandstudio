@@ -2,6 +2,7 @@ import hashlib
 import time
 import uuid
 
+import bcrypt
 from jose import JWTError, jwt
 
 from core.config import settings
@@ -14,6 +15,7 @@ LOCKOUT_WINDOW_SECONDS = 15 * 60
 def create_access_token(*, user_id: str, org_id: str, roles: list[str], brand_ids: list[str]) -> str:
     now = int(time.time())
     payload = {
+        "token_type": "access",
         "sub": user_id,
         "org_id": org_id,
         "roles": roles,
@@ -27,9 +29,35 @@ def create_access_token(*, user_id: str, org_id: str, roles: list[str], brand_id
 
 def decode_access_token(token: str) -> dict:
     try:
-        return jwt.decode(token, settings.public_key, algorithms=[settings.JWT_ALGORITHM])
+        payload = jwt.decode(token, settings.public_key, algorithms=[settings.JWT_ALGORITHM])
     except JWTError as exc:
         raise ValueError(f"Invalid token: {exc}") from exc
+    if payload.get("token_type") != "access":
+        raise ValueError("Invalid token: wrong token type")
+    return payload
+
+
+def create_refresh_token(*, user_id: str, org_id: str) -> str:
+    now = int(time.time())
+    payload = {
+        "token_type": "refresh",
+        "sub": user_id,
+        "org_id": org_id,
+        "jti": str(uuid.uuid4()),
+        "iat": now,
+        "exp": now + settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+    }
+    return jwt.encode(payload, settings.private_key, algorithm=settings.JWT_ALGORITHM)
+
+
+def decode_refresh_token(token: str) -> dict:
+    try:
+        payload = jwt.decode(token, settings.public_key, algorithms=[settings.JWT_ALGORITHM])
+    except JWTError as exc:
+        raise ValueError(f"Invalid token: {exc}") from exc
+    if payload.get("token_type") != "refresh":
+        raise ValueError("Invalid token: wrong token type")
+    return payload
 
 
 async def is_jti_revoked(jti: str) -> bool:
@@ -63,3 +91,15 @@ async def clear_failed_logins(email: str) -> None:
 
 def hash_api_key(raw_key: str) -> str:
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+
+def hash_password(raw_password: str) -> str:
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(raw_password.encode("utf-8"), salt).decode("utf-8")
+
+
+def verify_password(raw_password: str, password_hash: str) -> bool:
+    try:
+        return bcrypt.checkpw(raw_password.encode("utf-8"), password_hash.encode("utf-8"))
+    except ValueError:
+        return False
