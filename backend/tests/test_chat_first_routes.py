@@ -885,8 +885,14 @@ def test_conversation_websocket_turn_returns_campaign_id(monkeypatch: pytest.Mon
             "/conversations/019f76e9-c299-7756-a483-761aa106ba33?api_key=test-key"
         ) as websocket:
             websocket.send_json({"message": "run campaign now"})
+            # The server emits an immediate ack frame before processing the turn
+            # (so the client can show a typing indicator); the turn result is the
+            # next frame.
+            ack = websocket.receive_json()
+            assert ack["type"] == "ack"
             payload = websocket.receive_json()
 
+    assert payload["type"] == "turn_complete"
     assert payload["campaign_id"] == "019f7669-1111-7000-8000-000000000001"
     assert payload["brief_complete"] is True
     assert isinstance(payload["brief_updates"], list)
@@ -900,6 +906,87 @@ def test_conversation_websocket_turn_returns_campaign_id(monkeypatch: pytest.Mon
     assert "needs_clarification" in payload
     assert "clarification_target" in payload
     assert "brief_field_states" in payload
+
+
+def test_conversation_websocket_streams_delta_frames(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With ENABLE_STREAMING_RESPONDER on, a non-launch turn streams the reply as
+    ack -> delta(s) -> turn_complete instead of one blocking frame."""
+    session = ConversationSession(
+        id="019f76e9-c299-7756-a483-761aa106ba33",
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_id="00000000-0000-0000-0000-000000000002",
+        status="collecting",
+        partial_brief=PartialBrief(),
+    )
+
+    monkeypatch.setattr(conversations.settings, "ENABLE_STREAMING_RESPONDER", True)
+    monkeypatch.setattr(conversations.settings, "ENABLE_CONVERSATION_PLANNER", True)
+
+    monkeypatch.setattr(
+        "api.deps._authenticate_api_key",
+        AsyncMock(
+            return_value=UserContext(
+                user_id="api_key",
+                org_id="00000000-0000-0000-0000-000000000001",
+                brand_ids=["00000000-0000-0000-0000-000000000002"],
+                auth_method="api_key",
+            )
+        ),
+    )
+    monkeypatch.setattr(conversations.session_manager, "get", AsyncMock(return_value=session))
+    monkeypatch.setattr(conversations.session_manager, "add_message", AsyncMock())
+    monkeypatch.setattr(conversations.session_manager, "load_messages", AsyncMock(return_value=[]))
+    monkeypatch.setattr(conversations.session_manager, "update_partial_brief", AsyncMock())
+    monkeypatch.setattr(conversations.session_manager, "set_status", AsyncMock())
+    monkeypatch.setattr(
+        conversations.understanding_engine,
+        "understand",
+        AsyncMock(
+            return_value=UnderstandingResult(
+                intent=IntentClassification(primary="collect_brief", secondary=[], confidence=1.0),
+                brief=PartialBrief(objective="Launch"),
+                extraction_meta=ExtractionMeta(field_confidence={}, source="llm"),
+            )
+        ),
+    )
+    # A valid planner output routes the turn through the streaming responder branch.
+    monkeypatch.setattr(
+        conversations,
+        "_build_planner_output",
+        lambda **_kwargs: ConversationPlannerOutput(
+            stage="campaign_discovery",
+            objective="collect the brief",
+            reply_strategy="high_value_followup",
+        ),
+    )
+
+    async def _fake_stream(**_kwargs):
+        for chunk in ("Hello ", "there ", "friend"):
+            yield chunk
+
+    monkeypatch.setattr(conversations.conversation_responder, "respond_stream", _fake_stream)
+    monkeypatch.setattr(
+        conversations,
+        "_load_campaign_summary_payload_safe",
+        AsyncMock(return_value=None),
+    )
+
+    frames: list[dict] = []
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/conversations/019f76e9-c299-7756-a483-761aa106ba33?api_key=test-key"
+        ) as websocket:
+            websocket.send_json({"message": "my objective is to launch"})
+            # ack, then 3 deltas, then turn_complete
+            for _ in range(5):
+                frames.append(websocket.receive_json())
+
+    assert frames[0]["type"] == "ack"
+    deltas = [f for f in frames if f.get("type") == "delta"]
+    assert [d["delta"] for d in deltas] == ["Hello ", "there ", "friend"]
+    final = frames[-1]
+    assert final["type"] == "turn_complete"
+    assert final["message"] == "Hello there friend"
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,7 @@ import {
 import { Page } from '../Page.jsx';
 import { Button } from '../ui/Button.jsx';
 import { Badge } from '../ui/Badge.jsx';
+import { VariantCard } from '../VariantCard.jsx';
 import { cn } from '@/lib/cn.js';
 import { useWebSocket } from '../hooks/useWebSocket.js';
 import { useSSE } from '../hooks/useSSE.js';
@@ -246,6 +247,8 @@ function ChatThreadPanel({
   needsClarification,
   clarificationTarget,
   messages,
+  isAssistantTyping = false,
+  streamingMessage = '',
   suggestedPrompts,
   campaignId,
   campaignSummary,
@@ -272,7 +275,7 @@ function ChatThreadPanel({
   // received, so the user never has to scroll down manually.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages.length, pendingReviews.length]);
+  }, [messages.length, pendingReviews.length, isAssistantTyping, streamingMessage]);
 
   return (
     <section className="flex h-[calc(100vh-13rem)] min-h-[32rem] flex-col overflow-hidden rounded-2xl border border-border bg-surface card-shadow">
@@ -309,10 +312,10 @@ function ChatThreadPanel({
       {campaignId ? (
         <div className="border-b border-border bg-surface-2 px-4 py-2 text-xs text-muted">
           <span className="font-medium text-fg">Campaign cost</span>{' '}
-          <span className="font-mono">{formatCostLabel(campaignSummary?.token_cost_usd) || 'calculating...'}</span>
+          <span className="font-mono">{formatCostLabel(campaignSummary?.token_cost_usd) || '—'}</span>
           <span className="mx-1.5 text-faint">·</span>
           <span className="font-medium text-fg">Tokens</span>{' '}
-          <span className="font-mono">{formatTokenUsageLabel(campaignSummary) || 'calculating...'}</span>
+          <span className="font-mono">{formatTokenUsageLabel(campaignSummary) || '—'}</span>
         </div>
       ) : null}
 
@@ -351,6 +354,13 @@ function ChatThreadPanel({
                   )}
                 >
                   <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                  {!isUser && Array.isArray(msg.variants) && msg.variants.length > 0 ? (
+                    <div className="mt-3 grid gap-2.5">
+                      {msg.variants.map((v, vIdx) => (
+                        <VariantCard key={v.task_id || `${v.channel}-${v.locale}-${vIdx}`} variant={v} />
+                      ))}
+                    </div>
+                  ) : null}
                   {!isUser && Array.isArray(msg.captured) && msg.captured.length > 0 ? (
                     <div className="mt-2.5 border-t border-border/60 pt-2">
                       <p className="text-[10px] font-semibold uppercase tracking-wide text-faint">Captured</p>
@@ -370,11 +380,11 @@ function ChatThreadPanel({
                     <div className="mt-2 border-t border-border/60 pt-2 text-[11px] text-muted">
                       campaign cost:{' '}
                       <span className="font-mono text-fg">
-                        {formatCostLabel(msg.campaignSummary.token_cost_usd) || 'calculating...'}
+                        {formatCostLabel(msg.campaignSummary.token_cost_usd) || '—'}
                       </span>
                       <span className="mx-1 text-faint">·</span>
                       tokens:{' '}
-                      <span className="font-mono text-fg">{formatTokenUsageLabel(msg.campaignSummary) || 'calculating...'}</span>
+                      <span className="font-mono text-fg">{formatTokenUsageLabel(msg.campaignSummary) || '—'}</span>
                     </div>
                   ) : null}
                   {!isUser && Array.isArray(msg.changes) && msg.changes.length > 0 ? (
@@ -397,6 +407,30 @@ function ChatThreadPanel({
             );
           })
         )}
+
+        {streamingMessage ? (
+          <div className="flex gap-2.5" aria-live="polite">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full brand-gradient text-white" aria-hidden="true">
+              <Bot size={16} />
+            </span>
+            <div className="max-w-[85%] rounded-2xl rounded-tl-sm border border-border bg-surface-2 px-3.5 py-2.5 text-sm text-fg">
+              <p className="whitespace-pre-wrap leading-relaxed">{streamingMessage}</p>
+            </div>
+          </div>
+        ) : isAssistantTyping ? (
+          <div className="flex gap-2.5" aria-live="polite" aria-label="Assistant is typing">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full brand-gradient text-white" aria-hidden="true">
+              <Bot size={16} />
+            </span>
+            <div className="rounded-2xl rounded-tl-sm border border-border bg-surface-2 px-3.5 py-2.5">
+              <span className="inline-flex items-center gap-1">
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:0ms]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:150ms]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:300ms]" />
+              </span>
+            </div>
+          </div>
+        ) : null}
 
         {pendingReviews.length > 0 ? (
           <div className="space-y-2">
@@ -1116,7 +1150,7 @@ function handleSelectConversationAction({
   setStatus('ready');
 }
 
-function handleSendPromptAction({ prompt, canChat, send, setError, setMessages }) {
+function handleSendPromptAction({ prompt, canChat, send, setError, setMessages, setIsAssistantTyping }) {
   if (!canChat) return;
   const sent = send({ message: prompt });
   if (!sent) {
@@ -1124,6 +1158,7 @@ function handleSendPromptAction({ prompt, canChat, send, setError, setMessages }
     return;
   }
   setMessages((prev) => [...prev, { role: 'user', content: prompt }]);
+  setIsAssistantTyping?.(true);
 }
 
 function handleSendMessageAction({
@@ -1134,6 +1169,7 @@ function handleSendMessageAction({
   setError,
   setMessages,
   setMessage,
+  setIsAssistantTyping,
 }) {
   const trimmed = message.trim();
   if (!trimmed) return;
@@ -1152,6 +1188,7 @@ function handleSendMessageAction({
   }
   setMessages((prev) => [...prev, { role: 'user', content: trimmed }]);
   setMessage('');
+  setIsAssistantTyping?.(true);
 }
 
 async function handleRunRerunAction({
@@ -1218,6 +1255,8 @@ export function ConversationView() {
   const [replayCursorValid, setReplayCursorValid] = useState(true);
   const [pendingReviews, setPendingReviews] = useState([]);
   const [reviewDecisionBusyId, setReviewDecisionBusyId] = useState('');
+  const [isAssistantTyping, setIsAssistantTyping] = useState(false);
+  const [streamingMessage, setStreamingMessage] = useState('');
 
   const loadRecentConversations = useCallback(async () => {
     setRecentLoading(true);
@@ -1245,10 +1284,40 @@ export function ConversationView() {
   const handleSocketMessage = useCallback((payload) => {
     if (payload.error) {
       setError(payload.error);
+      setIsAssistantTyping(false);
+      return;
+    }
+
+    // Immediate acknowledgement frame — the backend received the turn and is
+    // working on it. Keep the typing indicator visible; no other state changes.
+    if (payload.type === 'ack') {
+      setIsAssistantTyping(true);
+      return;
+    }
+
+    // Streaming delta — append to the in-progress assistant bubble. The typing
+    // indicator gives way to the streaming text on the first delta.
+    if (payload.type === 'delta') {
+      setIsAssistantTyping(false);
+      setStreamingMessage((prev) => prev + (payload.delta || ''));
+      return;
+    }
+
+    // The responder leaked/produced nothing mid-stream; replace what streamed
+    // so far with the grounded fallback.
+    if (payload.type === 'replace') {
+      setStreamingMessage(payload.message || '');
       return;
     }
 
     const parsed = parseSocketPayload(payload);
+
+    // The turn is complete (or a message arrived) — stop the typing indicator
+    // and clear the streaming buffer (the final message is appended below).
+    if (payload.type === 'turn_complete' || payload.message) {
+      setIsAssistantTyping(false);
+      setStreamingMessage('');
+    }
 
     if (payload.message) {
       setMessages((prev) => [
@@ -1259,6 +1328,7 @@ export function ConversationView() {
           captured: parsed.updates,
           changes: parsed.changes,
           campaignSummary: parsed.campaignSummary,
+          variants: Array.isArray(payload.variants) && payload.variants.length ? payload.variants : null,
         },
       ]);
     }
@@ -1290,6 +1360,42 @@ export function ConversationView() {
     createCampaignStream,
     Boolean(campaignId),
   );
+
+  // Live cost/token updates pushed over the campaign SSE stream. Each new event
+  // appends to `events`, so this effect fires once per event; we read only the
+  // newest element and add its delta into the running campaign summary. The WS
+  // turn response provides the authoritative cumulative total for reconciliation.
+  const lastCostEventRef = useRef(null);
+  useEffect(() => {
+    if (!events.length) return;
+    const latest = events[events.length - 1];
+    if (!latest || latest.phase !== 'cost_update') return;
+    if (lastCostEventRef.current === latest) return;
+    lastCostEventRef.current = latest;
+    const {
+      delta_cost_usd: dCost,
+      delta_input_tokens: dIn,
+      delta_output_tokens: dOut,
+    } = latest.payload ?? {};
+    if (dCost == null && dIn == null && dOut == null) return;
+    setCampaignSummary((prev) => {
+      const base = prev ?? {
+        token_cost_usd: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+      };
+      const input = (base.input_tokens ?? 0) + (dIn ?? 0);
+      const output = (base.output_tokens ?? 0) + (dOut ?? 0);
+      return {
+        ...base,
+        token_cost_usd: (base.token_cost_usd ?? 0) + (dCost ?? 0),
+        input_tokens: input,
+        output_tokens: output,
+        total_tokens: input + output,
+      };
+    });
+  }, [events]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1453,6 +1559,7 @@ export function ConversationView() {
       setError,
       setMessages,
       setMessage,
+      setIsAssistantTyping,
     });
 
   const sendPrompt = (prompt) =>
@@ -1462,6 +1569,7 @@ export function ConversationView() {
       send,
       setError,
       setMessages,
+      setIsAssistantTyping,
     });
 
   const decideReviewAction = (reviewRequestId, decision, { editedContent = null } = {}) => {
@@ -1548,6 +1656,8 @@ export function ConversationView() {
           needsClarification={needsClarification}
           clarificationTarget={clarificationTarget}
           messages={messages}
+          isAssistantTyping={isAssistantTyping}
+          streamingMessage={streamingMessage}
           suggestedPrompts={suggestedPrompts}
           campaignId={campaignId}
           campaignSummary={campaignSummary}

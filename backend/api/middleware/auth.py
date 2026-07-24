@@ -76,12 +76,13 @@ async def is_locked_out(email: str) -> bool:
     return attempts is not None and int(attempts) >= LOCKOUT_MAX_ATTEMPTS
 
 
-async def record_failed_login(email: str) -> None:
+async def record_failed_login(email: str) -> int:
     redis = get_redis()
     key = f"lockout:{email}"
     attempts = await redis.incr(key)
     if attempts == 1:
         await redis.expire(key, LOCKOUT_WINDOW_SECONDS)
+    return int(attempts)
 
 
 async def clear_failed_logins(email: str) -> None:

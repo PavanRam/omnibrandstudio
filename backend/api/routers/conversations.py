@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import Annotated, Any
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
 from opentelemetry.propagate import inject
 from pydantic import BaseModel
@@ -24,6 +27,8 @@ from services.chat.understanding_engine import understanding_engine
 from services import review_service
 
 router = APIRouter()
+
+log = structlog.get_logger()
 
 QUEUE = "campaigns:queue"
 
@@ -366,13 +371,17 @@ def _norm_list(values: list[str]) -> set[str]:
     return {v.strip().lower() for v in values if isinstance(v, str) and v.strip()}
 
 
-async def _process_turn(
+async def _prepare_turn(
     *,
     session: ConversationSession,
     conversation_id: str,
     user: UserContext,
     user_message: str,
 ) -> dict[str, Any]:
+    """Run everything up to (but not including) composing the assistant message:
+    persist the user turn, understand, plan, resolve campaign context, and apply
+    the confirmation gate. Returns a context dict consumed by both the streaming
+    and non-streaming turn paths."""
     await session_manager.add_message(conversation_id, "user", user_message)
 
     history = await session_manager.load_messages(conversation_id)
@@ -406,9 +415,6 @@ async def _process_turn(
     )
     brief_updates = _brief_updates(previous_brief, brief)
 
-    campaign_id: str | None = None
-    campaign_summary_payload: dict[str, Any] | None = None
-
     copilot_context = await _resolve_campaign_turn_context(
         conversation_id=conversation_id,
         session=session,
@@ -417,6 +423,12 @@ async def _process_turn(
     )
     campaign_copilot_message = copilot_context["campaign_copilot_message"]
     pending_reviews = copilot_context["pending_reviews"]
+
+    # When the user explicitly asks to see generated content, attach the actual
+    # variants so the client can render them inline as cards below the reply.
+    variants_for_display: list[dict[str, Any]] = []
+    if intent in {"show_agent_output", "iterate_campaign"} and session.active_campaign_id:
+        variants_for_display = await _fetch_variants_for_display(session.active_campaign_id)
 
     # ── Confirmation gate ────────────────────────────────────────────────
     # A complete brief is NOT enqueued immediately. The assistant first plays
@@ -445,19 +457,48 @@ async def _process_turn(
     if _is_recap_request(user_message) and not campaign_id and not campaign_copilot_message:
         confirm_playback = True
 
-    assistant_message = await _compose_assistant_message(
-        campaign_id=campaign_id,
-        campaign_copilot_message=campaign_copilot_message,
-        brief=brief,
-        previous_brief=previous_brief,
-        user_message=user_message,
-        planner_output=planner_output,
-        brief_changes=brief_changes,
-        context=context,
-        confirm_playback=confirm_playback,
-    )
+    return {
+        "conversation_id": conversation_id,
+        "context": context,
+        "intent": intent,
+        "brief": brief,
+        "previous_brief": previous_brief,
+        "brief_changes": brief_changes,
+        "brief_updates": brief_updates,
+        "planner_output": planner_output,
+        "campaign_id": campaign_id,
+        "campaign_copilot_message": campaign_copilot_message,
+        "confirm_playback": confirm_playback,
+        "pending_reviews": pending_reviews,
+        "variants": variants_for_display,
+        "user_message": user_message,
+        "active_campaign_id": session.active_campaign_id,
+    }
 
-    active_campaign_for_summary = campaign_id or session.active_campaign_id
+
+def _turn_uses_llm_responder(prep: dict[str, Any]) -> bool:
+    """True when the composed assistant message would come from the streaming
+    LLM responder branch (the only branch worth streaming). All other branches
+    return deterministic strings."""
+    if prep["campaign_id"] or prep["campaign_copilot_message"]:
+        return False
+    return bool(settings.ENABLE_CONVERSATION_PLANNER and prep["planner_output"])
+
+
+async def _finalize_turn_payload(
+    prep: dict[str, Any],
+    assistant_message: str,
+) -> dict[str, Any]:
+    """Persist the assistant message and build the turn_complete payload. Shared
+    by the streaming and non-streaming WS paths so both emit an identical
+    payload shape (only the message-delivery mechanism differs)."""
+    conversation_id = prep["conversation_id"]
+    intent = prep["intent"]
+    brief = prep["brief"]
+    planner_output = prep["planner_output"]
+    campaign_id = prep["campaign_id"]
+
+    active_campaign_for_summary = campaign_id or prep["active_campaign_id"]
     campaign_summary_payload = await _load_campaign_summary_payload_safe(active_campaign_for_summary)
 
     await session_manager.add_message(
@@ -469,15 +510,16 @@ async def _process_turn(
     )
 
     return {
+        "type": "turn_complete",
         "conversation_id": conversation_id,
         "intent": intent,
         "brief": brief.model_dump(),
         "brief_complete": brief.is_complete(),
-        "awaiting_confirmation": confirm_playback,
+        "awaiting_confirmation": prep["confirm_playback"],
         "campaign_id": campaign_id,
         "message": assistant_message,
-        "brief_updates": brief_updates,
-        "brief_changes": brief_changes,
+        "brief_updates": prep["brief_updates"],
+        "brief_changes": prep["brief_changes"],
         "conversation_stage": planner_output.stage if planner_output else None,
         "planner_objective": planner_output.objective if planner_output else None,
         "primary_objective": planner_output.primary_objective if planner_output else None,
@@ -488,9 +530,108 @@ async def _process_turn(
         "brief_field_states": [state.model_dump() for state in planner_output.brief_field_states] if planner_output else [],
         "suggested_prompts": planner_output.suggested_prompts if planner_output else [],
         "correction_detected": planner_output.correction_detected if planner_output else False,
-        "pending_reviews": pending_reviews,
+        "pending_reviews": prep["pending_reviews"],
+        "variants": prep.get("variants") or [],
         "campaign_summary": campaign_summary_payload,
     }
+
+
+async def _process_turn(
+    *,
+    session: ConversationSession,
+    conversation_id: str,
+    user: UserContext,
+    user_message: str,
+) -> dict[str, Any]:
+    """Non-streaming turn: prepare, compose the full message, persist, return."""
+    prep = await _prepare_turn(
+        session=session,
+        conversation_id=conversation_id,
+        user=user,
+        user_message=user_message,
+    )
+    assistant_message = await _compose_assistant_message(
+        campaign_id=prep["campaign_id"],
+        campaign_copilot_message=prep["campaign_copilot_message"],
+        brief=prep["brief"],
+        previous_brief=prep["previous_brief"],
+        user_message=prep["user_message"],
+        planner_output=prep["planner_output"],
+        brief_changes=prep["brief_changes"],
+        context=prep["context"],
+        confirm_playback=prep["confirm_playback"],
+    )
+    return await _finalize_turn_payload(prep, assistant_message)
+
+
+async def _stream_turn(
+    *,
+    session: ConversationSession,
+    conversation_id: str,
+    user: UserContext,
+    user_message: str,
+) -> AsyncGenerator[dict[str, Any], None]:
+    """Streaming turn: prepare, then either stream the LLM responder token by
+    token (emitting ``delta`` frames) or emit a deterministic message, and
+    finally emit the ``turn_complete`` payload. Each yielded dict is a WS frame.
+
+    On a prepare-time failure it yields a single ``error`` frame so the client
+    can clear its typing indicator instead of hanging forever.
+    """
+    try:
+        prep = await _prepare_turn(
+            session=session,
+            conversation_id=conversation_id,
+            user=user,
+            user_message=user_message,
+        )
+    except Exception as exc:  # noqa: BLE001 — surface as a client-visible error frame
+        log.warning("stream_turn_prepare_failed", conversation_id=conversation_id, error=str(exc))
+        yield {"type": "error", "message": "Sorry — I hit an error handling that. Please try again."}
+        return
+
+    if _turn_uses_llm_responder(prep):
+        parts: list[str] = []
+        async for chunk in conversation_responder.respond_stream(
+            planner_output=prep["planner_output"],
+            brief=prep["brief"],
+            brief_changes=prep["brief_changes"],
+            user_message=prep["user_message"],
+            state=prep["context"],
+            confirm_playback=prep["confirm_playback"],
+        ):
+            parts.append(chunk)
+            yield {"type": "delta", "delta": chunk}
+
+        assistant_message = "".join(parts).strip()
+
+        # The per-chunk stream can't run the meta-reasoning-leak check, so apply
+        # it on the accumulated text and replace with a grounded fallback if it
+        # leaked (or produced nothing).
+        if not assistant_message or conversation_responder._looks_like_meta_reasoning_leak(assistant_message):
+            assistant_message = conversation_responder._fallback_or_playback(
+                planner_output=prep["planner_output"],
+                brief=prep["brief"],
+                brief_changes=prep["brief_changes"],
+                user_message=prep["user_message"],
+                confirm_playback=prep["confirm_playback"],
+            )
+            yield {"type": "replace", "message": assistant_message}
+    else:
+        assistant_message = await _compose_assistant_message(
+            campaign_id=prep["campaign_id"],
+            campaign_copilot_message=prep["campaign_copilot_message"],
+            brief=prep["brief"],
+            previous_brief=prep["previous_brief"],
+            user_message=prep["user_message"],
+            planner_output=prep["planner_output"],
+            brief_changes=prep["brief_changes"],
+            context=prep["context"],
+            confirm_playback=prep["confirm_playback"],
+        )
+        yield {"type": "delta", "delta": assistant_message}
+
+    yield await _finalize_turn_payload(prep, assistant_message)
 
 
 async def _resolve_campaign_turn_context(
@@ -599,7 +740,18 @@ async def _load_campaign_summary_payload_safe(
     try:
         return await _load_campaign_summary_payload(campaign_id)
     except Exception:
-        return None
+        # A DB error must not leave the cost/tokens banner stuck on
+        # "calculating..." forever. Return a zero-cost sentinel so the client
+        # renders a concrete (if provisional) value; a later turn reconciles it.
+        return {
+            "campaign_id": campaign_id,
+            "status": "unknown",
+            "token_cost_usd": 0.0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "updated_at": None,
+        }
 
 
 async def _understand_turn(
@@ -834,6 +986,55 @@ async def _fetch_campaign_row(conn: Any, campaign_id: str) -> dict[str, Any] | N
     return dict(row) if row else None
 
 
+async def _fetch_variants_for_display(campaign_id: str) -> list[dict[str, Any]]:
+    """Fetch generated variants for inline rendering in the chat thread. Shape
+    matches the frontend VariantCard (and GET /campaigns/{id}); composite_score
+    comes from aggregated_scores.weighted_mean."""
+    from core.database import get_db
+
+    try:
+        async with get_db() as conn:
+            result = await conn.execute(
+                text(
+                    """
+                    SELECT
+                        v.task_id,
+                        v.locale,
+                        v.channel,
+                        v.segment,
+                        v.status,
+                        v.final_content,
+                        a.weighted_mean AS composite_score
+                    FROM content_variants v
+                    LEFT JOIN aggregated_scores a ON a.variant_id = v.id
+                    WHERE v.campaign_id = :campaign_id
+                    ORDER BY a.weighted_mean DESC NULLS LAST, v.created_at ASC
+                    LIMIT 20
+                    """
+                ),
+                {"campaign_id": campaign_id},
+            )
+            rows = result.mappings().all()
+    except Exception as exc:
+        log.warning("fetch_variants_for_display_failed", campaign_id=campaign_id, error=str(exc))
+        return []
+
+    return [
+        {
+            "task_id": str(row["task_id"]),
+            "locale": str(row["locale"]),
+            "channel": str(row["channel"]),
+            "segment": str(row["segment"]),
+            "status": str(row["status"]),
+            "final_content": row["final_content"],
+            "composite_score": (
+                float(row["composite_score"]) if row["composite_score"] is not None else None
+            ),
+        }
+        for row in rows
+    ]
+
+
 async def _load_campaign_summary_payload(campaign_id: str) -> dict[str, Any] | None:
     from core.database import get_db
 
@@ -891,11 +1092,13 @@ async def _fetch_campaign_token_usage(conn: Any, campaign_id: str) -> dict[str, 
             "cost_usd": float(row.get("cost_usd") or 0.0),
         }
     except Exception:
+        # Return zeros (not None) so the frontend renders "$0.00 · 0 tokens"
+        # rather than getting stuck on a perpetual "calculating..." fallback.
         return {
-            "input_tokens": None,
-            "output_tokens": None,
-            "total_tokens": None,
-            "cost_usd": None,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cost_usd": 0.0,
         }
 
 
@@ -1515,6 +1718,11 @@ async def conversation_ws(websocket: WebSocket, conversation_id: str) -> None:
 
             _assert_brand_access(user, session.brand_id)
 
+            # Immediate acknowledgement so the client can show a "thinking"
+            # indicator right away, rather than waiting for the full turn (which
+            # runs several serial LLM calls) to complete before any feedback.
+            await websocket.send_json({"type": "ack", "conversation_id": normalized_id})
+
             if review_request_id:
                 response_payload = await _process_review_action(
                     session=session,
@@ -1525,6 +1733,20 @@ async def conversation_ws(websocket: WebSocket, conversation_id: str) -> None:
                     reviewer_note=payload.get("reviewer_note"),
                     edited_content=payload.get("edited_content"),
                 )
+                await websocket.send_json(response_payload)
+            elif settings.ENABLE_STREAMING_RESPONDER:
+                # aclosing() guarantees the generator's finally block (LLM cost
+                # accounting) runs even if the socket disconnects mid-stream.
+                async with aclosing(
+                    _stream_turn(
+                        session=session,
+                        conversation_id=normalized_id,
+                        user=user,
+                        user_message=user_message,
+                    )
+                ) as stream:
+                    async for frame in stream:
+                        await websocket.send_json(frame)
             else:
                 response_payload = await _process_turn(
                     session=session,
@@ -1532,8 +1754,7 @@ async def conversation_ws(websocket: WebSocket, conversation_id: str) -> None:
                     user=user,
                     user_message=user_message,
                 )
-
-            await websocket.send_json(response_payload)
+                await websocket.send_json(response_payload)
 
     except WebSocketDisconnect:
         return

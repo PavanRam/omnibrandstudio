@@ -1,6 +1,6 @@
 import json
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -20,6 +20,7 @@ log = structlog.get_logger()
 
 __all__ = [
     "traced_llm_call",
+    "traced_llm_call_stream",
     "write_audit",
     "safe_agent_run",
     "publish_campaign_event",
@@ -210,75 +211,29 @@ async def _estimate_missing_cost(
     return estimated_cost
 
 
-async def traced_llm_call(
+async def _finalize_llm_call(
+    *,
+    content: str,
+    payload: dict[str, Any],
+    usage: dict[str, Any],
+    latency_ms: int,
     model: str,
-    messages: list[dict],
     task: str,
+    agent: str,
     state: dict,
-    **kwargs: Any,
-) -> tuple[str, dict]:
-    """Wrapper for every LLM call in the system.
+    campaign_id: str | None,
+    trace: Any,
+) -> dict[str, Any]:
+    """Shared post-response accounting for LLM calls (streaming and not).
 
-    Calls LiteLLM via httpx, records a Langfuse trace, records Prometheus
-    metrics, creates an OTel span, and returns (content, usage_metadata).
+    Records Prometheus metrics, finalizes the Langfuse trace, writes the
+    per-agent ``campaign_cost_attribution`` row, and pushes a live cost delta to
+    the campaign SSE stream. Returns the usage metadata dict. Extracted so that
+    ``traced_llm_call`` and ``traced_llm_call_stream`` share one accounting path
+    (never bypass it — see the CLAUDE.md invariant on ``traced_llm_call``).
     """
-    campaign_id = state.get("campaign_id")
-    request_id = state.get("request_id", "")
-    agent = kwargs.pop("agent", task)
-    tracer = get_tracer(f"omnibrand.{agent}")
-
-    trace = start_langfuse_trace(
-        name=task,
-        session_id=campaign_id,
-        metadata={"model": model, "request_id": request_id, "org_id": state.get("org_id")},
-    )
-
-    start = time.perf_counter()
-    with tracer.start_as_current_span(f"{agent}.llm_call") as span:
-        span.set_attribute("llm.model", model)
-        span.set_attribute("llm.task", task)
-        span.set_attribute("campaign_id", campaign_id or "")
-        span.set_attribute("request_id", request_id)
-
-        async with httpx.AsyncClient(base_url=settings.LITELLM_BASE_URL, timeout=60) as client:
-            try:
-                response = await client.post(
-                    "/chat/completions",
-                    json={"model": model, "messages": messages, **kwargs},
-                )
-                response.raise_for_status()
-                payload = response.json()
-                span.set_attribute("http.status_code", response.status_code)
-            except httpx.HTTPError as exc:
-                status_code = getattr(getattr(exc, "response", None), "status_code", 0)
-                span.set_attribute("http.status_code", int(status_code or 0))
-                span.set_attribute("llm.fallback", True)
-                log.warning(
-                    "llm_call_http_failed_using_fallback",
-                    agent=agent,
-                    task=task,
-                    model=model,
-                    status_code=status_code,
-                    error=str(exc),
-                )
-                payload = {
-                    "choices": [
-                        {
-                            "message": {
-                                "content": _fallback_content_from_messages(messages),
-                            }
-                        }
-                    ],
-                    "usage": {"prompt_tokens": 0, "completion_tokens": 0},
-                    "model": f"fallback/{model}",
-                    "_hidden_params": {"response_cost": 0.0},
-                }
-
-    latency_ms = int((time.perf_counter() - start) * 1000)
-    content = payload["choices"][0]["message"]["content"]
-    usage = payload.get("usage", {})
-    input_tokens = usage.get("prompt_tokens", 0)
-    output_tokens = usage.get("completion_tokens", 0)
+    input_tokens = usage.get("prompt_tokens", 0) or 0
+    output_tokens = usage.get("completion_tokens", 0) or 0
     cost = _extract_response_cost(payload, usage)
     resolved_model = str(payload.get("model") or model)
     provider = resolved_model.split("/")[0]
@@ -363,13 +318,244 @@ async def traced_llm_call(
                     agent=agent,
                     error=str(exc),
                 )
+            else:
+                # Push a live cost delta to the campaign SSE stream so the
+                # workspace cost/token banner updates as the pipeline runs,
+                # without the user having to send a chat turn. Deltas are
+                # additive on the client; the WS turn response reconciles the
+                # authoritative cumulative total (e.g. after a page refresh).
+                await publish_campaign_event(
+                    campaign_id=campaign_id,
+                    agent=agent,
+                    phase="cost_update",
+                    payload={
+                        "delta_cost_usd": cost,
+                        "delta_input_tokens": input_tokens,
+                        "delta_output_tokens": output_tokens,
+                    },
+                )
 
-    return content, {
+    return {
         "cost": cost,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "latency_ms": latency_ms,
     }
+
+
+async def traced_llm_call(
+    model: str,
+    messages: list[dict],
+    task: str,
+    state: dict,
+    **kwargs: Any,
+) -> tuple[str, dict]:
+    """Wrapper for every LLM call in the system.
+
+    Calls LiteLLM via httpx, records a Langfuse trace, records Prometheus
+    metrics, creates an OTel span, and returns (content, usage_metadata).
+    """
+    campaign_id = state.get("campaign_id")
+    request_id = state.get("request_id", "")
+    agent = kwargs.pop("agent", task)
+    tracer = get_tracer(f"omnibrand.{agent}")
+
+    trace = start_langfuse_trace(
+        name=task,
+        session_id=campaign_id,
+        metadata={"model": model, "request_id": request_id, "org_id": state.get("org_id")},
+    )
+
+    start = time.perf_counter()
+    with tracer.start_as_current_span(f"{agent}.llm_call") as span:
+        span.set_attribute("llm.model", model)
+        span.set_attribute("llm.task", task)
+        span.set_attribute("campaign_id", campaign_id or "")
+        span.set_attribute("request_id", request_id)
+
+        async with httpx.AsyncClient(base_url=settings.LITELLM_BASE_URL, timeout=60) as client:
+            try:
+                response = await client.post(
+                    "/chat/completions",
+                    json={"model": model, "messages": messages, **kwargs},
+                )
+                response.raise_for_status()
+                payload = response.json()
+                span.set_attribute("http.status_code", response.status_code)
+            except httpx.HTTPError as exc:
+                status_code = getattr(getattr(exc, "response", None), "status_code", 0)
+                span.set_attribute("http.status_code", int(status_code or 0))
+                span.set_attribute("llm.fallback", True)
+                log.warning(
+                    "llm_call_http_failed_using_fallback",
+                    agent=agent,
+                    task=task,
+                    model=model,
+                    status_code=status_code,
+                    error=str(exc),
+                )
+                payload = {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": _fallback_content_from_messages(messages),
+                            }
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+                    "model": f"fallback/{model}",
+                    "_hidden_params": {"response_cost": 0.0},
+                }
+
+    latency_ms = int((time.perf_counter() - start) * 1000)
+    content = payload["choices"][0]["message"]["content"]
+    usage = payload.get("usage", {})
+
+    return content, await _finalize_llm_call(
+        content=content,
+        payload=payload,
+        usage=usage,
+        latency_ms=latency_ms,
+        model=model,
+        task=task,
+        agent=agent,
+        state=state,
+        campaign_id=campaign_id,
+        trace=trace,
+    )
+
+
+async def traced_llm_call_stream(
+    model: str,
+    messages: list[dict],
+    task: str,
+    state: dict,
+    **kwargs: Any,
+) -> AsyncGenerator[str, None]:
+    """Streaming sibling of ``traced_llm_call``.
+
+    Yields assistant content deltas as they arrive from the LiteLLM proxy, then
+    performs the SAME cost accounting as ``traced_llm_call`` via the shared
+    ``_finalize_llm_call`` helper (in a ``finally`` so accounting runs even if the
+    consumer stops iterating early, e.g. a WebSocket disconnect). On a transport
+    error it falls back to a single non-streaming chunk. This does not bypass the
+    ``traced_llm_call`` invariant — it is a peer in the same module with identical
+    accounting.
+    """
+    campaign_id = state.get("campaign_id")
+    request_id = state.get("request_id", "")
+    agent = kwargs.pop("agent", task)
+    tracer = get_tracer(f"omnibrand.{agent}")
+
+    trace = start_langfuse_trace(
+        name=task,
+        session_id=campaign_id,
+        metadata={"model": model, "request_id": request_id, "org_id": state.get("org_id")},
+    )
+
+    start = time.perf_counter()
+    content_parts: list[str] = []
+    usage: dict[str, Any] = {}
+    resolved_model: str | None = None
+    accounted = False
+
+    with tracer.start_as_current_span(f"{agent}.llm_call_stream") as span:
+        span.set_attribute("llm.model", model)
+        span.set_attribute("llm.task", task)
+        span.set_attribute("campaign_id", campaign_id or "")
+        span.set_attribute("request_id", request_id)
+        span.set_attribute("llm.stream", True)
+
+        request_body = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            **kwargs,
+        }
+
+        try:
+            async with httpx.AsyncClient(base_url=settings.LITELLM_BASE_URL, timeout=120) as client:
+                async with client.stream("POST", "/chat/completions", json=request_body) as response:
+                    response.raise_for_status()
+                    span.set_attribute("http.status_code", response.status_code)
+                    async for line in response.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data = line[len("data:"):].strip()
+                        if not data or data == "[DONE]":
+                            continue
+                        try:
+                            chunk = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        if chunk.get("model"):
+                            resolved_model = str(chunk["model"])
+                        # Usage arrives on the final chunk when include_usage is set.
+                        if chunk.get("usage"):
+                            usage = chunk["usage"]
+                        for choice in chunk.get("choices", []):
+                            delta = (choice.get("delta") or {}).get("content")
+                            if delta:
+                                content_parts.append(delta)
+                                yield delta
+
+            # Successful stream — account for it exactly once.
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            content = "".join(content_parts)
+            payload = {"model": resolved_model or model, "usage": usage}
+            accounted = True
+            await _finalize_llm_call(
+                content=content,
+                payload=payload,
+                usage=usage,
+                latency_ms=latency_ms,
+                model=model,
+                task=task,
+                agent=agent,
+                state=state,
+                campaign_id=campaign_id,
+                trace=trace,
+            )
+        except httpx.HTTPError as exc:
+            # Transport failure: emit a single fallback chunk so the consumer
+            # always sees at least one delta, and still account (zero-cost).
+            status_code = getattr(getattr(exc, "response", None), "status_code", 0)
+            span.set_attribute("http.status_code", int(status_code or 0))
+            span.set_attribute("llm.fallback", True)
+            log.warning(
+                "llm_stream_http_failed_using_fallback",
+                agent=agent,
+                task=task,
+                model=model,
+                status_code=status_code,
+                error=str(exc),
+            )
+            if not content_parts:
+                fallback = _fallback_content_from_messages(messages)
+                content_parts.append(fallback)
+                yield fallback
+        finally:
+            if not accounted:
+                latency_ms = int((time.perf_counter() - start) * 1000)
+                content = "".join(content_parts)
+                payload = {
+                    "model": resolved_model or f"fallback/{model}",
+                    "usage": usage or {"prompt_tokens": 0, "completion_tokens": 0},
+                    "_hidden_params": {"response_cost": 0.0},
+                }
+                await _finalize_llm_call(
+                    content=content,
+                    payload=payload,
+                    usage=payload["usage"],
+                    latency_ms=latency_ms,
+                    model=model,
+                    task=task,
+                    agent=agent,
+                    state=state,
+                    campaign_id=campaign_id,
+                    trace=trace,
+                )
 
 
 async def safe_agent_run(

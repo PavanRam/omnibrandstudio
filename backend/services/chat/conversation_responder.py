@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncGenerator
 from typing import Any
 
-from pipeline.agents.base import traced_llm_call
+from pipeline.agents.base import traced_llm_call, traced_llm_call_stream
 from pipeline.conversation_models import ConversationPlannerOutput, PartialBrief
 
 _RESPONDER_SYSTEM_PROMPT = (
@@ -160,6 +161,85 @@ class ConversationResponder:
                 confirm_playback=confirm_playback,
             )
         return message
+
+    async def respond_stream(
+        self,
+        *,
+        planner_output: ConversationPlannerOutput | None,
+        brief: PartialBrief,
+        brief_changes: list[dict[str, Any]],
+        user_message: str,
+        state: dict[str, Any],
+        confirm_playback: bool = False,
+    ) -> AsyncGenerator[str, None]:
+        """Streaming sibling of ``respond``.
+
+        Yields the assistant reply in chunks. Deterministic/grounded cases (which
+        ``respond`` handles without an LLM) are yielded as a single chunk so the
+        caller can always iterate uniformly. The LLM path streams via
+        ``traced_llm_call_stream``; the WS handler applies the meta-reasoning-leak
+        check on the accumulated text and substitutes a fallback if needed.
+        """
+        if planner_output is None:
+            yield self._fallback_or_playback(
+                planner_output=None,
+                brief=brief,
+                brief_changes=brief_changes,
+                user_message=user_message,
+                confirm_playback=confirm_playback,
+            )
+            return
+
+        if not confirm_playback and self._should_use_grounded_fallback(planner_output, brief):
+            yield self._fallback_message(planner_output, brief, brief_changes, user_message)
+            return
+
+        streamed_any = False
+        try:
+            async for chunk in traced_llm_call_stream(
+                model=state.get("model_aliases", {}).get("responder", "responder-chat"),
+                messages=[
+                    {"role": "system", "content": _RESPONDER_SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "planner": planner_output.model_dump(),
+                                "brief": brief.model_dump(),
+                                "brief_changes": brief_changes,
+                                "user_message": user_message,
+                                "confirm_playback": confirm_playback,
+                            },
+                            ensure_ascii=True,
+                        ),
+                    },
+                ],
+                task="conversation_responder",
+                state=state,
+                temperature=0.4,
+            ):
+                if chunk:
+                    streamed_any = True
+                    yield chunk
+        except Exception:
+            if not streamed_any:
+                yield self._fallback_or_playback(
+                    planner_output=planner_output,
+                    brief=brief,
+                    brief_changes=brief_changes,
+                    user_message=user_message,
+                    confirm_playback=confirm_playback,
+                )
+            return
+
+        if not streamed_any:
+            yield self._fallback_or_playback(
+                planner_output=planner_output,
+                brief=brief,
+                brief_changes=brief_changes,
+                user_message=user_message,
+                confirm_playback=confirm_playback,
+            )
 
     def _fallback_or_playback(
         self,

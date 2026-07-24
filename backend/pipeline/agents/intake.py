@@ -15,6 +15,7 @@ from pipeline.agents.base import publish_campaign_event, safe_agent_run
 from pipeline.intake_validation import check_budget, screen_for_injection
 from services.rag import get_retriever
 from pipeline.state import CampaignBrief, GenerationTask, OmniBrandState
+from core.metrics import injection_blocked_total
 
 log = structlog.get_logger()
 
@@ -48,6 +49,7 @@ async def intake_agent(state: OmniBrandState) -> dict:
         if injection_hits:
             brief_valid = False
             errors.extend(injection_hits)
+            injection_blocked_total.labels(source="intake_agent").inc()
             log.warning(
                 "intake_injection_detected",
                 campaign_id=state.get("campaign_id"),
