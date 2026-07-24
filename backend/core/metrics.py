@@ -119,7 +119,7 @@ injection_blocked_total = Counter(
 auth_failures_total = Counter(
     "omnibrand_auth_failures_total",
     "Failed authentication attempts",
-    ["reason"],  # reason: bad_password | unknown_user | inactive_user | invalid_token | revoked_jti | locked_out
+    ["reason"],  # bad_password|unknown_user|inactive_user|invalid_token|revoked_jti|locked_out
     registry=REGISTRY,
 )
 account_lockouts_total = Counter(

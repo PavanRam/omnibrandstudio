@@ -1,4 +1,4 @@
-.PHONY: install install-dev run worker dev run-local-eval test-local-eval check-local-eval test test-unit test-integration smoke lint format migrate migrate-docker migrate-down migrate-history seed seed-admin check-env up down down-reset logs certs setup poll-reviews urls
+.PHONY: install install-dev run worker dev frontend dev-full run-local-eval test-local-eval check-local-eval test test-unit test-integration smoke lint format migrate migrate-docker migrate-down migrate-history seed seed-admin check-env up down down-reset fresh-start restart logs certs setup poll-reviews urls
 
 # ── Dependencies ─────────────────────────────────────────────────────────────
 install:
@@ -15,6 +15,12 @@ worker:
 	cd backend && uv run python -m worker.main
 
 dev:
+	honcho start -f Procfile.backend
+
+frontend:
+	cd frontend && npm run dev
+
+dev-full:
 	honcho start
 
 run-local-eval:
@@ -122,6 +128,10 @@ down:
 down-reset:
 	docker compose down -v
 
+fresh-start: install certs up
+
+restart: down up
+
 logs:
 	docker compose logs -f api worker
 
@@ -158,4 +168,4 @@ certs:
 setup: install certs up
 	@echo ""
 	@echo "Foundation ready. Run 'make smoke' to verify."
-	@echo "Run 'make run' (API) + 'make worker' (worker) or 'make dev' (both)."
+	@echo "Backend only: make dev | Frontend only: make frontend | Both: make dev-full"
