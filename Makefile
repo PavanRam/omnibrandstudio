@@ -1,4 +1,4 @@
-.PHONY: install install-dev run worker dev run-local-eval test-local-eval check-local-eval test test-unit test-integration smoke lint format migrate migrate-docker migrate-down migrate-history seed seed-admin check-env up down down-reset logs certs setup
+.PHONY: install install-dev run worker dev run-local-eval test-local-eval check-local-eval test test-unit test-integration smoke lint format migrate migrate-docker migrate-down migrate-history seed seed-admin check-env up down down-reset logs certs setup poll-reviews
 
 # ── Dependencies ─────────────────────────────────────────────────────────────
 install:
@@ -41,6 +41,11 @@ test-integration:
 
 smoke:
 	uv run python scripts/smoke_test.py
+
+# Free-plan-friendly alternative to an Airtable webhook Automation: polls the
+# Reviews table for reviewer decisions and applies them via /airtable-decide.
+poll-reviews:
+	uv run python scripts/airtable_poll_reviews.py
 
 # ── Code quality ──────────────────────────────────────────────────────────────
 lint:
