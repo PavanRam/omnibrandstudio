@@ -29,6 +29,8 @@ class ReviewDecision(BaseModel):
     decision: Literal["approved", "rejected", "edited"]
     reviewer_note: str | None = None
     edited_content: str | None = None
+    reviewer_email: str | None = None
+    airtable_record_id: str | None = None
 
     @model_validator(mode="after")
     def check_edited_content_present(self) -> "ReviewDecision":
@@ -36,6 +38,8 @@ class ReviewDecision(BaseModel):
             raise ValueError("edited_content is required when decision is 'edited'")
         if self.decision != "edited" and self.edited_content:
             raise ValueError("edited_content may only be set when decision is 'edited'")
+        if self.decision == "rejected" and not (self.reviewer_note or "").strip():
+            raise ValueError("reviewer_note is required when decision is 'rejected'")
         return self
 
 
