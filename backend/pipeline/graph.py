@@ -11,6 +11,16 @@ from pipeline.agents.reflexion import reflexion, reflexion_router
 from pipeline.agents.review import review_gate, review_router
 from pipeline.agents.stubs import publishing_agent_stub
 from pipeline.agents.translation import translation_agent
+from pipeline.agents.publishing import publishing_agent
+from pipeline.agents.stubs import (
+    confidence_aggregator_stub,
+    judge_claude_stub,
+    judge_gpt4o_stub,
+    judge_llama_stub,
+    reflexion_router_stub,
+    review_gate_stub,
+    translation_agent_stub,
+)
 from pipeline.state import OmniBrandState
 
 
@@ -50,7 +60,7 @@ def build_graph(
     g.add_node("confidence_aggregator", confidence_aggregator)  # T3g — real (was stub)
     g.add_node("reflexion", reflexion)  # T3f — self-correction retry
     g.add_node("review_gate", review_gate)  # T11 — real gate (was stub)
-    g.add_node("publishing_agent", publishing_agent_stub)
+    g.add_node("publishing_agent", publishing_agent)
 
     g.set_entry_point("intake_agent")
     g.add_edge("intake_agent", "content_generator")

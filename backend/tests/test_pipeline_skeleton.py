@@ -9,12 +9,13 @@ from pipeline.agents.base import AGENT_WRITE_PERMISSIONS
 from pipeline.agents.intake import intake_agent
 from pipeline.agents.judge_planner import judge_gate
 from pipeline.agents.reflexion import reflexion
+from pipeline.agents.publishing import publishing_agent
 from pipeline.graph import build_graph
 from pipeline.state import OmniBrandState
 
-# intake_agent_stub is no longer used in the graph (real agent swapped in),
-# but it remains in stubs.py and is tested here to confirm the stub itself
-# still meets the async + write-permission contract.
+# intake_agent_stub and publishing_agent_stub are no longer used in the graph
+# (real agents swapped in), but they remain in stubs.py and are tested here
+# to confirm the stubs still meet the async + write-permission contract.
 AGENT_STUB_NAMES = [
     "content_generator_stub",
     "personalization_agent_stub",
@@ -24,7 +25,6 @@ AGENT_STUB_NAMES = [
     "judge_llama_stub",
     "confidence_aggregator_stub",
     "review_gate_stub",
-    "publishing_agent_stub",
 ]
 
 
@@ -78,7 +78,7 @@ def test_reflexion_router_is_sync():
 
 async def test_agent_write_permissions():
     """Each agent/stub only writes to its authorised fields."""
-    # intake_agent is the real implementation; all others are stubs.
+    # intake_agent and publishing_agent are real implementations; others are stubs.
     node_to_agent = {
         "intake_agent": intake_agent,
         "content_generator": stubs.content_generator_stub,
@@ -91,7 +91,7 @@ async def test_agent_write_permissions():
         "confidence_aggregator": stubs.confidence_aggregator_stub,
         "reflexion": reflexion,
         "review_gate": stubs.review_gate_stub,
-        "publishing_agent": stubs.publishing_agent_stub,
+        "publishing_agent": publishing_agent,
     }
     assert set(node_to_agent.keys()) == set(AGENT_WRITE_PERMISSIONS.keys())
 

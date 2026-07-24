@@ -151,7 +151,7 @@ def stub_calls(monkeypatch):
     }
 
     async def fake_traced_llm_call(model, messages, task, state, **kwargs):
-        calls["claude"].append({"task": task, "model": model})
+        calls["claude"].append({"task": task, "model": model, "agent": kwargs.get("agent")})
         return "TRANSLATED", {"cost": 0.01}
 
     async def fake_mbart_translate(text, src_locale, tgt_locale):
@@ -266,6 +266,7 @@ async def test_gate_passes_on_first_attempt(stub_calls, monkeypatch):
     assert "errors" not in result
     assert len(stub_calls["claude"]) == 1  # no retries needed
     assert stub_calls["claude"][0]["task"] == "translation_agent"
+    assert stub_calls["claude"][0]["agent"] == "translation_agent"
     # mBART reference computed exactly once, not once per retry attempt.
     assert len(stub_calls["mbart"]) == 1
 
@@ -304,6 +305,38 @@ async def test_mbart_reference_failure_falls_back_to_primary_model(stub_calls, m
     tasks = [c["task"] for c in stub_calls["claude"]]
     assert "translation_agent_reference_fallback" in tasks
     assert "translation_agent" in tasks
+    assert all(c["agent"] == "translation_agent" for c in stub_calls["claude"])
+
+
+async def test_backtranslate_failure_falls_back_to_primary_model(stub_calls, monkeypatch):
+    """Helsinki-NLP back-translation is unavailable. The back-translation call
+    must degrade to the primary model instead of hard-failing the variant,
+    mirroring the mBART-reference fallback above."""
+    passing_checks = [
+        {"name": "bleu", "value": 30.0, "threshold": 25.0, "passed": True},
+        {"name": "semantic_similarity", "value": 0.9, "threshold": 0.84, "passed": True},
+        {"name": "back_translation_cosine", "value": 0.95, "threshold": 0.85, "passed": True},
+    ]
+
+    async def failing_hf_translate_call(text, model):
+        raise RuntimeError("Helsinki-NLP/opus-mt-es-en unavailable on hf-inference free tier")
+
+    async def fake_run_checks(candidate, reference, back_translation, source):
+        assert back_translation == "TRANSLATED"  # came from the fallback traced_llm_call
+        return passing_checks
+
+    monkeypatch.setattr(trans, "_hf_translate_call", failing_hf_translate_call)
+    monkeypatch.setattr(trans, "_run_checks", fake_run_checks)
+
+    variants = [_variant("t-backtranslate-down", "es-MX", "Buy now.")]
+    result = await translation_agent(_state(variants))
+
+    assert variants[0]["status"] == "translated"
+    assert "errors" not in result
+    tasks = [c["task"] for c in stub_calls["claude"]]
+    assert "translation_agent_backtranslate_fallback" in tasks
+    assert "translation_agent" in tasks
+    assert all(c["agent"] == "translation_agent" for c in stub_calls["claude"])
 
 
 async def test_gate_retries_then_passes(stub_calls, monkeypatch):

@@ -244,6 +244,7 @@ async def _back_translate(text: str, locale: str, state: OmniBrandState) -> tupl
             ],
             task="translation_agent_backtranslate_fallback",
             state=cast(dict[str, Any], state),
+            agent="translation_agent",
         )
         return content, usage.get("cost", 0.0)
 
@@ -455,6 +456,7 @@ async def _run_translation_gate(
             ],
             task="translation_agent_reference_fallback",
             state=cast(dict[str, Any], state),
+            agent="translation_agent",
         )
         total_cost += mbart_fallback_cost.get("cost", 0.0)
 
@@ -474,6 +476,7 @@ async def _run_translation_gate(
             messages=messages,
             task="translation_agent",
             state=cast(dict[str, Any], state),
+            agent="translation_agent",
         )
         total_cost += usage.get("cost", 0.0)
 

@@ -218,6 +218,7 @@ async def personalization_agent(state: OmniBrandState) -> dict:
                 messages=_build_messages(profile, channel, clean_source),
                 task="personalization_agent",
                 state=state,
+                agent="personalization_agent",
             )
 
             # T4.4 — enrich the variant in place (append-only reducer contract).
