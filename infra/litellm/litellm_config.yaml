@@ -90,9 +90,11 @@ model_list:
     api_key: "os.environ/GEMINI_API_KEY"
 
 # Understanding — merged intent classification + brief extraction (JSON-strong)
+# Uses llama-3.1-8b-instant (temperature-0 structured JSON extraction); smaller
+# model cuts time-to-first-token since this call must complete before streaming.
 - model_name: "understanding"
   litellm_params:
-    model: "groq/llama-3.3-70b-versatile"
+    model: "groq/llama-3.1-8b-instant"
     api_key: "os.environ/GROQ_API_KEY"
 
 - model_name: "understanding-gemini"

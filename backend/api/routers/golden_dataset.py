@@ -61,21 +61,37 @@ async def open_draft_set(
 async def list_sets(
     brand_id: str,
     user: Annotated[UserContext, Depends(get_current_user)],
+    limit: int = 50,
+    offset: int = 0,
 ) -> dict:
     async with get_db() as conn:
         await _assert_brand_access(conn, user, brand_id)
-        sets = await svc.list_sets(conn, org_id=user.org_id, brand_id=brand_id)
-        if not sets:
-            inserted = await svc.backfill_sets_from_guide_versions(
-                conn,
-                org_id=user.org_id,
-                brand_id=brand_id,
-                created_by=user.user_id,
-            )
-            if inserted:
-                await conn.commit()
-                sets = await svc.list_sets(conn, org_id=user.org_id, brand_id=brand_id)
+        sets = await svc.list_sets(conn, org_id=user.org_id, brand_id=brand_id,
+                                    limit=limit, offset=offset)
     return {"brand_id": brand_id, "count": len(sets), "items": sets}
+
+
+@router.post("/golden-dataset/sets/{brand_id}/backfill")
+async def backfill_sets(
+    brand_id: str,
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    """Explicitly backfill golden-dataset sets from existing brand guide versions.
+
+    Previously this happened implicitly on the first GET; it is now a deliberate
+    admin action so GET never writes to the database.
+    """
+    async with get_db() as conn:
+        await _assert_brand_access(conn, user, brand_id)
+        inserted = await svc.backfill_sets_from_guide_versions(
+            conn,
+            org_id=user.org_id,
+            brand_id=brand_id,
+            created_by=user.user_id,
+        )
+        if inserted:
+            await conn.commit()
+    return {"brand_id": brand_id, "sets_created": inserted}
 
 
 @router.post("/golden-dataset/sets/{set_id}/activate")

@@ -29,6 +29,7 @@ import {
   activateGoldenSet,
   createUser,
   deleteGoldenExample,
+  getAllowedLocales,
   listBrandGuides,
   listCustomerSegments,
   listGoldenExamples,
@@ -36,6 +37,7 @@ import {
   listUsers,
   openGoldenSet,
   promoteGoldenExample,
+  setAllowedLocales,
   uploadBrandGuide,
   uploadCustomerSegments,
 } from '@/lib/api.js';
@@ -135,6 +137,7 @@ export function AdminView({ onLock }) {
   const [brandId, setBrandId] = useState(DEFAULT_BRAND_ID);
   const [locale, setLocale] = useState('en-US');
   const [version, setVersion] = useState('v1');
+  const [allowedLocales, setAllowedLocalesState] = useState([]);
 
   const [file, setFile] = useState(null);
   const [guides, setGuides] = useState([]);
@@ -343,6 +346,14 @@ export function AdminView({ onLock }) {
     }
   }, [brandId, isAdmin, refreshGuides, refreshSegments, tab, locale, version]);
 
+  // Load allowed locales whenever brandId changes
+  useEffect(() => {
+    if (!brandId.trim()) return;
+    getAllowedLocales(brandId.trim())
+      .then((payload) => setAllowedLocalesState(payload.allowed_locales || []))
+      .catch(() => setAllowedLocalesState([]));
+  }, [brandId]);
+
   if (!isAdmin) {
     return (
       <Page wide eyebrow="Restricted" title="Admin Console">
@@ -449,6 +460,7 @@ export function AdminView({ onLock }) {
             setLocale={setLocale}
             version={version}
             setVersion={setVersion}
+            allowedLocales={allowedLocales}
           />
         )}
 
@@ -669,7 +681,43 @@ function UsersPanel({ users, loading, error, status, onRefresh, form, canCreate,
 
 /* --------------------------------------------------------------- Context bar */
 
-function ContextBar({ brandId, brandIds, setBrandId, brandContextLabel, locale, setLocale, version, setVersion }) {
+const COMMON_LOCALES = [
+  { value: 'en-US', label: 'en-US' },
+  { value: 'en-GB', label: 'en-GB' },
+  { value: 'es-ES', label: 'es-ES' },
+  { value: 'fr-FR', label: 'fr-FR' },
+  { value: 'de-DE', label: 'de-DE' },
+  { value: 'ja-JP', label: 'ja-JP' },
+  { value: 'pt-BR', label: 'pt-BR' },
+  { value: 'it-IT', label: 'it-IT' },
+  { value: 'nl-NL', label: 'nl-NL' },
+  { value: 'ko-KR', label: 'ko-KR' },
+];
+
+function LocaleChipSelect({ value, onChange, allowedLocales = [] }) {
+  const options = allowedLocales.length > 0 ? allowedLocales : COMMON_LOCALES.map((l) => l.value);
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {options.map((loc) => (
+        <button
+          key={loc}
+          type="button"
+          onClick={() => onChange(loc)}
+          className={cn(
+            'rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors',
+            value === loc
+              ? 'border-brand bg-brand text-brand-fg'
+              : 'border-border bg-surface-2 text-muted hover:border-brand hover:text-brand',
+          )}
+        >
+          {loc}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ContextBar({ brandId, brandIds, setBrandId, brandContextLabel, locale, setLocale, version, setVersion, allowedLocales }) {
   const brandCount = brandIds.length;
   const showBrandSelect = brandCount > 1;
 
@@ -678,7 +726,7 @@ function ContextBar({ brandId, brandIds, setBrandId, brandContextLabel, locale, 
       <div className="mb-2 flex items-center gap-1.5 px-1 text-xs font-semibold uppercase tracking-wide text-faint">
         <Building2 size={12} aria-hidden="true" /> Working context
       </div>
-      <div className="grid gap-2 sm:grid-cols-[2fr_1fr_1fr]">
+      <div className="grid gap-2 sm:grid-cols-[2fr_1fr]">
         {showBrandSelect ? (
           <select
             className={cn(inputCls, 'font-mono text-xs')}
@@ -700,8 +748,11 @@ function ContextBar({ brandId, brandIds, setBrandId, brandContextLabel, locale, 
             aria-label="Brand"
           />
         )}
-        <input className={inputCls} value={locale} onChange={(e) => setLocale(e.target.value)} aria-label="Locale" placeholder="Locale" />
         <input className={inputCls} value={version} onChange={(e) => setVersion(e.target.value)} aria-label="Version" placeholder="Version" />
+      </div>
+      <div className="mt-2 px-0.5">
+        <p className="mb-1.5 text-xs font-semibold text-faint">Locale</p>
+        <LocaleChipSelect value={locale} onChange={setLocale} allowedLocales={allowedLocales} />
       </div>
       <p className="mt-2 px-1 text-xs text-faint">{brandContextLabel}</p>
     </div>

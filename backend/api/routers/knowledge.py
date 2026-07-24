@@ -2,6 +2,7 @@ from typing import Annotated
 
 from core.database import get_db
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from pydantic import BaseModel
 from sqlalchemy import text
 from services import golden_dataset_service
 from services.rag.ingest import (
@@ -12,6 +13,10 @@ from services.rag.ingest import (
 )
 
 from api.deps import UserContext, get_current_user
+
+
+class AllowedLocalesUpdate(BaseModel):
+    allowed_locales: list[str]
 
 router = APIRouter()
 
@@ -81,24 +86,25 @@ async def list_brand_guides(
     brand_id: str,
     user: Annotated[UserContext, Depends(get_current_user)],
     include_inactive: bool = False,
+    include_quarantined: bool = False,
+    limit: int = 100,
+    offset: int = 0,
 ) -> dict:
     """List known brand-guide versions for a brand from Postgres metadata."""
     async with get_db() as conn:
         await _assert_brand_access(conn, user, brand_id)
-        if include_inactive:
-            query = (
-                "SELECT id, locale, version, source_filename, indexed_at, active, chunk_count, created_at "
-                "FROM brand_guides WHERE brand_id = CAST(:brand_id AS UUID) "
-                "ORDER BY created_at DESC"
-            )
-            params = {"brand_id": brand_id}
-        else:
-            query = (
-                "SELECT id, locale, version, source_filename, indexed_at, active, chunk_count, created_at "
-                "FROM brand_guides WHERE brand_id = CAST(:brand_id AS UUID) AND active = TRUE "
-                "ORDER BY created_at DESC"
-            )
-            params = {"brand_id": brand_id}
+        conditions = ["brand_id = CAST(:brand_id AS UUID)"]
+        if not include_quarantined:
+            conditions.append("status != 'quarantined'")
+        if not include_inactive:
+            conditions.append("active = TRUE")
+        where = " AND ".join(conditions)
+        query = (
+            "SELECT id, locale, version, source_filename, indexed_at, active, chunk_count, status, created_at "
+            f"FROM brand_guides WHERE {where} "
+            "ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
+        )
+        params = {"brand_id": brand_id, "limit": limit, "offset": offset}
 
         try:
             result = await conn.execute(text(query), params)
@@ -128,22 +134,19 @@ async def upload_customer_segments(
     file_bytes = await segment_file.read()
     async with get_db() as conn:
         await _assert_brand_access(conn, user, brand_id)
-
-    try:
-        result = await ingest_customer_segments(
-            brand_id=brand_id,
-            file_bytes=file_bytes,
-            filename=segment_file.filename or "uploaded.segments",
-            locale=locale,
-            version=version,
-        )
-    except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
-
-    return {
-        "status": "indexed",
-        **result,
-    }
+        try:
+            result = await ingest_customer_segments(
+                db=conn,
+                brand_id=brand_id,
+                org_id=user.org_id,
+                file_bytes=file_bytes,
+                filename=segment_file.filename or "uploaded.segments",
+                locale=locale,
+                version=version,
+            )
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    return result
 
 
 @router.get("/segments/{brand_id}")
@@ -153,23 +156,18 @@ async def list_segments(
     locale: str,
     version: str | None = None,
     limit: int = 50,
+    offset: int = 0,
 ) -> dict:
-    """List indexed customer-segment documents for a brand/locale."""
+    """List indexed customer-segment documents for a brand/locale (Postgres-first)."""
     async with get_db() as conn:
         await _assert_brand_access(conn, user, brand_id)
-
-    items = await list_customer_segments(
-        brand_id=brand_id,
-        locale=locale,
-        version=version,
-        limit=limit,
-    )
-    if not items and version:
         items = await list_customer_segments(
             brand_id=brand_id,
             locale=locale,
-            version=None,
+            version=version,
             limit=limit,
+            offset=offset,
+            db=conn,
         )
     return {
         "brand_id": brand_id,
@@ -178,3 +176,44 @@ async def list_segments(
         "count": len(items),
         "items": items,
     }
+
+
+@router.get("/brands/{brand_id}/allowed-locales")
+async def get_allowed_locales(
+    brand_id: str,
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    """Return the list of allowed locales configured for this brand."""
+    async with get_db() as conn:
+        await _assert_brand_access(conn, user, brand_id)
+        result = await conn.execute(
+            text("SELECT allowed_locales, source_locale FROM brands WHERE id = CAST(:id AS UUID)"),
+            {"id": brand_id},
+        )
+        row = result.mappings().first()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Brand not found")
+    locales = list(row["allowed_locales"] or [row["source_locale"]])
+    return {"brand_id": brand_id, "allowed_locales": locales}
+
+
+@router.patch("/brands/{brand_id}/allowed-locales")
+async def set_allowed_locales(
+    brand_id: str,
+    body: AllowedLocalesUpdate,
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    """Replace the allowed_locales list for this brand (admin only)."""
+    if "admin" not in (user.roles or []):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin role required")
+    async with get_db() as conn:
+        await _assert_brand_access(conn, user, brand_id)
+        await conn.execute(
+            text(
+                "UPDATE brands SET allowed_locales = CAST(:locales AS TEXT[]) "
+                "WHERE id = CAST(:id AS UUID)"
+            ),
+            {"locales": body.allowed_locales, "id": brand_id},
+        )
+        await conn.commit()
+    return {"brand_id": brand_id, "allowed_locales": body.allowed_locales}

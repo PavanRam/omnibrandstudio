@@ -623,6 +623,23 @@ async def approve_campaign(campaign_id: str, body: ReviewDecision) -> dict:
     }
 
 
+async def _load_airtable_review_records(campaign_id: str) -> list[dict]:
+    """Load Airtable review records for the campaign (best-effort enrichment).
+
+    Returns an empty list when Airtable is not configured or the campaign has
+    no flagged variants — callers should handle an empty list gracefully.
+    """
+    try:
+        from services.airtable_service import airtable_enabled, get_review_records_by_campaign_id
+
+        if not airtable_enabled():
+            return []
+        return await get_review_records_by_campaign_id(campaign_id)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("airtable_records_load_failed", campaign_id=campaign_id, error=str(exc))
+        return []
+
+
 @router.get("/{campaign_id}")
 async def get_campaign(campaign_id: str) -> dict:
     normalized_campaign_id = _normalize_campaign_id(campaign_id)
@@ -691,6 +708,7 @@ async def get_campaign(campaign_id: str) -> dict:
             }
             for row in variant_rows
         ],
+        "airtable_review_records": await _load_airtable_review_records(normalized_campaign_id),
     }
 
 

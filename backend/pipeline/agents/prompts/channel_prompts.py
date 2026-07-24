@@ -54,7 +54,21 @@ _SYSTEM_TEMPLATE = (
     "- If 'subject_line' is required: Include a line that starts with 'Subject:' or 'Subject Line:'\n"
     "- If 'cta' (call-to-action) is required: Include action verbs like 'Click', 'Learn more', 'Get started', 'Book a demo', 'Discover', 'Join', etc.\n"
     "- If 'hashtag' is required: Include hashtags prefixed with # (e.g., #SustainableInnovation)\n"
-    "Ensure ALL required elements are present in your output."
+    "Ensure ALL required elements are present in your output.\n\n"
+    "HARD CONSTRAINT — CHARACTER LIMIT:\n"
+    "Your entire output MUST be at most {char_limit} characters. Count carefully. "
+    "Do NOT include preamble, notes, or commentary — return the content only. "
+    "If you approach the limit, trim, but never drop a required element.\n\n"
+    "LOCALE & CULTURAL REGISTER:\n"
+    "The locale for this content is {{locale}}. "
+    "For non-English locales (anything other than en-US / en-GB), adapt idioms, units, "
+    "date formats, and cultural references to be natural for that market. "
+    "For formal markets (e.g. de-DE, fr-FR) use the formal register (Sie/vous). "
+    "Do not simply translate English idioms literally.\n\n"
+    "GROUNDING — NO INVENTED CLAIMS:\n"
+    "Only include claims, statistics, product features, or offers that are explicitly "
+    "present in the campaign objective, key messages, or brand guide excerpts below. "
+    "Do not invent discounts, deadlines, URLs, or endorsements."
 )
 
 _USER_TEMPLATE = (
@@ -66,7 +80,9 @@ _USER_TEMPLATE = (
     "Brand guide excerpts to follow (highest priority):\n{brand_guidance}\n\n"
     "Examples of strong past {channel} content for this brand:\n{few_shot_examples}\n\n"
     "Write one new {channel} post that follows the system instructions exactly.\n"
-    "Ensure the output includes ALL required elements with proper formatting."
+    "Ensure the output includes ALL required elements with proper formatting.\n"
+    "Stay within {char_limit} characters — this is a HARD LIMIT, not a guideline.\n"
+    "Only include claims and offers present in the brief above. Do not invent any."
 )
 
 

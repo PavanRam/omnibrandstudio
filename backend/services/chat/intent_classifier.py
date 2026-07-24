@@ -25,7 +25,13 @@ _PROMPT = (
     "set strongest goal as primary and place additional goals in secondary; "
     "set requires_action=true when user asks the system to do something; "
     "set mutation_intent=true when the user asks to change brief data, campaign execution state, or generated assets; "
-    "do not invent facts and return valid JSON only."
+    "do not invent facts and return valid JSON only. "
+    "BOUNDARY EXAMPLES (resolve common confusions): "
+    "(1) 'What can the platform do?' -> ask_product, NOT collect_brief. "
+    "(2) 'Let me change the tone to confident' -> modify_brief with mutation_intent=true. "
+    "(3) 'Yes, run it' after a brief-complete confirmation prompt -> submit_campaign. "
+    "(4) 'What happened in the last step?' with an active campaign -> explain_progress. "
+    "(5) 'Add Instagram to the channels' -> modify_brief, mutation_intent=true."
 )
 
 

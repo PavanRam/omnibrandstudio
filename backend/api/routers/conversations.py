@@ -15,6 +15,7 @@ from sqlalchemy import text
 from api.deps import UserContext, get_current_user
 from api.middleware.auth import decode_access_token, is_jti_revoked
 from core.config import settings
+from core.database import get_db
 from core.ids import new_campaign_id, new_request_id
 from core.redis import get_redis
 from pipeline.conversation_models import ConversationPlannerInput, ConversationSession, ExtractionMeta, IntentClassification, PartialBrief, UnderstandingResult
@@ -327,6 +328,49 @@ def _brief_changes(previous_brief: PartialBrief, current_brief: PartialBrief) ->
     return changes
 
 
+async def _check_locale_support(
+    brand_id: str,
+    brief: PartialBrief,
+    previous_brief: PartialBrief,
+    brief_changes: list[dict[str, Any]],
+) -> str | None:
+    """Return a warning string if the brief contains locales not in the brand's
+    allowed_locales list.  Returns None when all locales are supported or when
+    allowed_locales is empty (brand hasn't configured restrictions yet).
+    Fails open — any DB error suppresses the check silently.
+    """
+    # Only run when locales actually changed in this turn.
+    locale_change = next((c for c in brief_changes if c["field"] == "locales"), None)
+    if locale_change is None and not brief.locales:
+        return None
+    try:
+        async with get_db() as conn:
+            result = await conn.execute(
+                text("SELECT allowed_locales FROM brands WHERE id = :brand_id"),
+                {"brand_id": brand_id},
+            )
+            row = result.fetchone()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    allowed: list[str] = row["allowed_locales"] or []
+    if not allowed:
+        # Brand hasn't restricted locales — no warning needed.
+        return None
+    requested: set[str] = set(brief.locales or [])
+    unsupported = sorted(requested - set(allowed))
+    if not unsupported:
+        return None
+    supported_str = ", ".join(f"`{l}`" for l in sorted(allowed))
+    unsupported_str = ", ".join(f"`{l}`" for l in unsupported)
+    return (
+        f"⚠️ This brand doesn't have guidelines for {unsupported_str} yet — "
+        f"supported locales are: {supported_str}. "
+        f"I'll continue with the supported locales only."
+    )
+
+
 def _is_new_scalar(previous: str | None, current: str | None) -> bool:
     before = (previous or "").strip()
     after = (current or "").strip()
@@ -402,6 +446,16 @@ async def _prepare_turn(
     await session_manager.update_partial_brief(conversation_id, brief)
     brief_changes = _brief_changes(previous_brief, brief)
 
+    # ── Phase 2.8: Locale support validation ─────────────────────────────
+    # Warn the user if they requested a locale not in the brand's allowed_locales.
+    # Does NOT block the turn — returns a plain warning string or None.
+    locale_warning = await _check_locale_support(
+        brand_id=session.brand_id,
+        brief=brief,
+        previous_brief=previous_brief,
+        brief_changes=brief_changes,
+    )
+
     planner_output = _build_planner_output(
         user_message=user_message,
         intent=intent,
@@ -473,6 +527,7 @@ async def _prepare_turn(
         "variants": variants_for_display,
         "user_message": user_message,
         "active_campaign_id": session.active_campaign_id,
+        "locale_warning": locale_warning,
     }
 
 
@@ -561,6 +616,9 @@ async def _process_turn(
         context=prep["context"],
         confirm_playback=prep["confirm_playback"],
     )
+    locale_warning = prep.get("locale_warning")
+    if locale_warning:
+        assistant_message = f"{locale_warning}\n\n{assistant_message}"
     return await _finalize_turn_payload(prep, assistant_message)
 
 
@@ -589,6 +647,11 @@ async def _stream_turn(
         log.warning("stream_turn_prepare_failed", conversation_id=conversation_id, error=str(exc))
         yield {"type": "error", "message": "Sorry — I hit an error handling that. Please try again."}
         return
+
+    # Emit locale warning as a prefixed message before the main LLM response.
+    locale_warning = prep.get("locale_warning")
+    if locale_warning:
+        yield {"type": "delta", "delta": locale_warning + "\n\n"}
 
     if _turn_uses_llm_responder(prep):
         parts: list[str] = []
@@ -1718,43 +1781,74 @@ async def conversation_ws(websocket: WebSocket, conversation_id: str) -> None:
 
             _assert_brand_access(user, session.brand_id)
 
-            # Immediate acknowledgement so the client can show a "thinking"
-            # indicator right away, rather than waiting for the full turn (which
-            # runs several serial LLM calls) to complete before any feedback.
-            await websocket.send_json({"type": "ack", "conversation_id": normalized_id})
+            # ── Phase 2.1: Per-conversation Redis lock ───────────────────────
+            # Prevents concurrent turns for the same conversation_id. Without a
+            # lock, two rapid messages can produce double campaign enqueues, torn
+            # partial_brief states, and Redis session-cache poisoning.
+            lock_key = f"lock:conversation:{normalized_id}"
+            redis = get_redis()
+            lock_acquired = await redis.set(lock_key, "1", nx=True, ex=120)
+            if not lock_acquired:
+                await websocket.send_json({"type": "busy", "conversation_id": normalized_id})
+                continue
 
-            if review_request_id:
-                response_payload = await _process_review_action(
-                    session=session,
-                    conversation_id=normalized_id,
-                    user=user,
-                    review_request_id=str(review_request_id),
-                    decision=str(payload.get("decision") or ""),
-                    reviewer_note=payload.get("reviewer_note"),
-                    edited_content=payload.get("edited_content"),
-                )
-                await websocket.send_json(response_payload)
-            elif settings.ENABLE_STREAMING_RESPONDER:
-                # aclosing() guarantees the generator's finally block (LLM cost
-                # accounting) runs even if the socket disconnects mid-stream.
-                async with aclosing(
-                    _stream_turn(
+            try:
+                # ── Phase 2.4: Chat input guardrail (flag-gated) ────────────
+                if settings.ENABLE_CHAT_INPUT_GUARDRAIL and user_message:
+                    from pipeline.intake_validation import screen_for_injection
+
+                    injection_hits = screen_for_injection([user_message])
+                    if injection_hits:
+                        log.warning(
+                            "chat_input_guardrail_blocked",
+                            conversation_id=normalized_id,
+                            violations=injection_hits,
+                        )
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Your message was flagged by our safety filter. Please rephrase and try again.",
+                        })
+                        continue
+
+                # Immediate acknowledgement so the client can show a "thinking"
+                # indicator right away, rather than waiting for the full turn (which
+                # runs several serial LLM calls) to complete before any feedback.
+                await websocket.send_json({"type": "ack", "conversation_id": normalized_id})
+
+                if review_request_id:
+                    response_payload = await _process_review_action(
+                        session=session,
+                        conversation_id=normalized_id,
+                        user=user,
+                        review_request_id=str(review_request_id),
+                        decision=str(payload.get("decision") or ""),
+                        reviewer_note=payload.get("reviewer_note"),
+                        edited_content=payload.get("edited_content"),
+                    )
+                    await websocket.send_json(response_payload)
+                elif settings.ENABLE_STREAMING_RESPONDER:
+                    # aclosing() guarantees the generator's finally block (LLM cost
+                    # accounting) runs even if the socket disconnects mid-stream.
+                    async with aclosing(
+                        _stream_turn(
+                            session=session,
+                            conversation_id=normalized_id,
+                            user=user,
+                            user_message=user_message,
+                        )
+                    ) as stream:
+                        async for frame in stream:
+                            await websocket.send_json(frame)
+                else:
+                    response_payload = await _process_turn(
                         session=session,
                         conversation_id=normalized_id,
                         user=user,
                         user_message=user_message,
                     )
-                ) as stream:
-                    async for frame in stream:
-                        await websocket.send_json(frame)
-            else:
-                response_payload = await _process_turn(
-                    session=session,
-                    conversation_id=normalized_id,
-                    user=user,
-                    user_message=user_message,
-                )
-                await websocket.send_json(response_payload)
+                    await websocket.send_json(response_payload)
+            finally:
+                await redis.delete(lock_key)
 
     except WebSocketDisconnect:
         return

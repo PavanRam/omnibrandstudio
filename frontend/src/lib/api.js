@@ -129,6 +129,33 @@ async function fetchWithAutoRefresh(url, options = {}, allowRetry = true) {
   return fetch(url, { ...options, headers: retryHeaders });
 }
 
+/**
+ * Proactively refresh the access token if it is within 5 minutes of expiry.
+ * Call this on app load and optionally on a periodic timer.
+ * Returns true if the token was refreshed or was still valid; false if the
+ * refresh token is absent or the refresh request failed.
+ */
+export async function checkAndRefreshToken() {
+  const accessToken = getStoredAccessToken();
+  if (!accessToken) return Boolean(getStoredRefreshToken());
+
+  // Decode expiry from the JWT payload (no signature verification needed here —
+  // the server verifies on every API call; we only need the exp claim).
+  const claims = decodeJwtClaims(accessToken);
+  if (!claims || typeof claims.exp !== 'number') {
+    // Can't decode: attempt a refresh to be safe.
+    return refreshAccessToken();
+  }
+
+  const expiresInMs = claims.exp * 1000 - Date.now();
+  const fiveMinutesMs = 5 * 60 * 1000;
+  if (expiresInMs > fiveMinutesMs) {
+    return true; // Still valid, no refresh needed.
+  }
+
+  return refreshAccessToken();
+}
+
 export function formatApiError(error) {
   if (error instanceof Error) {
     return error.message;
@@ -378,6 +405,32 @@ export async function listCustomerSegments(brandId, locale, version = '') {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(parseErrorMessage(body, `segment list failed: ${response.status}`));
+  }
+  return body;
+}
+
+export async function getAllowedLocales(brandId) {
+  const response = await fetchWithAutoRefresh(
+    `${API_BASE}/knowledge/brands/${brandId}/allowed-locales`,
+    { headers: authHeaders() },
+  );
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { allowed_locales: [] };
+  return body;
+}
+
+export async function setAllowedLocales(brandId, locales) {
+  const response = await fetchWithAutoRefresh(
+    `${API_BASE}/knowledge/brands/${brandId}/allowed-locales`,
+    {
+      method: 'PATCH',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ allowed_locales: locales }),
+    },
+  );
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(parseErrorMessage(body, `set allowed locales failed: ${response.status}`));
   }
   return body;
 }

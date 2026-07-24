@@ -330,6 +330,19 @@ function ChatThreadPanel({
             <p className="mt-1 max-w-xs text-sm text-muted">
               Describe your campaign objective in plain language — the copilot will ask for anything it needs.
             </p>
+            {canChat && (
+              <button
+                type="button"
+                onClick={() =>
+                  sendPrompt(
+                    "Launch a summer promo for hydration packs targeting 25-34 and 35-44 year olds via email and LinkedIn, confident and helpful tone, en-US, 50000 token budget.",
+                  )
+                }
+                className="mt-4 rounded-full border border-brand/40 bg-brand-soft px-4 py-2 text-xs font-medium text-brand transition-colors hover:border-brand hover:bg-brand/10"
+              >
+                Show me an example brief →
+              </button>
+            )}
           </div>
         ) : (
           messages.map((msg, idx) => {
@@ -495,7 +508,7 @@ function ChatThreadPanel({
           <button
             type="button"
             onClick={sendMessage}
-            disabled={!hasConversation || !message.trim()}
+            disabled={!hasConversation || !message.trim() || isAssistantTyping}
             className="grid h-9 w-9 shrink-0 place-items-center rounded-xl brand-gradient text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:brightness-100"
             aria-label="Send message"
           >

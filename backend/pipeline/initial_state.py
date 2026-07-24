@@ -84,6 +84,7 @@ def build_initial_state(
         publication_receipts=[],
         failed_task_ids=[],
         errors=[],
+        guardrail_flags=[],
         current_phase="starting",
         human_review_requested=False,
         publishing_paused=False,

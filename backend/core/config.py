@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # When true, the conversation WebSocket streams the assistant reply token by
     # token (delta frames) instead of sending it as one turn_complete frame.
     ENABLE_STREAMING_RESPONDER: bool = False
+    # When true, chat input is screened for injection patterns + lightweight
+    # toxicity before any LLM processing. Defaults False (ship dark) — matches
+    # the Phase 1 flag-gated pattern.
+    ENABLE_CHAT_INPUT_GUARDRAIL: bool = False
     DEV_BOOTSTRAP_ADMIN_ENABLED: bool = False
     DEV_ADMIN_ORG_ID: str = "00000000-0000-0000-0000-000000000001"
     DEV_ADMIN_BRAND_ID: str = "00000000-0000-0000-0000-000000000002"

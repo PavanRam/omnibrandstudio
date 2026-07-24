@@ -68,7 +68,8 @@ async def open_draft_set(
 
 
 async def list_sets(
-    conn: AsyncConnection, *, org_id: str, brand_id: str
+    conn: AsyncConnection, *, org_id: str, brand_id: str,
+    limit: int = 50, offset: int = 0,
 ) -> list[dict[str, Any]]:
     result = await conn.execute(
         text(
@@ -82,9 +83,10 @@ async def list_sets(
             WHERE s.org_id = :org_id AND s.brand_id = :brand_id
             GROUP BY s.id
             ORDER BY s.created_at DESC
+            LIMIT :limit OFFSET :offset
             """
         ),
-        {"org_id": org_id, "brand_id": brand_id},
+        {"org_id": org_id, "brand_id": brand_id, "limit": limit, "offset": offset},
     )
     return [dict(row) for row in result.mappings().all()]
 

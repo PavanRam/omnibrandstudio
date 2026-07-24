@@ -12,7 +12,15 @@ _EXTRACTION_PROMPT = (
     "Return strict JSON with keys: objective, target_audience, key_messages, tone_override, "
     "channels, locales, audience_segments, token_budget, raw_text, field_confidence. "
     "field_confidence must be an object with numeric 0..1 confidence for extracted fields. "
-    "Use null for unknown scalars and [] for unknown arrays."
+    "Use null for unknown scalars and [] for unknown arrays. "
+    "Understand natural language — do NOT require 'field: value' syntax. "
+    "EXAMPLE: user says 'We want to launch our summer hydration campaign on email and LinkedIn "
+    "targeting 25-34 year olds in the US. Tone should be energetic.' "
+    "Output: {\"objective\": \"launch summer hydration campaign\", \"channels\": [\"email\", \"linkedin\"], "
+    "\"locales\": [\"en-US\"], \"target_audience\": \"25-34 year olds\", \"tone_override\": \"energetic\", "
+    "\"key_messages\": [], \"audience_segments\": [], \"token_budget\": null, "
+    "\"raw_text\": \"...\", \"field_confidence\": {\"objective\": 0.9, \"channels\": 0.95, "
+    "\"locales\": 0.8, \"target_audience\": 0.85, \"tone_override\": 0.9}}"
 )
 _STRIP_CHARS = " \t\r\n\"'"
 _LLM_CONFIDENCE_THRESHOLD = 0.8

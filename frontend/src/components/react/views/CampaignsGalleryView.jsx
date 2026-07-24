@@ -13,11 +13,13 @@ import {
   Copy,
   Check,
   ArrowUpRight,
+  X,
+  ClipboardList,
 } from 'lucide-react';
 import { Page } from '../Page.jsx';
 import { Button } from '../ui/Button.jsx';
 import { cn } from '@/lib/cn.js';
-import { fetchRecentCampaigns } from '@/lib/api.js';
+import { fetchRecentCampaigns, getCampaign } from '@/lib/api.js';
 
 // Status → visual treatment. Tone classes use the theme-aware semantic tokens
 // so they read correctly in both light and dark mode.
@@ -123,10 +125,16 @@ function CopyId({ id }) {
   );
 }
 
-function CampaignCard({ campaign }) {
+function CampaignCard({ campaign, onClick }) {
   const meta = metaFor(campaign.status);
   return (
-    <article className="group relative flex flex-col overflow-hidden rounded-2xl border border-border bg-surface p-4 transition-all hover:-translate-y-0.5 hover:border-border-strong hover:card-shadow">
+    <article
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => e.key === 'Enter' && onClick?.()}
+      className="group relative flex cursor-pointer flex-col overflow-hidden rounded-2xl border border-border bg-surface p-4 transition-all hover:-translate-y-0.5 hover:border-border-strong hover:card-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+    >
       {/* top accent that hints the status colour */}
       <span
         aria-hidden="true"
@@ -186,11 +194,142 @@ function CardSkeleton() {
   );
 }
 
+function CampaignDetailModal({ campaignId, onClose }) {
+  const [detail, setDetail] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    getCampaign(campaignId)
+      .then((d) => { if (!cancelled) { setDetail(d); setLoading(false); } })
+      .catch((e) => { if (!cancelled) { setError(e instanceof Error ? e.message : 'Failed to load'); setLoading(false); } });
+    return () => { cancelled = true; };
+  }, [campaignId]);
+
+  const airtableRecords = detail?.airtable_review_records ?? [];
+  const variants = detail?.variants ?? [];
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="relative flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-3xl border border-border bg-surface card-shadow">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-border px-6 py-4">
+          <div>
+            <p className="text-[11px] font-medium uppercase tracking-wide text-faint">Campaign</p>
+            <p className="font-mono text-sm font-semibold text-fg">{shortId(campaignId)}</p>
+          </div>
+          {detail && <StatusPill status={detail.status} />}
+          <button
+            type="button"
+            onClick={onClose}
+            className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-fg"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
+          {loading && (
+            <div className="flex items-center gap-2 text-sm text-muted">
+              <Loader2 size={16} className="animate-spin" />
+              Loading campaign details…
+            </div>
+          )}
+          {error && <p className="text-sm text-danger">{error}</p>}
+          {detail && (
+            <>
+              {/* Cost + tokens */}
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {[
+                  { label: 'Cost', value: `$${Number(detail.token_cost_usd || 0).toFixed(4)}` },
+                  { label: 'Status', value: detail.status },
+                  { label: 'Started', value: detail.started_at ? relativeTime(detail.started_at) : '—' },
+                  { label: 'Completed', value: detail.completed_at ? relativeTime(detail.completed_at) : '—' },
+                ].map(({ label, value }) => (
+                  <div key={label} className="rounded-xl border border-border bg-surface-2 px-3 py-2.5">
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-faint">{label}</p>
+                    <p className="mt-0.5 text-sm font-semibold text-fg">{value}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Variants */}
+              {variants.length > 0 && (
+                <section>
+                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">
+                    Variants ({variants.length})
+                  </h3>
+                  <div className="space-y-2">
+                    {variants.map((v) => (
+                      <div key={v.task_id} className="rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-xs">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono font-medium text-fg">{v.task_id}</span>
+                          <span className="rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-muted">{v.channel}</span>
+                          <span className="rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-muted">{v.locale}</span>
+                          <span className="rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-muted">{v.segment}</span>
+                          {typeof v.composite_score === 'number' && (
+                            <span className="ml-auto font-semibold text-brand">{v.composite_score.toFixed(2)}</span>
+                          )}
+                        </div>
+                        {v.final_content && (
+                          <p className="mt-1.5 line-clamp-3 text-muted">{v.final_content}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* Human Review (Airtable) */}
+              <section>
+                <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-faint">
+                  <ClipboardList size={12} /> Human Review
+                </h3>
+                {airtableRecords.length === 0 ? (
+                  <p className="text-xs text-faint">
+                    No human review records — this campaign was auto-approved or Airtable is not configured.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {airtableRecords.map((r, i) => (
+                      <div key={r.airtable_record_id || i} className="rounded-xl border border-warning/30 bg-warning/5 px-3 py-2.5 text-xs">
+                        <div className="flex flex-wrap gap-2">
+                          {Object.entries(r)
+                            .filter(([k]) => k !== 'airtable_record_id')
+                            .slice(0, 8)
+                            .map(([k, v]) => (
+                              <span key={k} className="text-muted">
+                                <span className="font-medium text-fg">{k}:</span> {String(v ?? '—')}
+                              </span>
+                            ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function CampaignsGalleryView() {
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [filter, setFilter] = useState('all');
+  const [selectedCampaignId, setSelectedCampaignId] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -258,7 +397,7 @@ export function CampaignsGalleryView() {
     content = (
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {visible.map((c) => (
-          <CampaignCard key={c.campaign_id} campaign={c} />
+          <CampaignCard key={c.campaign_id} campaign={c} onClick={() => setSelectedCampaignId(c.campaign_id)} />
         ))}
       </div>
     );
@@ -280,6 +419,7 @@ export function CampaignsGalleryView() {
   }
 
   return (
+    <>
     <Page
       wide
       eyebrow="Workspace"
@@ -348,6 +488,11 @@ export function CampaignsGalleryView() {
       {/* Content */}
       <div className="mt-5">{content}</div>
     </Page>
+
+    {selectedCampaignId && (
+      <CampaignDetailModal campaignId={selectedCampaignId} onClose={() => setSelectedCampaignId(null)} />
+    )}
+    </>
   );
 }
 
