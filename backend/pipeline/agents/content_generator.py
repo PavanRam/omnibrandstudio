@@ -179,6 +179,7 @@ async def _generate_for_task(
             messages=messages,
             task="content_generator",
             state=cast(dict[str, Any], state),
+            agent="content_generator",
         )
         total_cost += usage["cost"]
         violations = _check_constraints(content, constraints)

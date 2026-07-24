@@ -57,7 +57,12 @@ def echo_llm(monkeypatch):
     calls: list[dict] = []
 
     async def fake(model, messages, task, state, **kwargs):
-        calls.append({"model": model, "messages": messages, "task": task})
+        calls.append({
+            "model": model,
+            "messages": messages,
+            "task": task,
+            "agent": kwargs.get("agent"),
+        })
         return messages[1]["content"], {"cost": 0.001}
 
     monkeypatch.setattr(perso, "traced_llm_call", fake)
@@ -150,3 +155,12 @@ async def test_empty_variants_is_noop(echo_llm):
     result = await personalization_agent(_state([]))
     assert result == {"token_cost_usd": 0.0}
     assert echo_llm == []
+
+
+async def test_traced_llm_call_receives_explicit_agent_label(echo_llm):
+    variants = [_variant("t-1", "consumer", "Buy our platform.")]
+    await personalization_agent(_state(variants))
+
+    assert len(echo_llm) == 1
+    assert echo_llm[0]["task"] == "personalization_agent"
+    assert echo_llm[0]["agent"] == "personalization_agent"
