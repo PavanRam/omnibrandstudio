@@ -178,6 +178,8 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
       JWT_PRIVATE_KEY_PATH: /app/certs/private_key.pem
       JWT_PUBLIC_KEY_PATH: /app/certs/public_key.pem
+      PUBLISH_SMTP_HOST: mailhog
+      PUBLISH_SMTP_PORT: 1025
     command: python -m worker.main
     depends_on:
       postgres: {condition: service_healthy}
