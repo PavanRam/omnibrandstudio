@@ -159,7 +159,7 @@ All agents are real implementations (no stubs in the default pipeline).
 
 The graph is compiled with `interrupt_before_review_gate=True` by default. When the pipeline reaches `review_gate`, `graph.ainvoke()` pauses and the worker sets `campaign.status = "awaiting_review"`. A human reviewer then approves/rejects via `POST /reviews/{id}/decide`, which resumes the graph from the saved LangGraph checkpoint through to `publishing_agent`.
 
-For the human review testing guide, see [`docs/review-gate-testing-guide.html`](review-gate-testing-guide.html).
+For the human review testing guide, see [`docs/review-gate-testing-guide.md`](review-gate-testing-guide.md).
 
 ---
 

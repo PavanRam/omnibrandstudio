@@ -163,6 +163,7 @@ For the full setup guide including all environment variables, API keys, and conf
 |---|---|
 | [`docs/setup.md`](docs/setup.md) | One-time setup, configuration reference, run instructions |
 | [`docs/run-and-operations-guide.md`](docs/run-and-operations-guide.md) | E2E run paths, pipeline stages, RAG ingestion, testing |
+| [`docs/review-gate-testing-guide.md`](docs/review-gate-testing-guide.md) | Human review gate setup and end-to-end testing |
 | [`docs/local-eval-developer-guide.md`](docs/local-eval-developer-guide.md) | No-Docker local eval mode |
 | [`docs/intake_agent.md`](docs/intake_agent.md) | Intake agent design |
 | [`docs/publish_agent.md`](docs/publish_agent.md) | Publishing agent + email template design |
