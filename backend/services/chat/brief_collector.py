@@ -1,159 +1,14 @@
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
-from pipeline.agents.base import traced_llm_call
-from pipeline.conversation_models import ExtractionMeta, PartialBrief
+from pipeline.conversation_models import PartialBrief
 
-_EXTRACTION_PROMPT = (
-    "Extract structured campaign brief updates from the user message. "
-    "Return strict JSON with keys: objective, target_audience, key_messages, tone_override, "
-    "channels, locales, audience_segments, token_budget, raw_text, field_confidence. "
-    "field_confidence must be an object with numeric 0..1 confidence for extracted fields. "
-    "Use null for unknown scalars and [] for unknown arrays. "
-    "Understand natural language — do NOT require 'field: value' syntax. "
-    "EXAMPLE: user says 'We want to launch our summer hydration campaign on email and LinkedIn "
-    "targeting 25-34 year olds in the US. Tone should be energetic.' "
-    "Output: {\"objective\": \"launch summer hydration campaign\", \"channels\": [\"email\", \"linkedin\"], "
-    "\"locales\": [\"en-US\"], \"target_audience\": \"25-34 year olds\", \"tone_override\": \"energetic\", "
-    "\"key_messages\": [], \"audience_segments\": [], \"token_budget\": null, "
-    "\"raw_text\": \"...\", \"field_confidence\": {\"objective\": 0.9, \"channels\": 0.95, "
-    "\"locales\": 0.8, \"target_audience\": 0.85, \"tone_override\": 0.9}}"
-)
 _STRIP_CHARS = " \t\r\n\"'"
-_LLM_CONFIDENCE_THRESHOLD = 0.8
 
 
 class BriefCollector:
-    async def update_partial_brief_with_meta(
-        self,
-        *,
-        current: PartialBrief,
-        user_message: str,
-        state: dict[str, Any],
-    ) -> tuple[PartialBrief, ExtractionMeta]:
-        if self._is_non_brief_turn(user_message):
-            merged = self._merge(current, {}, user_message)
-            return merged, ExtractionMeta(field_confidence={}, source="non_brief")
-
-        fallback_patch = self._fallback_patch_from_text(user_message)
-        fallback_confidence = self._fallback_confidence(fallback_patch)
-
-        content, _ = await traced_llm_call(
-            model=state.get("model_aliases", {}).get("brief_collector", "brief-collector"),
-            messages=[
-                {"role": "system", "content": _EXTRACTION_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            task="brief_collector",
-            state=state,
-            temperature=0,
-        )
-
-        patch, meta = self._parse_patch_with_meta(content)
-        if not patch:
-            patch = fallback_patch
-            meta = ExtractionMeta(field_confidence=fallback_confidence, source="fallback")
-        elif fallback_patch:
-            patch = self._merge_missing_patch_fields(patch, fallback_patch)
-            for key, value in fallback_confidence.items():
-                meta.field_confidence.setdefault(key, value)
-
-        patch = self._ground_patch(
-            llm_patch=patch,
-            fallback_patch=fallback_patch,
-            confidence=meta.field_confidence,
-            user_message=user_message,
-        )
-
-        if not patch and user_message.strip() and not self._is_non_brief_turn(user_message):
-            patch = {"key_messages": [user_message.strip()]}
-            meta.field_confidence.setdefault("key_messages", 0.7)
-
-        merged = self._merge(current, patch, user_message)
-        return merged, meta
-
-    def _ground_patch(
-        self,
-        *,
-        llm_patch: dict[str, Any],
-        fallback_patch: dict[str, Any],
-        confidence: dict[str, float],
-        user_message: str,
-    ) -> dict[str, Any]:
-        grounded: dict[str, Any] = {}
-
-        for field in ("channels", "locales", "audience_segments", "token_budget"):
-            if field in fallback_patch:
-                grounded[field] = fallback_patch[field]
-
-        for field in ("objective", "target_audience", "tone_override", "key_messages"):
-            if field in fallback_patch:
-                grounded[field] = fallback_patch[field]
-                continue
-
-            value = llm_patch.get(field)
-            if not self._has_patch_value(value):
-                continue
-
-            field_confidence = confidence.get(field, 0.0)
-            if field_confidence >= _LLM_CONFIDENCE_THRESHOLD and self._message_has_signal(user_message):
-                grounded[field] = value
-
-        return grounded
-
-    def _has_patch_value(self, value: Any) -> bool:
-        if value is None:
-            return False
-        if isinstance(value, str):
-            return bool(value.strip())
-        if isinstance(value, list):
-            return len(value) > 0
-        if isinstance(value, int):
-            return value > 0
-        return True
-
-    def _message_has_signal(self, text: str) -> bool:
-        normalized = text.strip()
-        if not normalized:
-            return False
-
-        words = [w for w in re.split(r"\s+", normalized) if w]
-        return len(words) >= 4 or ":" in normalized or "," in normalized
-
-    async def update_partial_brief(
-        self,
-        *,
-        current: PartialBrief,
-        user_message: str,
-        state: dict[str, Any],
-    ) -> PartialBrief:
-        merged, _ = await self.update_partial_brief_with_meta(
-            current=current,
-            user_message=user_message,
-            state=state,
-        )
-        return merged
-
-    def _parse_patch_with_meta(self, content: str) -> tuple[dict[str, Any], ExtractionMeta]:
-        parsed = self._parse_patch(content)
-        if not parsed:
-            return {}, ExtractionMeta(field_confidence={}, source="llm")
-
-        raw_conf = parsed.pop("field_confidence", {})
-        confidence: dict[str, float] = {}
-        if isinstance(raw_conf, dict):
-            for key, value in raw_conf.items():
-                try:
-                    numeric = float(value)
-                except (TypeError, ValueError):
-                    continue
-                confidence[str(key)] = max(0.0, min(1.0, numeric))
-
-        return parsed, ExtractionMeta(field_confidence=confidence, source="llm")
-
     def next_question(self, brief: PartialBrief) -> str:
         missing = brief.missing_slots()
         if not missing:
@@ -168,15 +23,6 @@ class BriefCollector:
         }
         slot = missing[0]
         return question_by_slot.get(slot, "Please provide the missing campaign details.")
-
-    def _parse_patch(self, content: str) -> dict[str, Any]:
-        try:
-            parsed = json.loads(content)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            pass
-        return {}
 
     def _is_non_brief_turn(self, text: str) -> bool:
         normalized = " ".join(text.lower().strip().split())

@@ -94,6 +94,9 @@ async function refreshAccessToken() {
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
         setStoredTokens({ accessToken: '', refreshToken: '' });
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new Event('obs:auth-expired'));
+        }
         return false;
       }
 
@@ -252,6 +255,15 @@ export function getRefreshToken() {
 
 export function clearStoredAuth() {
   setStoredTokens({ accessToken: '', refreshToken: '' });
+}
+
+/**
+ * Returns true if any auth credential (access token or refresh token) is
+ * stored locally. Use this to detect stale sessionStorage users that no
+ * longer have backing tokens.
+ */
+export function hasStoredAuth() {
+  return !!(getStoredAccessToken() || getStoredRefreshToken());
 }
 
 export function getCurrentAuthClaims() {

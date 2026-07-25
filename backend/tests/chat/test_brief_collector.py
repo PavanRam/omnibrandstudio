@@ -1,5 +1,4 @@
 from services.chat.brief_collector import brief_collector
-from pipeline.conversation_models import PartialBrief
 
 
 def test_fallback_patch_parses_required_brief_fields() -> None:
@@ -66,23 +65,6 @@ def test_non_brief_turn_still_detects_run_campaign_alone() -> None:
     assert brief_collector._is_non_brief_turn("run campaign") is True
 
 
-def test_parse_patch_with_meta_extracts_field_confidence() -> None:
-    patch, meta = brief_collector._parse_patch_with_meta(
-        '{"objective":"Launch AI assistant","field_confidence":{"objective":0.88}}'
-    )
-
-    assert patch["objective"] == "Launch AI assistant"
-    assert meta.field_confidence["objective"] == 0.88
-    assert meta.source == "llm"
-
-
-def test_parse_patch_with_meta_handles_invalid_payload() -> None:
-    patch, meta = brief_collector._parse_patch_with_meta("not-json")
-
-    assert patch == {}
-    assert meta.field_confidence == {}
-
-
 def test_merge_missing_patch_fields_uses_fallback_for_uncaptured_fields() -> None:
     merged = brief_collector._merge_missing_patch_fields(
         {"objective": "Launch AI assistant"},
@@ -100,53 +82,3 @@ def test_merge_missing_patch_fields_uses_fallback_for_uncaptured_fields() -> Non
     assert merged["locales"] == ["en-US", "fr-FR"]
     assert merged["audience_segments"] == ["enterprise", "sme"]
     assert merged["token_budget"] == 4000
-
-
-async def test_update_partial_brief_with_meta_complements_partial_llm_patch(monkeypatch) -> None:
-    async def _fake_traced_llm_call(**_: object):
-        return '{"objective":"Launch ESG report v6"}', {}
-
-    monkeypatch.setattr("services.chat.brief_collector.traced_llm_call", _fake_traced_llm_call)
-
-    merged, meta = await brief_collector.update_partial_brief_with_meta(
-        current=PartialBrief(),
-        user_message=(
-            "Objective: Launch ESG report v6. Channels: linkedin,email. "
-            "Locales: en-US,fr-FR. Audience segments: enterprise,sme. "
-            "Token budget: 4000. Run campaign"
-        ),
-        state={"model_aliases": {"brief_collector": "brief-collector"}},
-    )
-
-    assert merged.objective == "Launch ESG report v6"
-    assert merged.channels == ["linkedin", "email"]
-    assert merged.locales == ["en-US", "fr-FR"]
-    assert merged.audience_segments == ["enterprise", "sme"]
-    assert merged.token_budget == 4000
-    assert meta.field_confidence["channels"] == 0.65
-
-
-async def test_update_partial_brief_blocks_ungrounded_structured_autofill(monkeypatch) -> None:
-    async def _fake_traced_llm_call(**_: object):
-        return (
-            '{"channels":["email"],"locales":["en-US"],"audience_segments":["core"],'
-            '"token_budget":5000,"field_confidence":{"channels":0.95,"locales":0.95,'
-            '"audience_segments":0.95,"token_budget":0.95}}',
-            {},
-        )
-
-    monkeypatch.setattr("services.chat.brief_collector.traced_llm_call", _fake_traced_llm_call)
-
-    merged, _ = await brief_collector.update_partial_brief_with_meta(
-        current=PartialBrief(),
-        user_message="A compelling opening line or mystery that immediately draws the audience in.",
-        state={"model_aliases": {"brief_collector": "brief-collector"}},
-    )
-
-    assert merged.channels == []
-    assert merged.locales == []
-    assert merged.audience_segments == []
-    assert merged.token_budget is None
-    assert merged.key_messages == [
-        "A compelling opening line or mystery that immediately draws the audience in."
-    ]

@@ -20,8 +20,12 @@ export default function App({ route = 'app' }) {
   const { View, title } = entry;
 
   // Proactively refresh the access token on app load if it is close to expiry.
+  // Also sets up a 4-minute background interval so the token never silently
+  // expires while the page is open.
   useEffect(() => {
     checkAndRefreshToken().catch(() => {});
+    const id = setInterval(() => checkAndRefreshToken().catch(() => {}), 4 * 60 * 1000);
+    return () => clearInterval(id);
   }, []);
 
   return (

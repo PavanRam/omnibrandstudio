@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     # If true, estimate cost from LiteLLM model pricing when response cost is
     # missing but tokens are present. Defaults to false so provider-reported
     # cost remains the single source of truth.
-    ENABLE_COST_ESTIMATION_FALLBACK: bool = False
+    ENABLE_COST_ESTIMATION_FALLBACK: bool = True
     ANTHROPIC_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
     GROQ_API_KEY: str = ""

@@ -5,7 +5,6 @@ import {
   Upload,
   RefreshCw,
   LockKeyhole,
-  Database,
   Star,
   Trash2,
   ShieldCheck,
@@ -35,9 +34,7 @@ import {
   listGoldenExamples,
   listGoldenSets,
   listUsers,
-  openGoldenSet,
   promoteGoldenExample,
-  setAllowedLocales,
   uploadBrandGuide,
   uploadCustomerSegments,
 } from '@/lib/api.js';
@@ -137,7 +134,7 @@ export function AdminView({ onLock }) {
   const [brandId, setBrandId] = useState(DEFAULT_BRAND_ID);
   const [locale, setLocale] = useState('en-US');
   const [version, setVersion] = useState('v1');
-  const [allowedLocales, setAllowedLocalesState] = useState([]);
+  const [allowedLocales, setAllowedLocales] = useState([]);
 
   const [file, setFile] = useState(null);
   const [guides, setGuides] = useState([]);
@@ -350,8 +347,8 @@ export function AdminView({ onLock }) {
   useEffect(() => {
     if (!brandId.trim()) return;
     getAllowedLocales(brandId.trim())
-      .then((payload) => setAllowedLocalesState(payload.allowed_locales || []))
-      .catch(() => setAllowedLocalesState([]));
+      .then((payload) => setAllowedLocales(payload.allowed_locales || []))
+      .catch(() => setAllowedLocales([]));
   }, [brandId]);
 
   if (!isAdmin) {
@@ -883,7 +880,6 @@ function GoldenDatasetPanel({ brandId, locale, version }) {
   const [sets, setSets] = useState([]);
   const [examples, setExamples] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [opening, setOpening] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
 
@@ -915,25 +911,6 @@ function GoldenDatasetPanel({ brandId, locale, version }) {
     if (!brandId.trim()) return;
     refresh({ quiet: true });
   }, [brandId, refresh]);
-
-  const openSet = async () => {
-    setOpening(true);
-    setError('');
-    setStatus('');
-    try {
-      const result = await openGoldenSet({
-        brandId: brandId.trim(),
-        locale: locale.trim(),
-        guideVersion: version.trim() || null,
-      });
-      setStatus(`Opened draft dataset set ${result.set_id?.slice(0, 8)}….`);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to open dataset set');
-    } finally {
-      setOpening(false);
-    }
-  };
 
   const runAction = async (fn, message) => {
     setError('');
@@ -983,9 +960,6 @@ function GoldenDatasetPanel({ brandId, locale, version }) {
             <RefreshCw size={14} aria-hidden="true" className={loading ? 'animate-spin' : ''} />
             {loading ? 'Loading…' : 'Refresh'}
           </Button>
-          <Button variant="primary" size="sm" onClick={openSet} disabled={opening}>
-            <Database size={14} aria-hidden="true" /> {opening ? 'Opening…' : 'New draft set'}
-          </Button>
         </div>
       </div>
 
@@ -1030,9 +1004,36 @@ function GoldenDatasetPanel({ brandId, locale, version }) {
         <div className="rounded-xl border border-border bg-surface-2 p-3.5">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Examples</h3>
           {examples.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-border bg-surface px-3 py-6 text-center text-sm text-muted">
-              No examples yet.
-            </p>
+            <div className="space-y-3">
+              <p className="text-xs text-faint">
+                Golden examples appear here after you promote a high-scoring variant from a completed campaign.
+              </p>
+              {/* Template card — shows what a golden example looks like */}
+              <div className="rounded-lg border border-dashed border-brand/30 bg-brand/5 px-3 py-3 opacity-70">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <Badge tone="brand">golden</Badge>
+                      <span className="truncate text-xs font-medium text-fg">linkedin · en-US</span>
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-xs text-muted">
+                      Get ready to elevate your AI strategy. Our latest report shows enterprise leaders
+                      cutting onboarding time by 40% with intelligent automation — see how your peers
+                      are doing it.
+                    </p>
+                    <p className="mt-1.5 text-[10px] text-faint italic">Composite score: 0.87 · Example template</p>
+                  </div>
+                  <div className="flex shrink-0 gap-1 opacity-40">
+                    <span className="grid h-7 w-7 place-items-center rounded-md text-muted">
+                      <Star size={14} aria-hidden="true" />
+                    </span>
+                    <span className="grid h-7 w-7 place-items-center rounded-md text-muted">
+                      <Trash2 size={14} aria-hidden="true" />
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
           ) : (
             <ul className="space-y-2">
               {examples.map((example) => (

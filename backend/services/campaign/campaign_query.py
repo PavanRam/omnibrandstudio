@@ -39,7 +39,7 @@ async def get_recent_campaigns(
                 LEFT JOIN campaign_costs cc ON cc.campaign_id = c.id
                 WHERE c.org_id = :org_id
                   AND (:brand_filter_disabled OR c.brand_id = ANY(CAST(:brand_ids AS UUID[])))
-                                    AND (:created_by IS NULL OR c.created_by = CAST(:created_by AS UUID))
+                  AND (:created_by_any OR c.created_by = CAST(:created_by AS UUID))
                 ORDER BY c.created_at DESC
                 LIMIT :limit
                 """
@@ -48,7 +48,8 @@ async def get_recent_campaigns(
                 "org_id": org_id,
                 "brand_filter_disabled": len(brand_ids) == 0,
                 "brand_ids": brand_ids,
-                "created_by": created_by,
+                "created_by_any": created_by is None,
+                "created_by": created_by or "00000000-0000-0000-0000-000000000000",
                 "limit": limit,
             },
         )

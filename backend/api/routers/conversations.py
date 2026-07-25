@@ -7,25 +7,33 @@ from contextlib import aclosing
 from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
-from opentelemetry.propagate import inject
-from pydantic import BaseModel
-from sqlalchemy import text
-
-from api.deps import UserContext, get_current_user
-from api.middleware.auth import decode_access_token, is_jti_revoked
 from core.config import settings
 from core.database import get_db
 from core.ids import new_campaign_id, new_request_id
 from core.redis import get_redis
-from pipeline.conversation_models import ConversationPlannerInput, ConversationSession, ExtractionMeta, IntentClassification, PartialBrief, UnderstandingResult
-from services.chat.brief_collector import brief_collector
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from opentelemetry.propagate import inject
+from pipeline.conversation_models import (
+    ConversationPlannerInput,
+    ConversationSession,
+    ExtractionMeta,
+    IntentClassification,
+    PartialBrief,
+    UnderstandingResult,
+)
+from pipeline.initial_state import resolve_model_aliases
+from pydantic import BaseModel
+from services import review_service
 from services.campaign.campaign_query import get_recent_campaigns
+from services.chat.brief_collector import brief_collector
 from services.chat.conversation_planner import conversation_planner
 from services.chat.conversation_responder import conversation_responder
 from services.chat.session_manager import session_manager
 from services.chat.understanding_engine import understanding_engine
-from services import review_service
+from sqlalchemy import text
+
+from api.deps import UserContext, get_current_user
+from api.middleware.auth import decode_access_token, is_jti_revoked
 
 router = APIRouter()
 
@@ -120,12 +128,7 @@ def _chat_state_context(session: ConversationSession) -> dict[str, Any]:
         "org_id": session.org_id,
         "brand_id": session.brand_id,
         "request_id": new_request_id(),
-        "model_aliases": {
-            "utility": "util-fast",
-            "brief_collector": "brief-collector",
-            "understanding": "understanding",
-            "responder": "responder-chat",
-        },
+        "model_aliases": resolve_model_aliases(),
     }
 
 
@@ -349,7 +352,7 @@ async def _check_locale_support(
                 text("SELECT allowed_locales FROM brands WHERE id = :brand_id"),
                 {"brand_id": brand_id},
             )
-            row = result.fetchone()
+            row = result.mappings().first()
     except Exception:
         return None
     if row is None:

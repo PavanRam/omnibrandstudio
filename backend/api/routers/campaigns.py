@@ -624,19 +624,71 @@ async def approve_campaign(campaign_id: str, body: ReviewDecision) -> dict:
 
 
 async def _load_airtable_review_records(campaign_id: str) -> list[dict]:
-    """Load Airtable review records for the campaign (best-effort enrichment).
+    """Load review records for the campaign.
 
-    Returns an empty list when Airtable is not configured or the campaign has
-    no flagged variants — callers should handle an empty list gracefully.
+    Tries Airtable first (when configured). Falls back to the local
+    review_requests table so the gallery always shows review data even
+    when Airtable is not wired up.
     """
     try:
         from services.airtable_service import airtable_enabled, get_review_records_by_campaign_id
 
-        if not airtable_enabled():
-            return []
-        return await get_review_records_by_campaign_id(campaign_id)
+        if airtable_enabled():
+            records = await get_review_records_by_campaign_id(campaign_id)
+            if records:
+                return records
     except Exception as exc:  # noqa: BLE001
         log.warning("airtable_records_load_failed", campaign_id=campaign_id, error=str(exc))
+
+    # Fallback: read from the local review_requests table
+    try:
+        async with get_db() as conn:
+            result = await conn.execute(
+                text(
+                    """
+                    SELECT
+                        rr.id AS review_request_id,
+                        rr.variant_id,
+                        rr.campaign_id,
+                        rr.status,
+                        rr.decision,
+                        rr.reviewer_note,
+                        rr.routing_reason,
+                        rr.created_at AS generated_at,
+                        rr.reviewed_at,
+                        cv.final_content AS generated_content,
+                        cv.personalized_content,
+                        cv.locale,
+                        cv.channel
+                    FROM review_requests rr
+                    LEFT JOIN content_variants cv ON cv.id = rr.variant_id
+                    WHERE rr.campaign_id = CAST(:campaign_id AS UUID)
+                    ORDER BY rr.created_at DESC
+                    """
+                ),
+                {"campaign_id": campaign_id},
+            )
+            rows = result.mappings().all()
+        return [
+            {
+                "review_request_id": str(row["review_request_id"]),
+                "variant_id": str(row["variant_id"]) if row["variant_id"] else None,
+                "campaign_id": str(row["campaign_id"]),
+                "status": row["status"],
+                "Decision": str(row["decision"] or "pending").capitalize(),
+                "Reviewer Note": row["reviewer_note"] or "",
+                "Generated Content": row["generated_content"] or "",
+                "Personalized Content": row["personalized_content"] or "",
+                "Generated At": row["generated_at"].isoformat() if row["generated_at"] else "",
+                "Requester Email": "",
+                "locale": row["locale"] or "",
+                "channel": row["channel"] or "",
+                "routing_reason": row["routing_reason"] or "",
+            }
+            for row in rows
+        ]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("db_review_records_load_failed", campaign_id=campaign_id, error=str(exc))
         return []
 
 

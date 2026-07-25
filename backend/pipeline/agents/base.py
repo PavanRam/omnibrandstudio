@@ -381,6 +381,16 @@ async def traced_llm_call(
                 )
                 response.raise_for_status()
                 payload = response.json()
+                # LiteLLM proxy always adds x-litellm-response-cost to the
+                # response headers. The JSON body does not include it (that's
+                # a Python-SDK-only field). Inject it so _extract_response_cost
+                # finds it without any changes to that helper.
+                _cost_hdr = response.headers.get("x-litellm-response-cost")
+                if _cost_hdr:
+                    try:
+                        payload.setdefault("_hidden_params", {})["response_cost"] = float(_cost_hdr)
+                    except (ValueError, TypeError):
+                        pass
                 span.set_attribute("http.status_code", response.status_code)
             except httpx.HTTPError as exc:
                 status_code = getattr(getattr(exc, "response", None), "status_code", 0)
@@ -457,6 +467,7 @@ async def traced_llm_call_stream(
     content_parts: list[str] = []
     usage: dict[str, Any] = {}
     resolved_model: str | None = None
+    _stream_cost_hdr: str | None = None
     accounted = False
 
     with tracer.start_as_current_span(f"{agent}.llm_call_stream") as span:
@@ -478,6 +489,7 @@ async def traced_llm_call_stream(
             async with httpx.AsyncClient(base_url=settings.LITELLM_BASE_URL, timeout=120) as client:
                 async with client.stream("POST", "/chat/completions", json=request_body) as response:
                     response.raise_for_status()
+                    _stream_cost_hdr = response.headers.get("x-litellm-response-cost")
                     span.set_attribute("http.status_code", response.status_code)
                     async for line in response.aiter_lines():
                         if not line or not line.startswith("data:"):
@@ -504,6 +516,12 @@ async def traced_llm_call_stream(
             latency_ms = int((time.perf_counter() - start) * 1000)
             content = "".join(content_parts)
             payload = {"model": resolved_model or model, "usage": usage}
+            # Inject the response-cost header (same as the non-streaming path).
+            if _stream_cost_hdr:
+                try:
+                    payload.setdefault("_hidden_params", {})["response_cost"] = float(_stream_cost_hdr)
+                except (ValueError, TypeError):
+                    pass
             accounted = True
             await _finalize_llm_call(
                 content=content,
