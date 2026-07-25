@@ -221,7 +221,18 @@ async def persist_review_batch(state: dict) -> int:
             )
 
         await conn.execute(
-            text("UPDATE campaigns SET status = 'awaiting_review' WHERE id = CAST(:cid AS UUID)"),
+            text(
+                """
+                UPDATE campaigns
+                SET status = 'awaiting_review',
+                    token_cost_usd = COALESCE((
+                        SELECT SUM(total_cost_usd)
+                        FROM campaign_cost_attribution
+                        WHERE campaign_id = campaigns.id
+                    ), 0)
+                WHERE id = CAST(:cid AS UUID)
+                """
+            ),
             {"cid": campaign_id},
         )
         await conn.commit()
@@ -469,7 +480,12 @@ async def resume_campaign(campaign_id: str) -> str:
                 """
                 UPDATE campaigns
                 SET status = :status,
-                    completed_at = CASE WHEN :done THEN NOW() ELSE completed_at END
+                    completed_at = CASE WHEN :done THEN NOW() ELSE completed_at END,
+                    token_cost_usd = COALESCE((
+                        SELECT SUM(total_cost_usd)
+                        FROM campaign_cost_attribution
+                        WHERE campaign_id = campaigns.id
+                    ), 0)
                 WHERE id = CAST(:cid AS UUID)
                 """
             ),

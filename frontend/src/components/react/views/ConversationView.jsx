@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   MessageSquareText,
   Send,
   Radio,
-  CircleDot,
   RefreshCw,
   Check,
   Bot,
@@ -14,9 +13,10 @@ import {
   Wifi,
   WifiOff,
 } from 'lucide-react';
-import { Page, SectionHeading } from '../Page.jsx';
+import { Page } from '../Page.jsx';
 import { Button } from '../ui/Button.jsx';
 import { Badge } from '../ui/Badge.jsx';
+import { VariantCard } from '../VariantCard.jsx';
 import { cn } from '@/lib/cn.js';
 import { useWebSocket } from '../hooks/useWebSocket.js';
 import { useSSE } from '../hooks/useSSE.js';
@@ -247,8 +247,11 @@ function ChatThreadPanel({
   needsClarification,
   clarificationTarget,
   messages,
+  isAssistantTyping = false,
+  streamingMessage = '',
   suggestedPrompts,
   campaignId,
+  campaignSummary,
   canChat,
   sendPrompt,
   message,
@@ -266,6 +269,14 @@ function ChatThreadPanel({
     turnType && { label: turnType.replaceAll('_', ' '), key: 'turn' },
   ].filter(Boolean);
 
+  const bottomRef = useRef(null);
+
+  // Auto-scroll the thread to the newest message whenever one is sent or
+  // received, so the user never has to scroll down manually.
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [messages.length, pendingReviews.length, isAssistantTyping, streamingMessage]);
+
   return (
     <section className="flex h-[calc(100vh-13rem)] min-h-[32rem] flex-col overflow-hidden rounded-2xl border border-border bg-surface card-shadow">
       {/* Header */}
@@ -275,9 +286,9 @@ function ChatThreadPanel({
             <Sparkles size={16} aria-hidden="true" />
           </span>
           <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-fg">Campaign copilot</h2>
+            <h2 className="text-sm font-semibold text-fg">Campaign Studio</h2>
             <p className="truncate font-mono text-[11px] text-faint">
-              {conversationId ? conversationId : 'No active conversation'}
+              {conversationId || 'No active conversation'}
             </p>
           </div>
         </div>
@@ -298,6 +309,16 @@ function ChatThreadPanel({
         </div>
       ) : null}
 
+      {campaignId ? (
+        <div className="border-b border-border bg-surface-2 px-4 py-2 text-xs text-muted">
+          <span className="font-medium text-fg">Campaign cost</span>{' '}
+          <span className="font-mono">{formatCostLabel(campaignSummary?.token_cost_usd) || '—'}</span>
+          <span className="mx-1.5 text-faint">·</span>
+          <span className="font-medium text-fg">Tokens</span>{' '}
+          <span className="font-mono">{formatTokenUsageLabel(campaignSummary) || '—'}</span>
+        </div>
+      ) : null}
+
       {/* Messages */}
       <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
         {messages.length === 0 ? (
@@ -309,6 +330,19 @@ function ChatThreadPanel({
             <p className="mt-1 max-w-xs text-sm text-muted">
               Describe your campaign objective in plain language — the copilot will ask for anything it needs.
             </p>
+            {canChat && (
+              <button
+                type="button"
+                onClick={() =>
+                  sendPrompt(
+                    "Launch a summer promo for hydration packs targeting 25-34 and 35-44 year olds via email and LinkedIn, confident and helpful tone, en-US, 50000 token budget.",
+                  )
+                }
+                className="mt-4 rounded-full border border-brand/40 bg-brand-soft px-4 py-2 text-xs font-medium text-brand transition-colors hover:border-brand hover:bg-brand/10"
+              >
+                Show me an example brief →
+              </button>
+            )}
           </div>
         ) : (
           messages.map((msg, idx) => {
@@ -333,6 +367,13 @@ function ChatThreadPanel({
                   )}
                 >
                   <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                  {!isUser && Array.isArray(msg.variants) && msg.variants.length > 0 ? (
+                    <div className="mt-3 grid gap-2.5">
+                      {msg.variants.map((v, vIdx) => (
+                        <VariantCard key={v.task_id || `${v.channel}-${v.locale}-${vIdx}`} variant={v} />
+                      ))}
+                    </div>
+                  ) : null}
                   {!isUser && Array.isArray(msg.captured) && msg.captured.length > 0 ? (
                     <div className="mt-2.5 border-t border-border/60 pt-2">
                       <p className="text-[10px] font-semibold uppercase tracking-wide text-faint">Captured</p>
@@ -346,6 +387,17 @@ function ChatThreadPanel({
                           </span>
                         ))}
                       </div>
+                    </div>
+                  ) : null}
+                  {!isUser && msg.campaignSummary ? (
+                    <div className="mt-2 border-t border-border/60 pt-2 text-[11px] text-muted">
+                      campaign cost:{' '}
+                      <span className="font-mono text-fg">
+                        {formatCostLabel(msg.campaignSummary.token_cost_usd) || '—'}
+                      </span>
+                      <span className="mx-1 text-faint">·</span>
+                      tokens:{' '}
+                      <span className="font-mono text-fg">{formatTokenUsageLabel(msg.campaignSummary) || '—'}</span>
                     </div>
                   ) : null}
                   {!isUser && Array.isArray(msg.changes) && msg.changes.length > 0 ? (
@@ -369,6 +421,30 @@ function ChatThreadPanel({
           })
         )}
 
+        {streamingMessage ? (
+          <div className="flex gap-2.5" aria-live="polite">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full brand-gradient text-white" aria-hidden="true">
+              <Bot size={16} />
+            </span>
+            <div className="max-w-[85%] rounded-2xl rounded-tl-sm border border-border bg-surface-2 px-3.5 py-2.5 text-sm text-fg">
+              <p className="whitespace-pre-wrap leading-relaxed">{streamingMessage}</p>
+            </div>
+          </div>
+        ) : isAssistantTyping ? (
+          <div className="flex gap-2.5" aria-live="polite" aria-label="Assistant is typing">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full brand-gradient text-white" aria-hidden="true">
+              <Bot size={16} />
+            </span>
+            <div className="rounded-2xl rounded-tl-sm border border-border bg-surface-2 px-3.5 py-2.5">
+              <span className="inline-flex items-center gap-1">
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:0ms]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:150ms]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:300ms]" />
+              </span>
+            </div>
+          </div>
+        ) : null}
+
         {pendingReviews.length > 0 ? (
           <div className="space-y-2">
             {pendingReviews.map((review) => (
@@ -381,6 +457,7 @@ function ChatThreadPanel({
             ))}
           </div>
         ) : null}
+        <div ref={bottomRef} aria-hidden="true" />
       </div>
 
       {/* Composer */}
@@ -431,7 +508,7 @@ function ChatThreadPanel({
           <button
             type="button"
             onClick={sendMessage}
-            disabled={!hasConversation || !message.trim()}
+            disabled={!hasConversation || !message.trim() || isAssistantTyping}
             className="grid h-9 w-9 shrink-0 place-items-center rounded-xl brand-gradient text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:brightness-100"
             aria-label="Send message"
           >
@@ -616,7 +693,7 @@ function CampaignStreamPanel({
   );
 }
 
-function WorkspaceInspector({ brief, briefFieldStates, stream }) {
+function WorkspaceInspector({ brief, stream }) {
   const [tab, setTab] = useState('brief');
   return (
     <section className="flex h-[calc(100vh-13rem)] min-h-[32rem] flex-col overflow-hidden rounded-2xl border border-border bg-surface card-shadow">
@@ -646,11 +723,7 @@ function WorkspaceInspector({ brief, briefFieldStates, stream }) {
       <div className="flex-1 overflow-y-auto p-4">
         {tab === 'brief' ? (
           <>
-            {briefFieldStates.length > 0 ? (
-              <BriefFieldStates fieldStates={briefFieldStates} />
-            ) : (
-              <BriefChecklist brief={brief} />
-            )}
+            <BriefChecklist brief={brief} />
             <div className="mt-4 flex items-start gap-2 rounded-xl border border-border bg-surface-2 p-3">
               <Sparkles size={15} aria-hidden="true" className="mt-0.5 shrink-0 text-brand" />
               <p className="text-xs text-muted">
@@ -956,6 +1029,24 @@ function formatChangeSummary(change) {
   return `${before} -> ${after}`;
 }
 
+function formatCostLabel(value) {
+  return typeof value === 'number' ? `$${value.toFixed(4)}` : '';
+}
+
+function formatTokenUsageLabel(summary) {
+  if (!summary || typeof summary !== 'object') return '';
+  const total = summary.total_tokens;
+  if (typeof total === 'number' && total >= 0) {
+    return total.toLocaleString();
+  }
+  const input = summary.input_tokens;
+  const output = summary.output_tokens;
+  if (typeof input === 'number' && typeof output === 'number') {
+    return `${(input + output).toLocaleString()}`;
+  }
+  return '';
+}
+
 function parseSocketPayload(payload) {
   const updates = Array.isArray(payload?.brief_updates)
     ? payload.brief_updates.filter((value) => typeof value === 'string')
@@ -966,15 +1057,15 @@ function parseSocketPayload(payload) {
   const suggestedPrompts = Array.isArray(payload?.suggested_prompts)
     ? payload.suggested_prompts.filter((value) => typeof value === 'string').slice(0, 3)
     : [];
-  const briefFieldStates = Array.isArray(payload?.brief_field_states)
-    ? payload.brief_field_states.filter((value) => value && typeof value === 'object')
-    : [];
+  const campaignSummary =
+    payload?.campaign_summary && typeof payload.campaign_summary === 'object'
+      ? payload.campaign_summary
+      : null;
 
   return {
     updates,
     changes,
     suggestedPrompts,
-    briefFieldStates,
     conversationStage:
       typeof payload?.conversation_stage === 'string' && payload.conversation_stage
         ? payload.conversation_stage
@@ -983,6 +1074,7 @@ function parseSocketPayload(payload) {
     turnType: typeof payload?.turn_type === 'string' ? payload.turn_type : '',
     needsClarification: Boolean(payload?.needs_clarification),
     clarificationTarget: typeof payload?.clarification_target === 'string' ? payload.clarification_target : '',
+    campaignSummary,
   };
 }
 
@@ -990,6 +1082,8 @@ async function handleStartConversationAction({
   setStatus,
   setError,
   setConversationId,
+  setCampaignId,
+  setCampaignSummary,
   setMessages,
   setBrief,
   setConversationStage,
@@ -997,7 +1091,6 @@ async function handleStartConversationAction({
   setTurnType,
   setNeedsClarification,
   setClarificationTarget,
-  setBriefFieldStates,
   setSuggestedPrompts,
   loadRecentConversations,
 }) {
@@ -1006,6 +1099,8 @@ async function handleStartConversationAction({
   try {
     const session = await createConversation(DEFAULT_BRAND_ID);
     setConversationId(session.id);
+    setCampaignId('');
+    setCampaignSummary(null);
     setMessages([
       {
         role: 'assistant',
@@ -1019,7 +1114,6 @@ async function handleStartConversationAction({
     setTurnType('greeting');
     setNeedsClarification(false);
     setClarificationTarget('');
-    setBriefFieldStates([]);
     setSuggestedPrompts([
       'Our objective is to drive qualified demo requests',
       'Use LinkedIn, email, and landing page',
@@ -1037,6 +1131,7 @@ function handleSelectConversationAction({
   session,
   setConversationId,
   setCampaignId,
+  setCampaignSummary,
   setBrief,
   setMessages,
   setConversationStage,
@@ -1044,13 +1139,13 @@ function handleSelectConversationAction({
   setTurnType,
   setNeedsClarification,
   setClarificationTarget,
-  setBriefFieldStates,
   setSuggestedPrompts,
   setError,
   setStatus,
 }) {
   setConversationId(session.conversation_id);
   setCampaignId(session.active_campaign_id || '');
+  setCampaignSummary(null);
   setBrief(session.partial_brief || {});
   setMessages([
     {
@@ -1063,13 +1158,12 @@ function handleSelectConversationAction({
   setTurnType('');
   setNeedsClarification(false);
   setClarificationTarget('');
-  setBriefFieldStates([]);
   setSuggestedPrompts([]);
   setError('');
   setStatus('ready');
 }
 
-function handleSendPromptAction({ prompt, canChat, send, setError, setMessages }) {
+function handleSendPromptAction({ prompt, canChat, send, setError, setMessages, setIsAssistantTyping }) {
   if (!canChat) return;
   const sent = send({ message: prompt });
   if (!sent) {
@@ -1077,6 +1171,7 @@ function handleSendPromptAction({ prompt, canChat, send, setError, setMessages }
     return;
   }
   setMessages((prev) => [...prev, { role: 'user', content: prompt }]);
+  setIsAssistantTyping?.(true);
 }
 
 function handleSendMessageAction({
@@ -1087,6 +1182,7 @@ function handleSendMessageAction({
   setError,
   setMessages,
   setMessage,
+  setIsAssistantTyping,
 }) {
   const trimmed = message.trim();
   if (!trimmed) return;
@@ -1105,6 +1201,7 @@ function handleSendMessageAction({
   }
   setMessages((prev) => [...prev, { role: 'user', content: trimmed }]);
   setMessage('');
+  setIsAssistantTyping?.(true);
 }
 
 async function handleRunRerunAction({
@@ -1145,6 +1242,7 @@ async function handleRunRerunAction({
 export function ConversationView() {
   const [conversationId, setConversationId] = useState('');
   const [campaignId, setCampaignId] = useState('');
+  const [campaignSummary, setCampaignSummary] = useState(null);
   const [message, setMessage] = useState('');
   const [messages, setMessages] = useState([]);
   const [brief, setBrief] = useState({});
@@ -1153,7 +1251,6 @@ export function ConversationView() {
   const [turnType, setTurnType] = useState('');
   const [needsClarification, setNeedsClarification] = useState(false);
   const [clarificationTarget, setClarificationTarget] = useState('');
-  const [briefFieldStates, setBriefFieldStates] = useState([]);
   const [suggestedPrompts, setSuggestedPrompts] = useState([]);
   const [status, setStatus] = useState('idle');
   const [error, setError] = useState('');
@@ -1171,6 +1268,8 @@ export function ConversationView() {
   const [replayCursorValid, setReplayCursorValid] = useState(true);
   const [pendingReviews, setPendingReviews] = useState([]);
   const [reviewDecisionBusyId, setReviewDecisionBusyId] = useState('');
+  const [isAssistantTyping, setIsAssistantTyping] = useState(false);
+  const [streamingMessage, setStreamingMessage] = useState('');
 
   const loadRecentConversations = useCallback(async () => {
     setRecentLoading(true);
@@ -1198,10 +1297,40 @@ export function ConversationView() {
   const handleSocketMessage = useCallback((payload) => {
     if (payload.error) {
       setError(payload.error);
+      setIsAssistantTyping(false);
+      return;
+    }
+
+    // Immediate acknowledgement frame — the backend received the turn and is
+    // working on it. Keep the typing indicator visible; no other state changes.
+    if (payload.type === 'ack') {
+      setIsAssistantTyping(true);
+      return;
+    }
+
+    // Streaming delta — append to the in-progress assistant bubble. The typing
+    // indicator gives way to the streaming text on the first delta.
+    if (payload.type === 'delta') {
+      setIsAssistantTyping(false);
+      setStreamingMessage((prev) => prev + (payload.delta || ''));
+      return;
+    }
+
+    // The responder leaked/produced nothing mid-stream; replace what streamed
+    // so far with the grounded fallback.
+    if (payload.type === 'replace') {
+      setStreamingMessage(payload.message || '');
       return;
     }
 
     const parsed = parseSocketPayload(payload);
+
+    // The turn is complete (or a message arrived) — stop the typing indicator
+    // and clear the streaming buffer (the final message is appended below).
+    if (payload.type === 'turn_complete' || payload.message) {
+      setIsAssistantTyping(false);
+      setStreamingMessage('');
+    }
 
     if (payload.message) {
       setMessages((prev) => [
@@ -1211,17 +1340,19 @@ export function ConversationView() {
           content: payload.message,
           captured: parsed.updates,
           changes: parsed.changes,
+          campaignSummary: parsed.campaignSummary,
+          variants: Array.isArray(payload.variants) && payload.variants.length ? payload.variants : null,
         },
       ]);
     }
     if (payload.brief) setBrief(payload.brief);
     if (payload.campaign_id) setCampaignId(payload.campaign_id);
+    if (parsed.campaignSummary) setCampaignSummary(parsed.campaignSummary);
     setConversationStage(parsed.conversationStage || '');
     setPrimaryObjective(parsed.primaryObjective || '');
     setTurnType(parsed.turnType || '');
     setNeedsClarification(parsed.needsClarification);
     setClarificationTarget(parsed.clarificationTarget);
-    setBriefFieldStates(parsed.briefFieldStates);
     setSuggestedPrompts(parsed.suggestedPrompts);
     if (Array.isArray(payload.pending_reviews)) {
       setPendingReviews(payload.pending_reviews);
@@ -1242,6 +1373,42 @@ export function ConversationView() {
     createCampaignStream,
     Boolean(campaignId),
   );
+
+  // Live cost/token updates pushed over the campaign SSE stream. Each new event
+  // appends to `events`, so this effect fires once per event; we read only the
+  // newest element and add its delta into the running campaign summary. The WS
+  // turn response provides the authoritative cumulative total for reconciliation.
+  const lastCostEventRef = useRef(null);
+  useEffect(() => {
+    if (!events.length) return;
+    const latest = events[events.length - 1];
+    if (!latest || latest.phase !== 'cost_update') return;
+    if (lastCostEventRef.current === latest) return;
+    lastCostEventRef.current = latest;
+    const {
+      delta_cost_usd: dCost,
+      delta_input_tokens: dIn,
+      delta_output_tokens: dOut,
+    } = latest.payload ?? {};
+    if (dCost == null && dIn == null && dOut == null) return;
+    setCampaignSummary((prev) => {
+      const base = prev ?? {
+        token_cost_usd: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+      };
+      const input = (base.input_tokens ?? 0) + (dIn ?? 0);
+      const output = (base.output_tokens ?? 0) + (dOut ?? 0);
+      return {
+        ...base,
+        token_cost_usd: (base.token_cost_usd ?? 0) + (dCost ?? 0),
+        input_tokens: input,
+        output_tokens: output,
+        total_tokens: input + output,
+      };
+    });
+  }, [events]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1365,6 +1532,8 @@ export function ConversationView() {
       setStatus,
       setError,
       setConversationId,
+      setCampaignId,
+      setCampaignSummary,
       setMessages,
       setBrief,
       setConversationStage,
@@ -1372,7 +1541,6 @@ export function ConversationView() {
       setTurnType,
       setNeedsClarification,
       setClarificationTarget,
-      setBriefFieldStates,
       setSuggestedPrompts,
       loadRecentConversations,
     });
@@ -1382,6 +1550,7 @@ export function ConversationView() {
       session,
       setConversationId,
       setCampaignId,
+      setCampaignSummary,
       setBrief,
       setMessages,
       setConversationStage,
@@ -1389,7 +1558,6 @@ export function ConversationView() {
       setTurnType,
       setNeedsClarification,
       setClarificationTarget,
-      setBriefFieldStates,
       setSuggestedPrompts,
       setError,
       setStatus,
@@ -1404,6 +1572,7 @@ export function ConversationView() {
       setError,
       setMessages,
       setMessage,
+      setIsAssistantTyping,
     });
 
   const sendPrompt = (prompt) =>
@@ -1413,6 +1582,7 @@ export function ConversationView() {
       send,
       setError,
       setMessages,
+      setIsAssistantTyping,
     });
 
   const decideReviewAction = (reviewRequestId, decision, { editedContent = null } = {}) => {
@@ -1455,7 +1625,7 @@ export function ConversationView() {
     <Page
       wide
       eyebrow="Workspace"
-      title="Campaign Copilot"
+      title="Campaign Studio"
       description="Chat to build a brief, then watch the pipeline run in real time."
       actions={
         <div className="flex items-center gap-2">
@@ -1499,8 +1669,11 @@ export function ConversationView() {
           needsClarification={needsClarification}
           clarificationTarget={clarificationTarget}
           messages={messages}
+          isAssistantTyping={isAssistantTyping}
+          streamingMessage={streamingMessage}
           suggestedPrompts={suggestedPrompts}
           campaignId={campaignId}
+          campaignSummary={campaignSummary}
           canChat={canChat}
           sendPrompt={sendPrompt}
           message={message}
@@ -1515,7 +1688,6 @@ export function ConversationView() {
 
         <WorkspaceInspector
           brief={brief}
-          briefFieldStates={briefFieldStates}
           stream={
             <CampaignStreamPanel
               streamBadgeTone={streamBadgeTone}

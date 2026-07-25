@@ -1,0 +1,138 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "templating": {"list": []},
+  "panels": [
+    {
+      "id": 1,
+      "title": "Auth Failures (range)",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10}, {"color": "red", "value": 50}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"}, "expr": "sum(increase(omnibrand_auth_failures_total[$__range]))", "instant": true}
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Account Lockouts (range)",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"}, "expr": "sum(increase(omnibrand_account_lockouts_total[$__range]))", "instant": true}
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Injection Blocks (range)",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"}, "expr": "sum(increase(omnibrand_injection_blocked_total[$__range]))", "instant": true}
+      ]
+    },
+    {
+      "id": 4,
+      "title": "4xx Error Ratio",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "decimals": 2, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.2}, {"color": "red", "value": 0.5}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"}, "expr": "sum(rate(omnibrand_http_requests_total{status_code=~\"4..\"}[5m])) / clamp_min(sum(rate(omnibrand_http_requests_total[5m])), 0.001)", "instant": true}
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Auth Failure Rate by Reason",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"drawStyle": "line", "fillOpacity": 15, "lineWidth": 2, "stacking": {"mode": "normal"}}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["sum"]}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"}, "expr": "sum by (reason) (rate(omnibrand_auth_failures_total[5m]))", "legendFormat": "{{reason}}"}
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Prompt-Injection Blocks by Source",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"drawStyle": "line", "fillOpacity": 20, "lineWidth": 2, "stacking": {"mode": "normal"}}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["sum"]}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"}, "expr": "sum by (source) (rate(omnibrand_injection_blocked_total[5m]))", "legendFormat": "{{source}}"}
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Auth-Related HTTP Responses (401/403/422/429)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["sum"]}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"}, "expr": "sum by (status_code) (rate(omnibrand_http_requests_total{status_code=~\"401|403|422|429\"}[5m]))", "legendFormat": "{{status_code}}"}
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Request Rate by Route — Top 10 (DDoS heuristic)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["max"]}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "omnibrand-prometheus"}, "expr": "topk(10, sum by (route) (rate(omnibrand_http_requests_total[1m])))", "legendFormat": "{{route}}"}
+      ]
+    },
+    {
+      "id": 20,
+      "title": "Top Source IPs (audit_log)",
+      "type": "table",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 9, "w": 8, "x": 0, "y": 20},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "options": {"showHeader": true, "sortBy": [{"displayName": "events", "desc": true}]},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT host(ip_address) AS ip, COUNT(*) AS events, COUNT(DISTINCT action) AS distinct_actions FROM audit_log WHERE ip_address IS NOT NULL AND $__timeFilter(created_at) GROUP BY host(ip_address) ORDER BY events DESC LIMIT 20"}
+      ]
+    },
+    {
+      "id": 21,
+      "title": "Recent Security Audit Events",
+      "type": "table",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 9, "w": 16, "x": 8, "y": 20},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "options": {"showHeader": true, "sortBy": [{"displayName": "created_at", "desc": true}]},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT created_at, action, entity_type, host(ip_address) AS ip, actor_id::text AS actor, org_id::text AS org FROM audit_log WHERE $__timeFilter(created_at) AND (action ILIKE '%login%' OR action ILIKE '%injection%' OR action ILIKE '%revoke%' OR action ILIKE '%lockout%' OR action ILIKE '%auth%' OR action ILIKE '%users.%' OR action ILIKE '%api_key%') ORDER BY created_at DESC LIMIT 100"}
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["omnibrand", "security"],
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Security & Abuse Monitoring",
+  "uid": "omnibrand-security",
+  "version": 1
+}

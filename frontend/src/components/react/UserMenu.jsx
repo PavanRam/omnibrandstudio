@@ -1,5 +1,5 @@
 import { useId, useRef, useState } from 'react';
-import { LogOut, Settings, User, CreditCard, ShieldCheck } from 'lucide-react';
+import { LogOut, Settings, ShieldCheck } from 'lucide-react';
 import { useAuth } from './hooks/useAuth.js';
 import { useDismissable } from './hooks/useDismissable.js';
 import { LoginModal } from './LoginModal.jsx';
@@ -8,8 +8,6 @@ import { cn } from '@/lib/cn.js';
 import { withBase } from '@/lib/paths.js';
 
 const MENU_LINKS = [
-  { label: 'Profile', icon: User, href: '/gallery' },
-  { label: 'Billing & credits', icon: CreditCard, href: '/gallery' },
   { label: 'Admin panel', icon: ShieldCheck, href: '/admin' },
   { label: 'Settings', icon: Settings, href: '/gallery' },
 ];
@@ -20,6 +18,15 @@ export function UserMenu() {
   const [loginOpen, setLoginOpen] = useState(false);
   const ref = useRef(null);
   const menuId = useId();
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } finally {
+      setOpen(false);
+      window.location.replace(withBase('/'));
+    }
+  };
 
   useDismissable(open, () => setOpen(false), ref);
 
@@ -69,10 +76,7 @@ export function UserMenu() {
           variant="outline"
           size="sm"
           className="hidden sm:inline-flex"
-          onClick={async () => {
-            await logout();
-            setOpen(false);
-          }}
+          onClick={handleLogout}
         >
           <LogOut size={15} aria-hidden="true" /> Log out
         </Button>
@@ -110,10 +114,7 @@ export function UserMenu() {
           <button
             type="button"
             role="menuitem"
-            onClick={async () => {
-              await logout();
-              setOpen(false);
-            }}
+            onClick={handleLogout}
             className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-sm text-danger transition-colors hover:bg-danger/10"
           >
             <LogOut size={16} aria-hidden="true" /> Log out

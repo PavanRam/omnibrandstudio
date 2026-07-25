@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -30,8 +31,8 @@ class _FakeDB:
     calls: list[tuple[str, dict]] = field(default_factory=list)
     committed: bool = False
 
-    async def exec_driver_sql(self, query: str, params: dict) -> None:
-        self.calls.append((query, params))
+    async def execute(self, query, params: dict) -> None:
+        self.calls.append((str(query), params))
 
     async def commit(self) -> None:
         self.committed = True
@@ -78,7 +79,7 @@ async def test_ingest_brand_guide_scopes_collection_metadata_and_sql(monkeypatch
     assert len(fake_db.calls) == 2
     update_query, update_params = fake_db.calls[0]
     assert "UPDATE brand_guides SET active = FALSE" in update_query
-    assert "WHERE brand_id = %(brand_id)s AND locale = %(locale)s" in update_query
+    assert "WHERE brand_id = CAST(:brand_id AS UUID) AND locale = :locale" in update_query
     assert update_params == {"brand_id": "brand-a", "locale": "en-US"}
 
 
@@ -167,3 +168,43 @@ async def test_ingest_customer_segments_scopes_segments_collection(
         assert point.metadata["brand_id"] == "brand-a"
         assert point.metadata["locale"] == "en-US"
         assert point.metadata["content_type"] == "segment_profile"
+
+
+@pytest.mark.asyncio
+async def test_list_customer_segments_falls_back_to_legacy_content_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _LegacyStore(_FakeVectorStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.filters_seen: list[dict] = []
+
+        async def get_documents(self, collection: str, filters: dict, limit: int | None = None):
+            _ = collection, limit
+            self.filters_seen.append(filters)
+            content_type = filters.get("content_type")
+            if content_type == "segment_profile":
+                return []
+            if content_type == "segments":
+                return [
+                    SimpleNamespace(
+                        id="legacy-1",
+                        text="segment: SMB",
+                        metadata={"segment": "SMB", "content_type": "segments"},
+                    )
+                ]
+            return []
+
+    fake_store = _LegacyStore()
+    monkeypatch.setattr(ingest_mod, "get_vector_store", lambda: fake_store)
+
+    result = await ingest_mod.list_customer_segments(
+        brand_id="brand-a",
+        locale="en-US",
+        version="v1",
+        limit=10,
+    )
+
+    assert result[0]["id"] == "legacy-1"
+    assert fake_store.filters_seen[0]["content_type"] == "segment_profile"
+    assert fake_store.filters_seen[1]["content_type"] == "segments"

@@ -2,28 +2,42 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
-from opentelemetry.propagate import inject
-from pydantic import BaseModel
-from sqlalchemy import text
-
-from api.deps import UserContext, get_current_user
-from api.middleware.auth import decode_access_token, is_jti_revoked
+import structlog
 from core.config import settings
+from core.database import get_db
 from core.ids import new_campaign_id, new_request_id
 from core.redis import get_redis
-from pipeline.conversation_models import ConversationPlannerInput, ConversationSession, ExtractionMeta, IntentClassification, PartialBrief, UnderstandingResult
-from services.chat.brief_collector import brief_collector
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from opentelemetry.propagate import inject
+from pipeline.conversation_models import (
+    ConversationPlannerInput,
+    ConversationSession,
+    ExtractionMeta,
+    IntentClassification,
+    PartialBrief,
+    UnderstandingResult,
+)
+from pipeline.initial_state import resolve_model_aliases
+from pydantic import BaseModel
+from services import review_service
 from services.campaign.campaign_query import get_recent_campaigns
+from services.chat.brief_collector import brief_collector
 from services.chat.conversation_planner import conversation_planner
 from services.chat.conversation_responder import conversation_responder
 from services.chat.session_manager import session_manager
 from services.chat.understanding_engine import understanding_engine
-from services import review_service
+from sqlalchemy import text
+
+from api.deps import UserContext, get_current_user
+from api.middleware.auth import decode_access_token, is_jti_revoked
 
 router = APIRouter()
+
+log = structlog.get_logger()
 
 QUEUE = "campaigns:queue"
 
@@ -114,12 +128,7 @@ def _chat_state_context(session: ConversationSession) -> dict[str, Any]:
         "org_id": session.org_id,
         "brand_id": session.brand_id,
         "request_id": new_request_id(),
-        "model_aliases": {
-            "utility": "util-fast",
-            "brief_collector": "brief-collector",
-            "understanding": "understanding",
-            "responder": "responder-chat",
-        },
+        "model_aliases": resolve_model_aliases(),
     }
 
 
@@ -322,6 +331,49 @@ def _brief_changes(previous_brief: PartialBrief, current_brief: PartialBrief) ->
     return changes
 
 
+async def _check_locale_support(
+    brand_id: str,
+    brief: PartialBrief,
+    previous_brief: PartialBrief,
+    brief_changes: list[dict[str, Any]],
+) -> str | None:
+    """Return a warning string if the brief contains locales not in the brand's
+    allowed_locales list.  Returns None when all locales are supported or when
+    allowed_locales is empty (brand hasn't configured restrictions yet).
+    Fails open — any DB error suppresses the check silently.
+    """
+    # Only run when locales actually changed in this turn.
+    locale_change = next((c for c in brief_changes if c["field"] == "locales"), None)
+    if locale_change is None and not brief.locales:
+        return None
+    try:
+        async with get_db() as conn:
+            result = await conn.execute(
+                text("SELECT allowed_locales FROM brands WHERE id = :brand_id"),
+                {"brand_id": brand_id},
+            )
+            row = result.mappings().first()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    allowed: list[str] = row["allowed_locales"] or []
+    if not allowed:
+        # Brand hasn't restricted locales — no warning needed.
+        return None
+    requested: set[str] = set(brief.locales or [])
+    unsupported = sorted(requested - set(allowed))
+    if not unsupported:
+        return None
+    supported_str = ", ".join(f"`{l}`" for l in sorted(allowed))
+    unsupported_str = ", ".join(f"`{l}`" for l in unsupported)
+    return (
+        f"⚠️ This brand doesn't have guidelines for {unsupported_str} yet — "
+        f"supported locales are: {supported_str}. "
+        f"I'll continue with the supported locales only."
+    )
+
+
 def _is_new_scalar(previous: str | None, current: str | None) -> bool:
     before = (previous or "").strip()
     after = (current or "").strip()
@@ -366,13 +418,17 @@ def _norm_list(values: list[str]) -> set[str]:
     return {v.strip().lower() for v in values if isinstance(v, str) and v.strip()}
 
 
-async def _process_turn(
+async def _prepare_turn(
     *,
     session: ConversationSession,
     conversation_id: str,
     user: UserContext,
     user_message: str,
 ) -> dict[str, Any]:
+    """Run everything up to (but not including) composing the assistant message:
+    persist the user turn, understand, plan, resolve campaign context, and apply
+    the confirmation gate. Returns a context dict consumed by both the streaming
+    and non-streaming turn paths."""
     await session_manager.add_message(conversation_id, "user", user_message)
 
     history = await session_manager.load_messages(conversation_id)
@@ -393,6 +449,16 @@ async def _process_turn(
     await session_manager.update_partial_brief(conversation_id, brief)
     brief_changes = _brief_changes(previous_brief, brief)
 
+    # ── Phase 2.8: Locale support validation ─────────────────────────────
+    # Warn the user if they requested a locale not in the brand's allowed_locales.
+    # Does NOT block the turn — returns a plain warning string or None.
+    locale_warning = await _check_locale_support(
+        brand_id=session.brand_id,
+        brief=brief,
+        previous_brief=previous_brief,
+        brief_changes=brief_changes,
+    )
+
     planner_output = _build_planner_output(
         user_message=user_message,
         intent=intent,
@@ -406,7 +472,241 @@ async def _process_turn(
     )
     brief_updates = _brief_updates(previous_brief, brief)
 
-    campaign_id: str | None = None
+    copilot_context = await _resolve_campaign_turn_context(
+        conversation_id=conversation_id,
+        session=session,
+        intent=intent,
+        user_message=user_message,
+    )
+    campaign_copilot_message = copilot_context["campaign_copilot_message"]
+    pending_reviews = copilot_context["pending_reviews"]
+
+    # When the user explicitly asks to see generated content, attach the actual
+    # variants so the client can render them inline as cards below the reply.
+    variants_for_display: list[dict[str, Any]] = []
+    if intent in {"show_agent_output", "iterate_campaign"} and session.active_campaign_id:
+        variants_for_display = await _fetch_variants_for_display(session.active_campaign_id)
+
+    # ── Confirmation gate ────────────────────────────────────────────────
+    # A complete brief is NOT enqueued immediately. The assistant first plays
+    # the brief back and waits; the campaign runs only after the user confirms.
+    gate = _confirmation_gate_decision(
+        brief=brief,
+        session=session,
+        user_message=user_message,
+        intent=intent,
+        campaign_copilot_message=campaign_copilot_message,
+    )
+    confirm_playback = bool(gate["confirm_playback"])
+
+    campaign_id = await _apply_confirmation_gate(
+        gate=gate,
+        conversation_id=conversation_id,
+        user=user,
+        session=session,
+        brief=brief,
+    )
+
+    # A recap request should play the captured brief back to the user. The
+    # responder produces a natural LLM summary and falls back to a deterministic
+    # playback if the model call fails, so a recap never loops on the submit
+    # prompt. Skip when a campaign just started or a copilot reply already applies.
+    if _is_recap_request(user_message) and not campaign_id and not campaign_copilot_message:
+        confirm_playback = True
+
+    return {
+        "conversation_id": conversation_id,
+        "context": context,
+        "intent": intent,
+        "brief": brief,
+        "previous_brief": previous_brief,
+        "brief_changes": brief_changes,
+        "brief_updates": brief_updates,
+        "planner_output": planner_output,
+        "campaign_id": campaign_id,
+        "campaign_copilot_message": campaign_copilot_message,
+        "confirm_playback": confirm_playback,
+        "pending_reviews": pending_reviews,
+        "variants": variants_for_display,
+        "user_message": user_message,
+        "active_campaign_id": session.active_campaign_id,
+        "locale_warning": locale_warning,
+    }
+
+
+def _turn_uses_llm_responder(prep: dict[str, Any]) -> bool:
+    """True when the composed assistant message would come from the streaming
+    LLM responder branch (the only branch worth streaming). All other branches
+    return deterministic strings."""
+    if prep["campaign_id"] or prep["campaign_copilot_message"]:
+        return False
+    return bool(settings.ENABLE_CONVERSATION_PLANNER and prep["planner_output"])
+
+
+async def _finalize_turn_payload(
+    prep: dict[str, Any],
+    assistant_message: str,
+) -> dict[str, Any]:
+    """Persist the assistant message and build the turn_complete payload. Shared
+    by the streaming and non-streaming WS paths so both emit an identical
+    payload shape (only the message-delivery mechanism differs)."""
+    conversation_id = prep["conversation_id"]
+    intent = prep["intent"]
+    brief = prep["brief"]
+    planner_output = prep["planner_output"]
+    campaign_id = prep["campaign_id"]
+
+    active_campaign_for_summary = campaign_id or prep["active_campaign_id"]
+    campaign_summary_payload = await _load_campaign_summary_payload_safe(active_campaign_for_summary)
+
+    await session_manager.add_message(
+        conversation_id,
+        "assistant",
+        assistant_message,
+        intent_classified=intent,
+        campaign_id=campaign_id,
+    )
+
+    return {
+        "type": "turn_complete",
+        "conversation_id": conversation_id,
+        "intent": intent,
+        "brief": brief.model_dump(),
+        "brief_complete": brief.is_complete(),
+        "awaiting_confirmation": prep["confirm_playback"],
+        "campaign_id": campaign_id,
+        "message": assistant_message,
+        "brief_updates": prep["brief_updates"],
+        "brief_changes": prep["brief_changes"],
+        "conversation_stage": planner_output.stage if planner_output else None,
+        "planner_objective": planner_output.objective if planner_output else None,
+        "primary_objective": planner_output.primary_objective if planner_output else None,
+        "secondary_objectives": planner_output.secondary_objectives if planner_output else [],
+        "turn_type": planner_output.turn_type if planner_output else None,
+        "needs_clarification": planner_output.needs_clarification if planner_output else False,
+        "clarification_target": planner_output.clarification_target if planner_output else None,
+        "brief_field_states": [state.model_dump() for state in planner_output.brief_field_states] if planner_output else [],
+        "suggested_prompts": planner_output.suggested_prompts if planner_output else [],
+        "correction_detected": planner_output.correction_detected if planner_output else False,
+        "pending_reviews": prep["pending_reviews"],
+        "variants": prep.get("variants") or [],
+        "campaign_summary": campaign_summary_payload,
+    }
+
+
+async def _process_turn(
+    *,
+    session: ConversationSession,
+    conversation_id: str,
+    user: UserContext,
+    user_message: str,
+) -> dict[str, Any]:
+    """Non-streaming turn: prepare, compose the full message, persist, return."""
+    prep = await _prepare_turn(
+        session=session,
+        conversation_id=conversation_id,
+        user=user,
+        user_message=user_message,
+    )
+    assistant_message = await _compose_assistant_message(
+        campaign_id=prep["campaign_id"],
+        campaign_copilot_message=prep["campaign_copilot_message"],
+        brief=prep["brief"],
+        previous_brief=prep["previous_brief"],
+        user_message=prep["user_message"],
+        planner_output=prep["planner_output"],
+        brief_changes=prep["brief_changes"],
+        context=prep["context"],
+        confirm_playback=prep["confirm_playback"],
+    )
+    locale_warning = prep.get("locale_warning")
+    if locale_warning:
+        assistant_message = f"{locale_warning}\n\n{assistant_message}"
+    return await _finalize_turn_payload(prep, assistant_message)
+
+
+async def _stream_turn(
+    *,
+    session: ConversationSession,
+    conversation_id: str,
+    user: UserContext,
+    user_message: str,
+) -> AsyncGenerator[dict[str, Any], None]:
+    """Streaming turn: prepare, then either stream the LLM responder token by
+    token (emitting ``delta`` frames) or emit a deterministic message, and
+    finally emit the ``turn_complete`` payload. Each yielded dict is a WS frame.
+
+    On a prepare-time failure it yields a single ``error`` frame so the client
+    can clear its typing indicator instead of hanging forever.
+    """
+    try:
+        prep = await _prepare_turn(
+            session=session,
+            conversation_id=conversation_id,
+            user=user,
+            user_message=user_message,
+        )
+    except Exception as exc:  # noqa: BLE001 — surface as a client-visible error frame
+        log.warning("stream_turn_prepare_failed", conversation_id=conversation_id, error=str(exc))
+        yield {"type": "error", "message": "Sorry — I hit an error handling that. Please try again."}
+        return
+
+    # Emit locale warning as a prefixed message before the main LLM response.
+    locale_warning = prep.get("locale_warning")
+    if locale_warning:
+        yield {"type": "delta", "delta": locale_warning + "\n\n"}
+
+    if _turn_uses_llm_responder(prep):
+        parts: list[str] = []
+        async for chunk in conversation_responder.respond_stream(
+            planner_output=prep["planner_output"],
+            brief=prep["brief"],
+            brief_changes=prep["brief_changes"],
+            user_message=prep["user_message"],
+            state=prep["context"],
+            confirm_playback=prep["confirm_playback"],
+        ):
+            parts.append(chunk)
+            yield {"type": "delta", "delta": chunk}
+
+        assistant_message = "".join(parts).strip()
+
+        # The per-chunk stream can't run the meta-reasoning-leak check, so apply
+        # it on the accumulated text and replace with a grounded fallback if it
+        # leaked (or produced nothing).
+        if not assistant_message or conversation_responder._looks_like_meta_reasoning_leak(assistant_message):
+            assistant_message = conversation_responder._fallback_or_playback(
+                planner_output=prep["planner_output"],
+                brief=prep["brief"],
+                brief_changes=prep["brief_changes"],
+                user_message=prep["user_message"],
+                confirm_playback=prep["confirm_playback"],
+            )
+            yield {"type": "replace", "message": assistant_message}
+    else:
+        assistant_message = await _compose_assistant_message(
+            campaign_id=prep["campaign_id"],
+            campaign_copilot_message=prep["campaign_copilot_message"],
+            brief=prep["brief"],
+            previous_brief=prep["previous_brief"],
+            user_message=prep["user_message"],
+            planner_output=prep["planner_output"],
+            brief_changes=prep["brief_changes"],
+            context=prep["context"],
+            confirm_playback=prep["confirm_playback"],
+        )
+        yield {"type": "delta", "delta": assistant_message}
+
+    yield await _finalize_turn_payload(prep, assistant_message)
+
+
+async def _resolve_campaign_turn_context(
+    *,
+    conversation_id: str,
+    session: ConversationSession,
+    intent: str,
+    user_message: str,
+) -> dict[str, Any]:
     campaign_copilot_message: str | None = None
     pending_reviews: list[dict[str, Any]] = []
 
@@ -420,28 +720,64 @@ async def _process_turn(
     elif intent == "list_reviews" and session.active_campaign_id:
         pending_reviews = await _fetch_pending_reviews(session.active_campaign_id)
         campaign_copilot_message = _pending_reviews_message(pending_reviews)
+    elif session.active_campaign_id and _is_explicit_run(user_message, intent):
+        # A campaign is already attached; an explicit "run campaign" cannot start
+        # another. Tell the user clearly instead of looping on the submit prompt.
+        pending_reviews = await _fetch_pending_reviews(session.active_campaign_id)
+        campaign_copilot_message = (
+            f"A campaign is already running for this conversation (id {session.active_campaign_id}). "
+            "Ask me for its status, or start a new conversation to launch another campaign."
+        )
     elif session.active_campaign_id:
         # Surface pending reviews automatically whenever the active campaign
         # is paused for review, regardless of what the user asked about.
         pending_reviews = await _fetch_pending_reviews(session.active_campaign_id)
 
-    # ── Confirmation gate ────────────────────────────────────────────────
-    # A complete brief is NOT enqueued immediately. The assistant first plays
-    # the brief back and waits; the campaign runs only after the user confirms.
+    return {
+        "campaign_copilot_message": campaign_copilot_message,
+        "pending_reviews": pending_reviews,
+    }
+
+
+def _confirmation_gate_decision(
+    *,
+    brief: PartialBrief,
+    session: ConversationSession,
+    user_message: str,
+    intent: str,
+    campaign_copilot_message: str | None,
+) -> dict[str, Any]:
     brief_complete = brief.is_complete()
     was_awaiting = session.status == "awaiting_confirmation"
-    explicit_run = ("run" in user_message.lower() and "campaign" in user_message.lower()) or intent == "submit_campaign"
+    explicit_run = _is_explicit_run(user_message, intent)
     affirmative = _is_affirmative(user_message)
 
     should_run = False
     confirm_playback = False
     if brief_complete and not session.active_campaign_id and not campaign_copilot_message:
-        if was_awaiting and (affirmative or explicit_run):
-            should_run = True
-        else:
-            confirm_playback = True
+        # Explicit "run campaign" (or a submit intent) starts immediately in a
+        # single step. A bare affirmative only runs when we already asked the
+        # user to confirm on a previous turn.
+        should_run = bool(explicit_run or (was_awaiting and affirmative))
+        confirm_playback = not should_run
 
-    if should_run:
+    return {
+        "brief_complete": brief_complete,
+        "was_awaiting": was_awaiting,
+        "should_run": should_run,
+        "confirm_playback": confirm_playback,
+    }
+
+
+async def _apply_confirmation_gate(
+    *,
+    gate: dict[str, Any],
+    conversation_id: str,
+    user: UserContext,
+    session: ConversationSession,
+    brief: PartialBrief,
+) -> str | None:
+    if gate["should_run"]:
         campaign_id = await _enqueue_campaign(
             user=user,
             brand_id=session.brand_id,
@@ -449,55 +785,39 @@ async def _process_turn(
             request_id=new_request_id(),
         )
         await session_manager.attach_campaign(conversation_id, campaign_id)
-    elif confirm_playback:
-        if not was_awaiting:
+        return campaign_id
+
+    if gate["confirm_playback"]:
+        if not gate["was_awaiting"]:
             await session_manager.set_status(conversation_id, "awaiting_confirmation")
-    elif was_awaiting and not brief_complete:
+        return None
+
+    if gate["was_awaiting"] and not gate["brief_complete"]:
         # User edited the brief back into an incomplete state; resume collecting.
         await session_manager.set_status(conversation_id, "collecting")
+    return None
 
-    assistant_message = await _compose_assistant_message(
-        campaign_id=campaign_id,
-        campaign_copilot_message=campaign_copilot_message,
-        brief=brief,
-        previous_brief=previous_brief,
-        user_message=user_message,
-        planner_output=planner_output,
-        brief_changes=brief_changes,
-        context=context,
-        confirm_playback=confirm_playback,
-    )
 
-    await session_manager.add_message(
-        conversation_id,
-        "assistant",
-        assistant_message,
-        intent_classified=intent,
-        campaign_id=campaign_id,
-    )
-
-    return {
-        "conversation_id": conversation_id,
-        "intent": intent,
-        "brief": brief.model_dump(),
-        "brief_complete": brief.is_complete(),
-        "awaiting_confirmation": confirm_playback,
-        "campaign_id": campaign_id,
-        "message": assistant_message,
-        "brief_updates": brief_updates,
-        "brief_changes": brief_changes,
-        "conversation_stage": planner_output.stage if planner_output else None,
-        "planner_objective": planner_output.objective if planner_output else None,
-        "primary_objective": planner_output.primary_objective if planner_output else None,
-        "secondary_objectives": planner_output.secondary_objectives if planner_output else [],
-        "turn_type": planner_output.turn_type if planner_output else None,
-        "needs_clarification": planner_output.needs_clarification if planner_output else False,
-        "clarification_target": planner_output.clarification_target if planner_output else None,
-        "brief_field_states": [state.model_dump() for state in planner_output.brief_field_states] if planner_output else [],
-        "suggested_prompts": planner_output.suggested_prompts if planner_output else [],
-        "correction_detected": planner_output.correction_detected if planner_output else False,
-        "pending_reviews": pending_reviews,
-    }
+async def _load_campaign_summary_payload_safe(
+    campaign_id: str | None,
+) -> dict[str, Any] | None:
+    if not campaign_id:
+        return None
+    try:
+        return await _load_campaign_summary_payload(campaign_id)
+    except Exception:
+        # A DB error must not leave the cost/tokens banner stuck on
+        # "calculating..." forever. Return a zero-cost sentinel so the client
+        # renders a concrete (if provisional) value; a later turn reconciles it.
+        return {
+            "campaign_id": campaign_id,
+            "status": "unknown",
+            "token_cost_usd": 0.0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "updated_at": None,
+        }
 
 
 async def _understand_turn(
@@ -570,6 +890,29 @@ def _is_affirmative(message: str) -> bool:
     )
 
 
+def _is_explicit_run(message: str, intent: str) -> bool:
+    """True when the user explicitly asks to run/launch the campaign."""
+    normalized = message.lower()
+    if intent == "submit_campaign":
+        return True
+    return "campaign" in normalized and any(
+        verb in normalized for verb in ("run", "start", "launch", "execute", "kick off", "go")
+    )
+
+
+def _is_recap_request(message: str) -> bool:
+    """True when the user asks to recap / summarize / read back the brief."""
+    normalized = " ".join(message.lower().strip().split())
+    if any(kw in normalized for kw in ("recap", "read back", "read it back", "recite")):
+        return True
+    if "brief" in normalized and any(
+        w in normalized
+        for w in ("summar", "show", "review", "go over", "what's in", "whats in", "remind")
+    ):
+        return True
+    return False
+
+
 async def _compose_assistant_message(
     *,
     campaign_id: str | None,
@@ -630,18 +973,9 @@ async def _campaign_copilot_reply(
 
     from core.database import get_db
 
+    content_generator_preview: dict[str, Any] | None = None
     async with get_db() as conn:
-        campaign_result = await conn.execute(
-            text(
-                """
-                SELECT id, status, started_at, completed_at, token_cost_usd, created_at
-                FROM campaigns
-                WHERE id = :campaign_id
-                """
-            ),
-            {"campaign_id": campaign_id},
-        )
-        campaign_row = campaign_result.mappings().first()
+        campaign_row = await _fetch_campaign_row(conn, campaign_id)
 
         if campaign_row is None:
             return (
@@ -663,6 +997,23 @@ async def _campaign_copilot_reply(
         )
         variant_rows = variants_result.mappings().all()
 
+        if intent == "show_agent_output" and _extract_requested_agent(user_message) == "content_generator":
+            preview_result = await conn.execute(
+                text(
+                    """
+                    SELECT task_id, channel, locale, segment,
+                           COALESCE(generated_content, personalized_content, final_content) AS content
+                    FROM content_variants
+                    WHERE campaign_id = :campaign_id
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {"campaign_id": campaign_id},
+            )
+            preview_row = preview_result.mappings().first()
+            content_generator_preview = dict(preview_row) if preview_row else None
+
     trace: list[dict[str, Any]] = []
     if intent in {"explain_progress", "show_agent_output", "view_history"}:
         trace = await _load_campaign_trace(campaign_id)
@@ -674,10 +1025,147 @@ async def _campaign_copilot_reply(
     if intent == "explain_progress":
         return _campaign_progress_reply(campaign_id, summary)
     if intent == "show_agent_output":
-        return _campaign_agent_output_reply(campaign_id, user_message, summary, trace)
+        return _campaign_agent_output_reply(
+            campaign_id,
+            user_message,
+            summary,
+            trace,
+            content_generator_preview,
+        )
     if intent == "view_history":
         return _campaign_history_reply(conversation_id, campaign_id, summary)
     return None
+
+
+async def _fetch_campaign_row(conn: Any, campaign_id: str) -> dict[str, Any] | None:
+    campaign_result = await conn.execute(
+        text(
+            """
+            SELECT id, status, started_at, completed_at, token_cost_usd, created_at
+            FROM campaigns
+            WHERE id = :campaign_id
+            """
+        ),
+        {"campaign_id": campaign_id},
+    )
+    row = campaign_result.mappings().first()
+    return dict(row) if row else None
+
+
+async def _fetch_variants_for_display(campaign_id: str) -> list[dict[str, Any]]:
+    """Fetch generated variants for inline rendering in the chat thread. Shape
+    matches the frontend VariantCard (and GET /campaigns/{id}); composite_score
+    comes from aggregated_scores.weighted_mean."""
+    from core.database import get_db
+
+    try:
+        async with get_db() as conn:
+            result = await conn.execute(
+                text(
+                    """
+                    SELECT
+                        v.task_id,
+                        v.locale,
+                        v.channel,
+                        v.segment,
+                        v.status,
+                        v.final_content,
+                        a.weighted_mean AS composite_score
+                    FROM content_variants v
+                    LEFT JOIN aggregated_scores a ON a.variant_id = v.id
+                    WHERE v.campaign_id = :campaign_id
+                    ORDER BY a.weighted_mean DESC NULLS LAST, v.created_at ASC
+                    LIMIT 20
+                    """
+                ),
+                {"campaign_id": campaign_id},
+            )
+            rows = result.mappings().all()
+    except Exception as exc:
+        log.warning("fetch_variants_for_display_failed", campaign_id=campaign_id, error=str(exc))
+        return []
+
+    return [
+        {
+            "task_id": str(row["task_id"]),
+            "locale": str(row["locale"]),
+            "channel": str(row["channel"]),
+            "segment": str(row["segment"]),
+            "status": str(row["status"]),
+            "final_content": row["final_content"],
+            "composite_score": (
+                float(row["composite_score"]) if row["composite_score"] is not None else None
+            ),
+        }
+        for row in rows
+    ]
+
+
+async def _load_campaign_summary_payload(campaign_id: str) -> dict[str, Any] | None:
+    from core.database import get_db
+
+    async with get_db() as conn:
+        campaign_row = await _fetch_campaign_row(conn, campaign_id)
+        token_usage = await _fetch_campaign_token_usage(conn, campaign_id)
+
+    if campaign_row is None:
+        return None
+
+    updated_at = (
+        campaign_row.get("completed_at")
+        or campaign_row.get("started_at")
+        or campaign_row.get("created_at")
+    )
+    updated_at_text = (
+        updated_at.isoformat() if hasattr(updated_at, "isoformat") and updated_at is not None else None
+    )
+    return {
+        "campaign_id": str(campaign_row["id"]),
+        "status": str(campaign_row["status"]),
+        "token_cost_usd": float(token_usage.get("cost_usd") or 0.0),
+        "input_tokens": token_usage.get("input_tokens"),
+        "output_tokens": token_usage.get("output_tokens"),
+        "total_tokens": token_usage.get("total_tokens"),
+        "updated_at": updated_at_text,
+    }
+
+
+async def _fetch_campaign_token_usage(conn: Any, campaign_id: str) -> dict[str, int | None]:
+    try:
+        result = await conn.execute(
+            text(
+                """
+                SELECT
+                    COALESCE(SUM(input_tokens), 0)::BIGINT AS input_tokens,
+                    COALESCE(SUM(output_tokens), 0)::BIGINT AS output_tokens,
+                    COALESCE(SUM(total_cost_usd), 0)::DOUBLE PRECISION AS cost_usd
+                FROM campaign_cost_attribution
+                WHERE campaign_id = CAST(:campaign_id AS UUID)
+                """
+            ),
+            {"campaign_id": campaign_id},
+        )
+        row = result.mappings().first()
+        if not row:
+            return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cost_usd": 0.0}
+
+        input_tokens = int(row.get("input_tokens") or 0)
+        output_tokens = int(row.get("output_tokens") or 0)
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "cost_usd": float(row.get("cost_usd") or 0.0),
+        }
+    except Exception:
+        # Return zeros (not None) so the frontend renders "$0.00 · 0 tokens"
+        # rather than getting stuck on a perpetual "calculating..." fallback.
+        return {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cost_usd": 0.0,
+        }
 
 
 async def _fetch_pending_reviews(campaign_id: str) -> list[dict[str, Any]]:
@@ -848,6 +1336,7 @@ def _campaign_summary(
         "variants_breakdown": variants_breakdown,
         "trace_phase": trace_phase,
         "recent_agents": recent_agents,
+        "has_started": campaign_row.get("started_at") is not None,
     }
 
 
@@ -885,10 +1374,30 @@ def _campaign_agent_output_reply(
     user_message: str,
     summary: dict[str, Any],
     trace: list[dict[str, Any]],
+    content_generator_preview: dict[str, Any] | None = None,
 ) -> str:
     requested_agent = _extract_requested_agent(user_message)
+    has_started = bool(summary.get("has_started", True))
+
+    if not requested_agent and not has_started:
+        return (
+            f"Campaign {campaign_id} has not started yet, so there are no agent outputs to show. "
+            "Say 'run campaign' to start execution."
+        )
+
     if requested_agent:
         trace_line = _agent_trace_line(trace, requested_agent)
+        if requested_agent == "content_generator":
+            content_reply = _content_generator_output_reply(
+                campaign_id=campaign_id,
+                summary=summary,
+                has_started=has_started,
+                trace_line=trace_line,
+                content_generator_preview=content_generator_preview,
+            )
+            if content_reply:
+                return content_reply
+
         if trace_line:
             return (
                 f"Campaign {campaign_id} latest {requested_agent} output: {trace_line}. "
@@ -905,6 +1414,73 @@ def _campaign_agent_output_reply(
     )
 
 
+def _content_generator_output_reply(
+    *,
+    campaign_id: str,
+    summary: dict[str, Any],
+    has_started: bool,
+    trace_line: str | None,
+    content_generator_preview: dict[str, Any] | None,
+) -> str | None:
+    if not has_started:
+        return (
+            f"Campaign {campaign_id} has not started yet, so content_generator has no output yet. "
+            "Say 'run campaign' to start execution."
+        )
+
+    preview_text = _content_preview_line(content_generator_preview)
+    if preview_text:
+        if trace_line:
+            return (
+                f"Campaign {campaign_id} latest content_generator output: {preview_text}. "
+                f"Trace context: {trace_line}. Overall status is '{summary['status']}' "
+                f"with {summary['total_variants']} variants."
+            )
+        return (
+            f"Campaign {campaign_id} latest content_generator output: {preview_text}. "
+            f"Overall status is '{summary['status']}' with {summary['total_variants']} variants."
+        )
+
+    if summary["total_variants"] == 0:
+        return (
+            f"Campaign {campaign_id} is '{summary['status']}', but content_generator has not produced "
+            "a variant yet."
+        )
+    return None
+
+
+def _content_preview_line(preview: dict[str, Any] | None) -> str | None:
+    if not isinstance(preview, dict):
+        return None
+
+    content = str(preview.get("content") or "").strip()
+    if not content:
+        return None
+
+    snippet = " ".join(content.split())
+    if len(snippet) > 220:
+        snippet = snippet[:217].rstrip() + "..."
+
+    task_id = str(preview.get("task_id") or "").strip()
+    channel = str(preview.get("channel") or "").strip()
+    locale = str(preview.get("locale") or "").strip()
+    segment = str(preview.get("segment") or "").strip()
+
+    metadata = []
+    if task_id:
+        metadata.append(f"task {task_id}")
+    if channel:
+        metadata.append(channel)
+    if locale:
+        metadata.append(locale)
+    if segment:
+        metadata.append(segment)
+
+    if metadata:
+        return f"({', '.join(metadata)}) \"{snippet}\""
+    return f"\"{snippet}\""
+
+
 def _campaign_history_reply(conversation_id: str, campaign_id: str, summary: dict[str, Any]) -> str:
     recent_agents = summary.get("recent_agents") or []
     recent_agents_text = ", ".join(recent_agents) if recent_agents else "none recorded"
@@ -918,18 +1494,42 @@ def _campaign_history_reply(conversation_id: str, campaign_id: str, summary: dic
 
 
 def _extract_requested_agent(user_message: str) -> str | None:
-    requested = user_message.lower()
-    for agent_name in (
-        "content_generator",
-        "personalization_agent",
-        "translation_agent",
-        "judge_claude",
-        "judge_gpt4o",
-        "judge_llama",
-        "confidence_aggregator",
-        "review_gate",
-        "publishing_agent",
-    ):
+    requested = " ".join(user_message.lower().strip().split())
+    if not requested:
+        return None
+
+    aliases: dict[str, tuple[str, ...]] = {
+        "content_generator": ("content_generator", "content generator", "content gen", "generator"),
+        "personalization_agent": ("personalization_agent", "personalization agent", "personalization"),
+        "translation_agent": ("translation_agent", "translation agent", "translation"),
+        "judge_claude": ("judge_claude", "judge claude", "claude judge"),
+        "judge_gpt4o": ("judge_gpt4o", "judge gpt4o", "gpt4o judge", "gpt-4o judge"),
+        "judge_llama": ("judge_llama", "judge llama", "llama judge"),
+        "confidence_aggregator": (
+            "confidence_aggregator",
+            "confidence aggregator",
+            "aggregator",
+            "score aggregator",
+        ),
+        "review_gate": ("review_gate", "review gate", "review"),
+        "publishing_agent": ("publishing_agent", "publishing agent", "publish", "publishing"),
+    }
+
+    best_agent: str | None = None
+    best_score = 0
+    for agent_name, tokens in aliases.items():
+        score = 0
+        for token in tokens:
+            if token in requested:
+                score = max(score, len(token))
+        if score > best_score:
+            best_score = score
+            best_agent = agent_name
+
+    if best_agent:
+        return best_agent
+
+    for agent_name in aliases:
         if agent_name.replace("_", " ") in requested or agent_name in requested:
             return agent_name
     return None
@@ -1184,25 +1784,74 @@ async def conversation_ws(websocket: WebSocket, conversation_id: str) -> None:
 
             _assert_brand_access(user, session.brand_id)
 
-            if review_request_id:
-                response_payload = await _process_review_action(
-                    session=session,
-                    conversation_id=normalized_id,
-                    user=user,
-                    review_request_id=str(review_request_id),
-                    decision=str(payload.get("decision") or ""),
-                    reviewer_note=payload.get("reviewer_note"),
-                    edited_content=payload.get("edited_content"),
-                )
-            else:
-                response_payload = await _process_turn(
-                    session=session,
-                    conversation_id=normalized_id,
-                    user=user,
-                    user_message=user_message,
-                )
+            # ── Phase 2.1: Per-conversation Redis lock ───────────────────────
+            # Prevents concurrent turns for the same conversation_id. Without a
+            # lock, two rapid messages can produce double campaign enqueues, torn
+            # partial_brief states, and Redis session-cache poisoning.
+            lock_key = f"lock:conversation:{normalized_id}"
+            redis = get_redis()
+            lock_acquired = await redis.set(lock_key, "1", nx=True, ex=120)
+            if not lock_acquired:
+                await websocket.send_json({"type": "busy", "conversation_id": normalized_id})
+                continue
 
-            await websocket.send_json(response_payload)
+            try:
+                # ── Phase 2.4: Chat input guardrail (flag-gated) ────────────
+                if settings.ENABLE_CHAT_INPUT_GUARDRAIL and user_message:
+                    from pipeline.intake_validation import screen_for_injection
+
+                    injection_hits = screen_for_injection([user_message])
+                    if injection_hits:
+                        log.warning(
+                            "chat_input_guardrail_blocked",
+                            conversation_id=normalized_id,
+                            violations=injection_hits,
+                        )
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Your message was flagged by our safety filter. Please rephrase and try again.",
+                        })
+                        continue
+
+                # Immediate acknowledgement so the client can show a "thinking"
+                # indicator right away, rather than waiting for the full turn (which
+                # runs several serial LLM calls) to complete before any feedback.
+                await websocket.send_json({"type": "ack", "conversation_id": normalized_id})
+
+                if review_request_id:
+                    response_payload = await _process_review_action(
+                        session=session,
+                        conversation_id=normalized_id,
+                        user=user,
+                        review_request_id=str(review_request_id),
+                        decision=str(payload.get("decision") or ""),
+                        reviewer_note=payload.get("reviewer_note"),
+                        edited_content=payload.get("edited_content"),
+                    )
+                    await websocket.send_json(response_payload)
+                elif settings.ENABLE_STREAMING_RESPONDER:
+                    # aclosing() guarantees the generator's finally block (LLM cost
+                    # accounting) runs even if the socket disconnects mid-stream.
+                    async with aclosing(
+                        _stream_turn(
+                            session=session,
+                            conversation_id=normalized_id,
+                            user=user,
+                            user_message=user_message,
+                        )
+                    ) as stream:
+                        async for frame in stream:
+                            await websocket.send_json(frame)
+                else:
+                    response_payload = await _process_turn(
+                        session=session,
+                        conversation_id=normalized_id,
+                        user=user,
+                        user_message=user_message,
+                    )
+                    await websocket.send_json(response_payload)
+            finally:
+                await redis.delete(lock_key)
 
     except WebSocketDisconnect:
         return

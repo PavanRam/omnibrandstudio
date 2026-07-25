@@ -53,6 +53,7 @@ async def open_draft_set(
             source=body.source,
             created_by=user.user_id,
         )
+        await conn.commit()
     return {"status": "created", "set_id": set_id}
 
 
@@ -60,11 +61,37 @@ async def open_draft_set(
 async def list_sets(
     brand_id: str,
     user: Annotated[UserContext, Depends(get_current_user)],
+    limit: int = 50,
+    offset: int = 0,
 ) -> dict:
     async with get_db() as conn:
         await _assert_brand_access(conn, user, brand_id)
-        sets = await svc.list_sets(conn, org_id=user.org_id, brand_id=brand_id)
+        sets = await svc.list_sets(conn, org_id=user.org_id, brand_id=brand_id,
+                                    limit=limit, offset=offset)
     return {"brand_id": brand_id, "count": len(sets), "items": sets}
+
+
+@router.post("/golden-dataset/sets/{brand_id}/backfill")
+async def backfill_sets(
+    brand_id: str,
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    """Explicitly backfill golden-dataset sets from existing brand guide versions.
+
+    Previously this happened implicitly on the first GET; it is now a deliberate
+    admin action so GET never writes to the database.
+    """
+    async with get_db() as conn:
+        await _assert_brand_access(conn, user, brand_id)
+        inserted = await svc.backfill_sets_from_guide_versions(
+            conn,
+            org_id=user.org_id,
+            brand_id=brand_id,
+            created_by=user.user_id,
+        )
+        if inserted:
+            await conn.commit()
+    return {"brand_id": brand_id, "sets_created": inserted}
 
 
 @router.post("/golden-dataset/sets/{set_id}/activate")
@@ -83,9 +110,32 @@ async def activate_set(
                 set_id=set_id,
                 actor_id=user.user_id,
             )
+            await conn.commit()
         except ValueError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     return {"status": "activated", "set_id": set_id}
+
+
+@router.delete("/golden-dataset/sets/{set_id}")
+async def delete_set(
+    set_id: str,
+    brand_id: str,
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    async with get_db() as conn:
+        await _assert_brand_access(conn, user, brand_id)
+        try:
+            await svc.delete_set(
+                conn,
+                org_id=user.org_id,
+                brand_id=brand_id,
+                set_id=set_id,
+                actor_id=user.user_id,
+            )
+            await conn.commit()
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    return {"status": "deleted", "set_id": set_id}
 
 
 @router.post("/golden-dataset", status_code=status.HTTP_201_CREATED)
@@ -106,6 +156,7 @@ async def bulk_insert_examples(
                 status=body.status,
                 created_by=user.user_id,
             )
+            await conn.commit()
         except ValueError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     return {"status": "inserted", "count": count}
@@ -146,6 +197,7 @@ async def promote_example(
                 example_id=example_id,
                 actor_id=user.user_id,
             )
+            await conn.commit()
         except ValueError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     return {"status": "promoted", "example_id": example_id}
@@ -167,6 +219,7 @@ async def delete_example(
                 example_id=example_id,
                 actor_id=user.user_id,
             )
+            await conn.commit()
         except ValueError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     return {"status": "deleted", "example_id": example_id}

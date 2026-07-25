@@ -9,6 +9,7 @@ from sqlalchemy import text
 
 from api.deps import UserContext, get_current_user
 from api.middleware.auth import (
+    LOCKOUT_MAX_ATTEMPTS,
     clear_failed_logins,
     create_access_token,
     create_refresh_token,
@@ -22,6 +23,7 @@ from api.middleware.auth import (
 )
 from core.config import settings
 from core.database import get_db
+from core.metrics import account_lockouts_total, auth_failures_total
 
 router = APIRouter()
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -77,12 +79,22 @@ def _invalid_credentials_error() -> HTTPException:
     return HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
 
 
+async def _record_login_failure(email: str, reason: str) -> None:
+    """Emit the auth-failure metric, register the attempt, and fire the lockout
+    metric exactly once when this attempt crosses the lockout threshold."""
+    auth_failures_total.labels(reason=reason).inc()
+    attempts = await record_failed_login(email)
+    if attempts == LOCKOUT_MAX_ATTEMPTS:
+        account_lockouts_total.inc()
+
+
 @router.post("/token")
 async def login(body: LoginRequest) -> TokenResponse:
     email = body.email.strip().lower()
     if "@" not in email:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid email")
     if await is_locked_out(email):
+        auth_failures_total.labels(reason="locked_out").inc()
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
             "Too many failed login attempts. Try again later.",
@@ -103,11 +115,13 @@ async def login(body: LoginRequest) -> TokenResponse:
         row = result.mappings().first()
 
         if row is None or row["status"] != "active":
-            await record_failed_login(email)
+            await _record_login_failure(
+                email, "unknown_user" if row is None else "inactive_user"
+            )
             raise _invalid_credentials_error()
 
         if not verify_password(body.password, str(row["password_hash"])):
-            await record_failed_login(email)
+            await _record_login_failure(email, "bad_password")
             raise _invalid_credentials_error()
 
         await conn.execute(
@@ -150,10 +164,12 @@ async def refresh(body: RefreshRequest) -> TokenResponse:
     try:
         payload = decode_refresh_token(body.refresh_token)
     except ValueError as exc:
+        auth_failures_total.labels(reason="invalid_token").inc()
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from exc
 
     jti = payload.get("jti")
     if isinstance(jti, str) and await is_jti_revoked(jti):
+        auth_failures_total.labels(reason="revoked_jti").inc()
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token has been revoked")
 
     user_id = str(payload.get("sub", ""))

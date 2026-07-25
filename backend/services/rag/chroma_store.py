@@ -104,10 +104,13 @@ class ChromaVectorStore:
     ) -> list[SearchResult]:
         def _sync_get() -> list[SearchResult]:
             col = self._get_collection(collection)
-            raw = col.get(
-                where=self._build_where(filters),
-                include=["documents", "metadatas"],
-            )
+            query_args = {
+                "where": self._build_where(filters),
+                "include": ["documents", "metadatas"],
+            }
+            if limit is not None:
+                query_args["limit"] = limit
+            raw = col.get(**query_args)
             ids = raw.get("ids", [])
             docs = raw.get("documents", [])
             metas = raw.get("metadatas", [])

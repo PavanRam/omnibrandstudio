@@ -107,3 +107,24 @@ routing_decisions_total = Counter(
     ["decision"],  # decision: auto_approve | flag | auto_reject
     registry=REGISTRY,
 )
+
+# ── Security ──────────────────────────────────────────────────────────────────
+
+injection_blocked_total = Counter(
+    "omnibrand_injection_blocked_total",
+    "Prompt-injection attempts blocked by intake screening",
+    ["source"],  # source: api | intake_agent
+    registry=REGISTRY,
+)
+auth_failures_total = Counter(
+    "omnibrand_auth_failures_total",
+    "Failed authentication attempts",
+    ["reason"],  # bad_password|unknown_user|inactive_user|invalid_token|revoked_jti|locked_out
+    registry=REGISTRY,
+)
+account_lockouts_total = Counter(
+    "omnibrand_account_lockouts_total",
+    "Account lockouts triggered by repeated failed logins",
+    registry=REGISTRY,
+)
+

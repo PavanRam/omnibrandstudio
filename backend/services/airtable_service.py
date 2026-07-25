@@ -14,6 +14,8 @@ Never raises: any failure logs an ``airtable_mirror_failed`` warning and returns
 """
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import structlog
 from core.config import settings
@@ -21,6 +23,19 @@ from core.config import settings
 log = structlog.get_logger()
 
 _TIMEOUT = 10.0
+# Rate-limit guard: Airtable allows 5 req/s per base. Semaphore keeps us
+# well within that ceiling without a full token-bucket implementation.
+_SEMAPHORE = asyncio.Semaphore(4)
+
+# Persistent async client (reused across calls to avoid per-call TCP overhead).
+_CLIENT: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _CLIENT
+    if _CLIENT is None or _CLIENT.is_closed:
+        _CLIENT = httpx.AsyncClient(timeout=_TIMEOUT)
+    return _CLIENT
 
 
 def airtable_enabled() -> bool:
@@ -53,8 +68,8 @@ async def sync_review(fields: dict) -> bool:
     if not airtable_enabled():
         return False
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            resp = await client.patch(
+        async with _SEMAPHORE:
+            resp = await _get_client().patch(
                 _url(),
                 headers=_headers(),
                 json={
@@ -80,8 +95,8 @@ async def mark_synced(record_id: str, *, status: str, error: str | None = None) 
     if not airtable_enabled():
         return False
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            resp = await client.patch(
+        async with _SEMAPHORE:
+            resp = await _get_client().patch(
                 _record_url(record_id),
                 headers=_headers(),
                 json={"fields": {"Sync Status": status, "Sync Error": error or ""}},
@@ -91,3 +106,54 @@ async def mark_synced(record_id: str, *, status: str, error: str | None = None) 
     except Exception as exc:  # best-effort mirror — never fatal
         log.warning("airtable_mirror_failed", op="mark_synced", ref=record_id, error=str(exc))
         return False
+
+
+async def get_review_records_by_campaign_id(campaign_id: str) -> list[dict]:
+    """Fetch all Airtable review records for a campaign.
+
+    Returns an empty list on any failure or when Airtable is not configured —
+    callers treat this as an enrichment-only layer (Postgres is the source of
+    truth for review state).
+
+    NOTE: Only campaigns routed to ``flag``/``auto_reject`` ever reach Airtable;
+    ``auto_approve`` campaigns will always return an empty list here.
+    """
+    if not airtable_enabled():
+        return []
+    try:
+        formula = f"{{campaign_id}}='{campaign_id}'"
+        records: list[dict] = []
+        offset: str | None = None
+        page = 0
+
+        while True:
+            params: dict[str, str] = {"filterByFormula": formula, "pageSize": "100"}
+            if offset:
+                params["offset"] = offset
+
+            async with _SEMAPHORE:
+                resp = await _get_client().get(
+                    _url(),
+                    headers=_headers(),
+                    params=params,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+            for rec in data.get("records") or []:
+                records.append({"airtable_record_id": rec.get("id"), **rec.get("fields", {})})
+
+            offset = data.get("offset")
+            page += 1
+            if not offset or page >= 10:  # hard cap: 1 000 records max
+                break
+
+        return records
+    except Exception as exc:  # best-effort — never fatal
+        log.warning(
+            "airtable_read_failed",
+            op="get_review_records_by_campaign_id",
+            campaign_id=campaign_id,
+            error=str(exc),
+        )
+        return []

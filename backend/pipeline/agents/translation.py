@@ -592,7 +592,9 @@ async def translation_agent(state: OmniBrandState) -> dict:
             campaign_id=state.get("campaign_id"),
             translated=translated,
         )
-        result: dict[str, Any] = {"token_cost_usd": total_cost}
+        result: dict[str, Any] = {
+            "token_cost_usd": float(state.get("token_cost_usd", 0.0) or 0.0) + total_cost
+        }
         if errors:
             result["errors"] = errors
         return result

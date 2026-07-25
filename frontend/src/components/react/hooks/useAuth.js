@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { readSession, writeSession, removeSession } from '@/lib/storage.js';
-import { clearStoredAuth, getCurrentAuthClaims, loginWithPassword, logoutSession } from '@/lib/api.js';
+import { clearStoredAuth, getCurrentAuthClaims, hasStoredAuth, loginWithPassword, logoutSession } from '@/lib/api.js';
 
 const KEY = 'obs-user';
 
@@ -59,7 +59,14 @@ export function useAuth() {
     const raw = readSession(KEY);
     if (raw) {
       try {
-        setUser(JSON.parse(raw));
+        // If the sessionStorage user has no backing tokens (both expired and
+        // cleared), treat the session as stale so the login button shows the
+        // modal rather than navigating away.
+        if (!hasStoredAuth()) {
+          removeSession(KEY);
+        } else {
+          setUser(JSON.parse(raw));
+        }
       } catch {
         /* ignore */
       }
@@ -77,8 +84,16 @@ export function useAuth() {
       const next = readSession(KEY);
       setUser(next ? JSON.parse(next) : null);
     };
+    const expire = () => {
+      removeSession(KEY);
+      setUser(null);
+    };
     window.addEventListener('obs:authchange', sync);
-    return () => window.removeEventListener('obs:authchange', sync);
+    window.addEventListener('obs:auth-expired', expire);
+    return () => {
+      window.removeEventListener('obs:authchange', sync);
+      window.removeEventListener('obs:auth-expired', expire);
+    };
   }, []);
 
   const login = useCallback(async ({ email, password }) => {
@@ -91,11 +106,16 @@ export function useAuth() {
   }, []);
 
   const logout = useCallback(async () => {
-    await logoutSession();
-    clearStoredAuth();
-    removeSession(KEY);
-    setUser(null);
-    window.dispatchEvent(new Event('obs:authchange'));
+    try {
+      await logoutSession();
+    } catch {
+      // Local sign-out should still complete even if the server call fails.
+    } finally {
+      clearStoredAuth();
+      removeSession(KEY);
+      setUser(null);
+      window.dispatchEvent(new Event('obs:authchange'));
+    }
   }, []);
 
   return { user, login, logout, ready };

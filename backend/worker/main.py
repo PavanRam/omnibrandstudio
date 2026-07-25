@@ -170,7 +170,12 @@ async def process_campaign(task_payload: dict) -> None:
                         """
                         UPDATE campaigns
                         SET status = :status,
-                            completed_at = CASE WHEN :mark_completed THEN NOW() ELSE completed_at END
+                            completed_at = CASE WHEN :mark_completed THEN NOW() ELSE completed_at END,
+                            token_cost_usd = COALESCE((
+                                SELECT SUM(total_cost_usd)
+                                FROM campaign_cost_attribution
+                                WHERE campaign_id = campaigns.id
+                            ), 0)
                         WHERE id = CAST(:campaign_id AS UUID)
                         """
                     ),
@@ -193,7 +198,12 @@ async def process_campaign(task_payload: dict) -> None:
                     """
                     UPDATE campaigns
                     SET status = 'failed',
-                        completed_at = NOW()
+                        completed_at = NOW(),
+                        token_cost_usd = COALESCE((
+                            SELECT SUM(total_cost_usd)
+                            FROM campaign_cost_attribution
+                            WHERE campaign_id = campaigns.id
+                        ), 0)
                     WHERE id = CAST(:campaign_id AS UUID)
                     """
                 ),

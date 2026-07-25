@@ -632,6 +632,78 @@ def test_campaign_agent_output_reply_uses_trace_data() -> None:
     assert "variants delta 2" in message
 
 
+def test_campaign_agent_output_reply_reports_not_started_for_content_generator() -> None:
+    summary = {
+        "status": "queued",
+        "total_variants": 0,
+        "variants_breakdown": "none yet",
+        "has_started": False,
+    }
+
+    message = conversations._campaign_agent_output_reply(
+        "019f76e9-c299-7756-a483-761aa106ba33",
+        "show outputs from content generator",
+        summary,
+        [],
+    )
+
+    assert "has not started yet" in message
+    assert "run campaign" in message
+
+
+def test_campaign_agent_output_reply_reports_not_started_without_agent_name() -> None:
+    summary = {
+        "status": "queued",
+        "total_variants": 0,
+        "variants_breakdown": "none yet",
+        "has_started": False,
+    }
+
+    message = conversations._campaign_agent_output_reply(
+        "019f76e9-c299-7756-a483-761aa106ba33",
+        "show me outputs",
+        summary,
+        [],
+    )
+
+    assert "no agent outputs" in message
+    assert "run campaign" in message
+
+
+def test_campaign_agent_output_reply_prefers_content_preview_when_available() -> None:
+    summary = {
+        "status": "running",
+        "total_variants": 1,
+        "variants_breakdown": "generated: 1",
+        "has_started": True,
+    }
+
+    preview = {
+        "task_id": "task-123",
+        "channel": "email",
+        "locale": "en-US",
+        "segment": "core",
+        "content": "Subject: Secure your stack. Body: Book a 15-minute demo.",
+    }
+
+    message = conversations._campaign_agent_output_reply(
+        "019f76e9-c299-7756-a483-761aa106ba33",
+        "show outputs from content generator",
+        summary,
+        [],
+        preview,
+    )
+
+    assert "latest content_generator output" in message
+    assert "task task-123" in message
+    assert "Secure your stack" in message
+
+
+def test_extract_requested_agent_supports_natural_aliases() -> None:
+    assert conversations._extract_requested_agent("show content gen output") == "content_generator"
+    assert conversations._extract_requested_agent("show claude judge output") == "judge_claude"
+
+
 def test_campaign_progress_reply_includes_trace_phase() -> None:
     summary = {
         "status": "running",
@@ -813,8 +885,14 @@ def test_conversation_websocket_turn_returns_campaign_id(monkeypatch: pytest.Mon
             "/conversations/019f76e9-c299-7756-a483-761aa106ba33?api_key=test-key"
         ) as websocket:
             websocket.send_json({"message": "run campaign now"})
+            # The server emits an immediate ack frame before processing the turn
+            # (so the client can show a typing indicator); the turn result is the
+            # next frame.
+            ack = websocket.receive_json()
+            assert ack["type"] == "ack"
             payload = websocket.receive_json()
 
+    assert payload["type"] == "turn_complete"
     assert payload["campaign_id"] == "019f7669-1111-7000-8000-000000000001"
     assert payload["brief_complete"] is True
     assert isinstance(payload["brief_updates"], list)
@@ -828,6 +906,87 @@ def test_conversation_websocket_turn_returns_campaign_id(monkeypatch: pytest.Mon
     assert "needs_clarification" in payload
     assert "clarification_target" in payload
     assert "brief_field_states" in payload
+
+
+def test_conversation_websocket_streams_delta_frames(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With ENABLE_STREAMING_RESPONDER on, a non-launch turn streams the reply as
+    ack -> delta(s) -> turn_complete instead of one blocking frame."""
+    session = ConversationSession(
+        id="019f76e9-c299-7756-a483-761aa106ba33",
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_id="00000000-0000-0000-0000-000000000002",
+        status="collecting",
+        partial_brief=PartialBrief(),
+    )
+
+    monkeypatch.setattr(conversations.settings, "ENABLE_STREAMING_RESPONDER", True)
+    monkeypatch.setattr(conversations.settings, "ENABLE_CONVERSATION_PLANNER", True)
+
+    monkeypatch.setattr(
+        "api.deps._authenticate_api_key",
+        AsyncMock(
+            return_value=UserContext(
+                user_id="api_key",
+                org_id="00000000-0000-0000-0000-000000000001",
+                brand_ids=["00000000-0000-0000-0000-000000000002"],
+                auth_method="api_key",
+            )
+        ),
+    )
+    monkeypatch.setattr(conversations.session_manager, "get", AsyncMock(return_value=session))
+    monkeypatch.setattr(conversations.session_manager, "add_message", AsyncMock())
+    monkeypatch.setattr(conversations.session_manager, "load_messages", AsyncMock(return_value=[]))
+    monkeypatch.setattr(conversations.session_manager, "update_partial_brief", AsyncMock())
+    monkeypatch.setattr(conversations.session_manager, "set_status", AsyncMock())
+    monkeypatch.setattr(
+        conversations.understanding_engine,
+        "understand",
+        AsyncMock(
+            return_value=UnderstandingResult(
+                intent=IntentClassification(primary="collect_brief", secondary=[], confidence=1.0),
+                brief=PartialBrief(objective="Launch"),
+                extraction_meta=ExtractionMeta(field_confidence={}, source="llm"),
+            )
+        ),
+    )
+    # A valid planner output routes the turn through the streaming responder branch.
+    monkeypatch.setattr(
+        conversations,
+        "_build_planner_output",
+        lambda **_kwargs: ConversationPlannerOutput(
+            stage="campaign_discovery",
+            objective="collect the brief",
+            reply_strategy="high_value_followup",
+        ),
+    )
+
+    async def _fake_stream(**_kwargs):
+        for chunk in ("Hello ", "there ", "friend"):
+            yield chunk
+
+    monkeypatch.setattr(conversations.conversation_responder, "respond_stream", _fake_stream)
+    monkeypatch.setattr(
+        conversations,
+        "_load_campaign_summary_payload_safe",
+        AsyncMock(return_value=None),
+    )
+
+    frames: list[dict] = []
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/conversations/019f76e9-c299-7756-a483-761aa106ba33?api_key=test-key"
+        ) as websocket:
+            websocket.send_json({"message": "my objective is to launch"})
+            # ack, then 3 deltas, then turn_complete
+            for _ in range(5):
+                frames.append(websocket.receive_json())
+
+    assert frames[0]["type"] == "ack"
+    deltas = [f for f in frames if f.get("type") == "delta"]
+    assert [d["delta"] for d in deltas] == ["Hello ", "there ", "friend"]
+    final = frames[-1]
+    assert final["type"] == "turn_complete"
+    assert final["message"] == "Hello there friend"
 
 
 @pytest.mark.asyncio
@@ -876,6 +1035,18 @@ async def test_process_turn_submit_intent_enqueues_without_run_phrase(monkeypatc
     )
     enqueue_mock = AsyncMock(return_value="019f7669-1111-7000-8000-000000000001")
     monkeypatch.setattr(conversations, "_enqueue_campaign", enqueue_mock)
+    monkeypatch.setattr(
+        conversations,
+        "_load_campaign_summary_payload",
+        AsyncMock(
+            return_value={
+                "campaign_id": "019f7669-1111-7000-8000-000000000001",
+                "status": "queued",
+                "token_cost_usd": 0.0,
+                "updated_at": None,
+            }
+        ),
+    )
     monkeypatch.setattr(conversations.conversation_responder, "respond", AsyncMock(return_value="ignored"))
 
     result = await conversations._process_turn(
@@ -888,6 +1059,7 @@ async def test_process_turn_submit_intent_enqueues_without_run_phrase(monkeypatc
     assert result["intent"] == "submit_campaign"
     assert result["campaign_id"] == "019f7669-1111-7000-8000-000000000001"
     assert result["brief_complete"] is True
+    assert result["campaign_summary"]["token_cost_usd"] == 0.0
     enqueue_mock.assert_awaited_once()
 
 
@@ -1015,3 +1187,234 @@ async def test_process_turn_submit_intent_does_not_enqueue_when_brief_incomplete
     assert result["campaign_id"] is None
     assert result["brief_complete"] is False
     enqueue_mock.assert_not_awaited()
+
+
+def _complete_brief() -> PartialBrief:
+    return PartialBrief(
+        objective="Launch",
+        channels=["linkedin"],
+        locales=["en-US"],
+        audience_segments=["enterprise"],
+        token_budget=1000,
+    )
+
+
+def test_is_explicit_run_detects_run_phrases() -> None:
+    assert conversations._is_explicit_run("run campaign", "collect_brief") is True
+    assert conversations._is_explicit_run("please launch the campaign", "other") is True
+    assert conversations._is_explicit_run("anything", "submit_campaign") is True
+    assert conversations._is_explicit_run("recap the brief", "collect_brief") is False
+    assert conversations._is_explicit_run("yes", "collect_brief") is False
+
+
+def test_is_recap_request_detects_recap_intent() -> None:
+    assert conversations._is_recap_request("recap") is True
+    assert conversations._is_recap_request("can you recap the brief?") is True
+    assert conversations._is_recap_request("summarize the brief") is True
+    assert conversations._is_recap_request("show me the brief") is True
+    assert conversations._is_recap_request("read it back") is True
+    assert conversations._is_recap_request("run campaign") is False
+
+
+def test_confirmation_gate_runs_immediately_on_explicit_run() -> None:
+    session = ConversationSession(
+        id="019f76e9-c299-7756-a483-761aa106ba33",
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_id="00000000-0000-0000-0000-000000000002",
+        status="collecting",
+        partial_brief=_complete_brief(),
+    )
+
+    gate = conversations._confirmation_gate_decision(
+        brief=_complete_brief(),
+        session=session,
+        user_message="run campaign",
+        intent="collect_brief",
+        campaign_copilot_message=None,
+    )
+
+    assert gate["should_run"] is True
+    assert gate["confirm_playback"] is False
+
+
+def test_confirmation_gate_bare_affirmative_requires_prior_confirmation() -> None:
+    session = ConversationSession(
+        id="019f76e9-c299-7756-a483-761aa106ba33",
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_id="00000000-0000-0000-0000-000000000002",
+        status="collecting",
+        partial_brief=_complete_brief(),
+    )
+
+    gate = conversations._confirmation_gate_decision(
+        brief=_complete_brief(),
+        session=session,
+        user_message="yes",
+        intent="collect_brief",
+        campaign_copilot_message=None,
+    )
+
+    assert gate["should_run"] is False
+    assert gate["confirm_playback"] is True
+
+
+@pytest.mark.asyncio
+async def test_process_turn_explicit_run_enqueues_from_collecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = ConversationSession(
+        id="019f76e9-c299-7756-a483-761aa106ba33",
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_id="00000000-0000-0000-0000-000000000002",
+        status="collecting",
+        partial_brief=_complete_brief(),
+    )
+    user = UserContext(
+        user_id="api_key",
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_ids=["00000000-0000-0000-0000-000000000002"],
+        auth_method="api_key",
+    )
+
+    monkeypatch.setattr(conversations.session_manager, "add_message", AsyncMock())
+    monkeypatch.setattr(conversations.session_manager, "load_messages", AsyncMock(return_value=[]))
+    monkeypatch.setattr(conversations.session_manager, "update_partial_brief", AsyncMock())
+    monkeypatch.setattr(conversations.session_manager, "attach_campaign", AsyncMock())
+    monkeypatch.setattr(conversations.session_manager, "set_status", AsyncMock())
+    monkeypatch.setattr(
+        conversations.understanding_engine,
+        "understand",
+        AsyncMock(
+            return_value=UnderstandingResult(
+                intent=IntentClassification(primary="collect_brief", secondary=[], confidence=0.9),
+                brief=_complete_brief(),
+                extraction_meta=ExtractionMeta(field_confidence={}, source="llm"),
+            )
+        ),
+    )
+    enqueue_mock = AsyncMock(return_value="019f7669-1111-7000-8000-000000000001")
+    monkeypatch.setattr(conversations, "_enqueue_campaign", enqueue_mock)
+    monkeypatch.setattr(
+        conversations,
+        "_load_campaign_summary_payload",
+        AsyncMock(return_value={"campaign_id": "019f7669-1111-7000-8000-000000000001", "status": "queued"}),
+    )
+    monkeypatch.setattr(conversations.conversation_responder, "respond", AsyncMock(return_value="ignored"))
+
+    result = await conversations._process_turn(
+        session=session,
+        conversation_id=session.id,
+        user=user,
+        user_message="run campaign",
+    )
+
+    assert result["campaign_id"] == "019f7669-1111-7000-8000-000000000001"
+    assert result["awaiting_confirmation"] is False
+    enqueue_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_process_turn_recap_plays_back_brief(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = ConversationSession(
+        id="019f76e9-c299-7756-a483-761aa106ba33",
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_id="00000000-0000-0000-0000-000000000002",
+        status="collecting",
+        partial_brief=_complete_brief(),
+    )
+    user = UserContext(
+        user_id="api_key",
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_ids=["00000000-0000-0000-0000-000000000002"],
+        auth_method="api_key",
+    )
+
+    monkeypatch.setattr(conversations.session_manager, "add_message", AsyncMock())
+    monkeypatch.setattr(conversations.session_manager, "load_messages", AsyncMock(return_value=[]))
+    monkeypatch.setattr(conversations.session_manager, "update_partial_brief", AsyncMock())
+    monkeypatch.setattr(conversations.session_manager, "attach_campaign", AsyncMock())
+    monkeypatch.setattr(conversations.session_manager, "set_status", AsyncMock())
+    monkeypatch.setattr(
+        conversations.understanding_engine,
+        "understand",
+        AsyncMock(
+            return_value=UnderstandingResult(
+                intent=IntentClassification(primary="collect_brief", secondary=[], confidence=0.9),
+                brief=_complete_brief(),
+                extraction_meta=ExtractionMeta(field_confidence={}, source="llm"),
+            )
+        ),
+    )
+    enqueue_mock = AsyncMock(return_value="019f7669-1111-7000-8000-000000000001")
+    monkeypatch.setattr(conversations, "_enqueue_campaign", enqueue_mock)
+    respond_mock = AsyncMock(return_value="Here's the brief I've captured ...")
+    monkeypatch.setattr(conversations.conversation_responder, "respond", respond_mock)
+
+    result = await conversations._process_turn(
+        session=session,
+        conversation_id=session.id,
+        user=user,
+        user_message="recap the brief",
+    )
+
+    assert result["campaign_id"] is None
+    enqueue_mock.assert_not_awaited()
+    # Recap must drive the responder into brief-playback mode (LLM-first).
+    assert respond_mock.await_args.kwargs["confirm_playback"] is True
+
+
+@pytest.mark.asyncio
+async def test_process_turn_explicit_run_with_active_campaign_reports_already_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = ConversationSession(
+        id="019f76e9-c299-7756-a483-761aa106ba33",
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_id="00000000-0000-0000-0000-000000000002",
+        status="processing",
+        partial_brief=_complete_brief(),
+        active_campaign_id="019f7669-2222-7000-8000-000000000002",
+    )
+    user = UserContext(
+        user_id="api_key",
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_ids=["00000000-0000-0000-0000-000000000002"],
+        auth_method="api_key",
+    )
+
+    monkeypatch.setattr(conversations.session_manager, "add_message", AsyncMock())
+    monkeypatch.setattr(conversations.session_manager, "load_messages", AsyncMock(return_value=[]))
+    monkeypatch.setattr(conversations.session_manager, "update_partial_brief", AsyncMock())
+    monkeypatch.setattr(conversations.session_manager, "attach_campaign", AsyncMock())
+    monkeypatch.setattr(conversations.session_manager, "set_status", AsyncMock())
+    monkeypatch.setattr(conversations, "_fetch_pending_reviews", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        conversations,
+        "_load_campaign_summary_payload",
+        AsyncMock(return_value={"campaign_id": session.active_campaign_id, "status": "running"}),
+    )
+    monkeypatch.setattr(
+        conversations.understanding_engine,
+        "understand",
+        AsyncMock(
+            return_value=UnderstandingResult(
+                intent=IntentClassification(primary="collect_brief", secondary=[], confidence=0.9),
+                brief=_complete_brief(),
+                extraction_meta=ExtractionMeta(field_confidence={}, source="llm"),
+            )
+        ),
+    )
+    enqueue_mock = AsyncMock(return_value="019f7669-1111-7000-8000-000000000001")
+    monkeypatch.setattr(conversations, "_enqueue_campaign", enqueue_mock)
+    monkeypatch.setattr(conversations.conversation_responder, "respond", AsyncMock(return_value="ignored"))
+
+    result = await conversations._process_turn(
+        session=session,
+        conversation_id=session.id,
+        user=user,
+        user_message="run campaign",
+    )
+
+    assert result["campaign_id"] is None
+    enqueue_mock.assert_not_awaited()
+    assert "already running" in result["message"]
