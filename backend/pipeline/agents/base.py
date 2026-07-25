@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -27,6 +28,33 @@ __all__ = [
 ]
 
 _MODEL_PRICING_CACHE: dict[str, tuple[float, float] | None] = {}
+
+# PII guardrail — enforced centrally here so every agent gets protection simply
+# by calling traced_llm_call, rather than each agent needing to remember to scrub
+# itself. Independent copy of personalization.py's patterns (not imported from
+# there) to avoid a circular import: personalization.py already imports from
+# this module.
+_PII_PATTERNS: dict[str, re.Pattern[str]] = {
+    "EMAIL": re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
+    "PHONE": re.compile(r"(?<!\d)(?:\+?\d[\d\s().-]{7,}\d)(?!\d)"),
+    "SSN": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
+    "CREDIT_CARD": re.compile(r"\b(?:\d[ -]?){13,16}\b"),
+}
+
+
+def _scrub_pii(text: str | None) -> tuple[str, list[str]]:
+    """Redact PII from `text`; return (redacted_text, found_types)."""
+    if not text:
+        return text or "", []
+    found: list[str] = []
+    redacted = text
+    # SSN / card before PHONE so digit runs are not partially eaten.
+    for label in ("EMAIL", "SSN", "CREDIT_CARD", "PHONE"):
+        pattern = _PII_PATTERNS[label]
+        if pattern.search(redacted):
+            found.append(label)
+            redacted = pattern.sub(f"[REDACTED_{label}]", redacted)
+    return redacted, found
 
 
 async def publish_campaign_event(
@@ -222,9 +250,23 @@ async def traced_llm_call(
     Calls LiteLLM via httpx, records a Langfuse trace, records Prometheus
     metrics, creates an OTel span, and returns (content, usage_metadata).
     """
+    agent = kwargs.pop("agent", task)
+
+    for msg in messages:
+        if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+            redacted, pii_types = _scrub_pii(msg["content"])
+            if pii_types:
+                msg["content"] = redacted
+                log.warning(
+                    "guardrail_pii_redacted",
+                    agent=agent,
+                    task=task,
+                    pii_types=pii_types,
+                    direction="input",
+                )
+
     campaign_id = state.get("campaign_id")
     request_id = state.get("request_id", "")
-    agent = kwargs.pop("agent", task)
     tracer = get_tracer(f"omnibrand.{agent}")
 
     trace = start_langfuse_trace(
@@ -276,6 +318,18 @@ async def traced_llm_call(
 
     latency_ms = int((time.perf_counter() - start) * 1000)
     content = payload["choices"][0]["message"]["content"]
+
+    redacted_content, output_pii_types = _scrub_pii(content)
+    if output_pii_types:
+        log.warning(
+            "guardrail_pii_redacted",
+            agent=agent,
+            task=task,
+            pii_types=output_pii_types,
+            direction="output",
+        )
+        content = redacted_content
+
     usage = payload.get("usage", {})
     input_tokens = usage.get("prompt_tokens", 0)
     output_tokens = usage.get("completion_tokens", 0)
