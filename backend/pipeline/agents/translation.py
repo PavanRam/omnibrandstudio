@@ -578,6 +578,7 @@ async def translation_agent(state: OmniBrandState) -> dict:
         total_cost = 0.0
         translated = 0
         errors: list[str] = []
+        enriched: list = []  # returned so translated_content persists (merge_variants)
         for variant in state.get("variants", []):
             cost, error_msg = await _translate_variant(variant, state)
             total_cost += cost
@@ -585,6 +586,7 @@ async def translation_agent(state: OmniBrandState) -> dict:
                 errors.append(error_msg)
             if variant.get("status") == "translated":
                 translated += 1
+            enriched.append(variant)
 
         log.info(
             "agent_complete",
@@ -593,6 +595,8 @@ async def translation_agent(state: OmniBrandState) -> dict:
             translated=translated,
         )
         result: dict[str, Any] = {"token_cost_usd": total_cost}
+        if enriched:
+            result["variants"] = enriched
         if errors:
             result["errors"] = errors
         return result

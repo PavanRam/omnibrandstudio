@@ -13,11 +13,12 @@ Subtasks (per the capstone task sheet):
 Write permissions (AGENT_WRITE_PERMISSIONS["personalization_agent"]):
     {"variants", "token_cost_usd", "errors"}
 
-Enrichment model: ``variants`` is an ``operator.add`` fan-in field, so a node
-cannot *replace* the list without duplicating it. Following the CP2 contract
-(the same variant accumulates generated_content → personalized_content →
-translated_content), this agent enriches the existing variant dicts **in place**
-and returns only ``token_cost_usd`` — it appends nothing new to ``variants``.
+Enrichment model: ``variants`` uses the ``merge_variants`` reducer (upsert by
+``task_id``). The same variant accumulates generated_content →
+personalized_content → translated_content across stages. This agent fills
+``personalized_content`` and **returns** the enriched variants so the write
+persists through the checkpointer (a node's in-place mutation of a checkpointed
+channel is discarded — it must return its updates).
 """
 from __future__ import annotations
 
@@ -36,6 +37,11 @@ try:
     from pipeline.agents.prompts.channel_prompts import DEFAULT_CHANNEL_CONSTRAINTS
 except Exception:  # module may be absent on some branches — degrade gracefully
     DEFAULT_CHANNEL_CONSTRAINTS = {}
+
+# Shared constraint checker + retry budget — the same validation the Content
+# Generator (T3) applies, so a persona rewrite is held to the channel's char
+# limit and required elements before it is accepted (doc §4.4.3).
+from pipeline.agents.content_generator import MAX_RETRIES, _check_constraints
 
 log = structlog.get_logger()
 
@@ -111,6 +117,57 @@ def load_segment_profiles(org_config: dict) -> dict[str, dict[str, str]]:
     return profiles
 
 
+def _normalize(text: str) -> str:
+    """Lowercase and collapse non-alphanumerics to spaces for loose matching."""
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+def resolve_segment_profile(
+    segment: str | None,
+    profiles: dict[str, dict[str, str]],
+    aliases: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """T4.1 — resolve a variant's raw ``segment`` label to a persona profile.
+
+    Upstream sets ``variant['segment']`` from the brief's free-text
+    ``audience_segments`` (see intake.py), which rarely equals a persona name
+    verbatim — so an exact-key lookup alone would drop almost every real brief
+    to the generic fallback. Resolve in tiers, using the generic fallback only
+    when nothing plausibly matches:
+
+      1. exact key                        4. token overlap with a persona name
+      2. explicit alias map (org_config)  5. generic fallback
+      3. case-insensitive / normalized exact
+
+    The chosen profile is always merged over ``_FALLBACK_PROFILE`` so ``tone``,
+    ``reading_level`` and ``cta_style`` are guaranteed present — a partial
+    org_config override can never raise ``KeyError`` in the prompt builder.
+    """
+    def _finish(prof: dict[str, str]) -> dict[str, str]:
+        return {**_FALLBACK_PROFILE, **prof}
+
+    if not segment:
+        return dict(_FALLBACK_PROFILE)
+    if segment in profiles:  # 1. exact
+        return _finish(profiles[segment])
+    aliased = (aliases or {}).get(segment)
+    if aliased and aliased in profiles:  # 2. explicit alias
+        return _finish(profiles[aliased])
+    norm = _normalize(segment)
+    for name, prof in profiles.items():  # 3. normalized exact
+        if _normalize(name) == norm:
+            return _finish(prof)
+    seg_tokens = {t for t in norm.split() if len(t) > 2}  # 4. token overlap
+    best_name, best_score = None, 0
+    for name in profiles:
+        score = len(seg_tokens & set(_normalize(name).split()))
+        if score > best_score:
+            best_name, best_score = name, score
+    if best_name is not None:
+        return _finish(profiles[best_name])
+    return dict(_FALLBACK_PROFILE)  # 5. generic fallback
+
+
 # ── T4.2 PII scan ─────────────────────────────────────────────────────────
 # Regex-lite scrubber for this no-Docker eval branch. On `develop` this is
 # replaced by Presidio AnalyzerEngine with audit logging (no audit layer here).
@@ -171,6 +228,7 @@ def _build_messages(profile: dict[str, str], channel: str, content: str) -> list
 async def personalization_agent(state: OmniBrandState) -> dict:
     async def _impl(state: OmniBrandState) -> dict:
         profiles = load_segment_profiles(state.get("org_config", {}))
+        segment_aliases = (state.get("org_config") or {}).get("segment_aliases", {})
         # Default to the free-tier model (gen-free / Llama via Groq), matching
         # content_generator — keeps the pipeline within the free-tier budget.
         # The team can override per campaign via model_aliases["personalization"].
@@ -192,6 +250,7 @@ async def personalization_agent(state: OmniBrandState) -> dict:
 
         total_cost = 0.0
         personalized = 0
+        enriched: list = []  # variants we touched — returned so the write persists
         for variant in state.get("variants", []):
             source = variant.get("generated_content")
             if not source or variant.get("status") == "personalized":
@@ -208,24 +267,74 @@ async def personalization_agent(state: OmniBrandState) -> dict:
                     pii_types=pii_types,
                 )
 
-            segment = variant.get("segment") or "consumer"
-            profile = profiles.get(segment, _FALLBACK_PROFILE)
-            channel = variant.get("channel") or "generic"
-
-            # T4.3 — segment-conditioned LLM call.
-            content, usage = await traced_llm_call(
-                model=model,
-                messages=_build_messages(profile, channel, clean_source),
-                task="personalization_agent",
-                state=state,
-                agent="personalization_agent",
+            # T4.1 — resolve the raw segment label to the closest persona
+            # profile (exact → alias → normalized → token overlap → generic),
+            # so real briefs still receive persona conditioning.
+            profile = resolve_segment_profile(
+                variant.get("segment"), profiles, segment_aliases
             )
+            channel = variant.get("channel") or "generic"
+            constraints = {
+                **DEFAULT_CHANNEL_CONSTRAINTS.get(channel, {}),
+                **(variant.get("channel_constraints") or {}),
+            }
 
-            # T4.4 — enrich the variant in place (append-only reducer contract).
+            # T4.3 — segment-conditioned LLM call, validated against the same
+            # channel constraints the Content Generator enforces. Retry with
+            # violation feedback up to MAX_RETRIES; on persistent failure leave
+            # personalized_content=None so downstream falls back to the original.
+            messages = _build_messages(profile, channel, clean_source)
+            content = ""
+            violations: list[str] = []
+            for attempt in range(MAX_RETRIES + 1):
+                content, usage = await traced_llm_call(
+                    model=model,
+                    messages=messages,
+                    task="personalization_agent",
+                    state=state,
+                    agent="personalization_agent",
+                )
+                total_cost += usage.get("cost", 0.0)
+                violations = (
+                    _check_constraints(content, constraints)
+                    if content and content.strip()
+                    else ["empty personalization output"]
+                )
+                if not violations or attempt == MAX_RETRIES:
+                    break
+                guidance = "\n".join(f"- {v}" for v in violations)
+                messages = messages + [
+                    {"role": "assistant", "content": content},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Your rewrite had these issues:\n{guidance}\n\n"
+                            f"Regenerate the full {channel} content, fixing every "
+                            "issue while keeping the persona tone and CTA style."
+                        ),
+                    },
+                ]
+
+            # T4.4 — enrich the variant, then RETURN it (see merge_variants):
+            # a checkpointed graph drops in-place mutations, so the enrichment
+            # only persists because we hand the variant back below.
+            if violations:
+                # Persistent constraint failure: keep the original as fallback
+                # (status stays "generated" → downstream reads generated_content).
+                variant["personalized_content"] = None
+                log.warning(
+                    "personalization_validation_failed",
+                    agent="personalization_agent",
+                    campaign_id=state.get("campaign_id"),
+                    task_id=variant.get("task_id"),
+                    violations=violations,
+                )
+                enriched.append(variant)
+                continue
             variant["personalized_content"] = content
             variant["status"] = "personalized"
-            total_cost += usage.get("cost", 0.0)
             personalized += 1
+            enriched.append(variant)
 
         log.info(
             "agent_complete",
@@ -241,6 +350,9 @@ async def personalization_agent(state: OmniBrandState) -> dict:
                 "personalized": personalized,
             },
         )
-        return {"token_cost_usd": total_cost}
+        result: dict = {"token_cost_usd": total_cost}
+        if enriched:
+            result["variants"] = enriched
+        return result
 
     return await safe_agent_run(_impl, state)

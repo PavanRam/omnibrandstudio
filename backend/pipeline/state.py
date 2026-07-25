@@ -4,6 +4,37 @@ import operator
 from typing import Annotated, NotRequired, TypedDict
 
 
+def merge_variants(existing: list, updates: list) -> list:
+    """Reducer for the ``variants`` channel: upsert by ``task_id``.
+
+    ``content_generator`` inserts one variant per (channel × locale × segment)
+    task. Enrichment stages (``personalization``, ``translation``, ``reflexion``)
+    and ``publishing`` re-emit the SAME ``task_id`` with more fields filled in.
+    Upserting by ``task_id`` lets those writes persist through the checkpointer
+    without the duplication a plain ``operator.add`` append would cause — later
+    writes win per field. A LangGraph node's in-place mutation is NOT applied to
+    a checkpointed channel; enrichment agents must *return* their variants, and
+    this reducer merges them back in.
+    """
+    merged = list(existing) if existing else []
+    index = {
+        v.get("task_id"): i
+        for i, v in enumerate(merged)
+        if isinstance(v, dict) and v.get("task_id") is not None
+    }
+    for v in updates or []:
+        if not isinstance(v, dict) or v.get("task_id") is None:
+            merged.append(v)
+            continue
+        tid = v["task_id"]
+        if tid in index:
+            merged[index[tid]] = {**merged[index[tid]], **v}
+        else:
+            index[tid] = len(merged)
+            merged.append(v)
+    return merged
+
+
 class CampaignBrief(TypedDict):
     objective: str
     target_audience: str
@@ -155,7 +186,7 @@ class OmniBrandState(TypedDict):
     current_task: GenerationTask | None
 
     # Accumulated results (operator.add fan-in)
-    variants: Annotated[list[ContentVariant], operator.add]
+    variants: Annotated[list[ContentVariant], merge_variants]
     brand_scores: Annotated[list[BrandScore], operator.add]
     aggregated_scores: Annotated[list[AggregatedScore], operator.add]
     review_requests: Annotated[list[ReviewRequest], operator.add]

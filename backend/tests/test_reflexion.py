@@ -58,7 +58,9 @@ async def test_reflexion_regenerates_rejected_variant(monkeypatch):
     state = _state([variant], [_aggregate("auto_reject", 0.40)])
     result = await reflexion(state)
 
-    assert result == {}  # variant mutated in place, not returned
+    # Reflexed variant is RETURNED (merge_variants upserts by task_id) so the
+    # reset survives the checkpointer — an in-place-only edit would be dropped.
+    assert result == {"variants": [variant]}
     assert variant["generated_content"] == "Corrected content."
     assert variant["personalized_content"] is None
     assert variant["translated_content"] is None

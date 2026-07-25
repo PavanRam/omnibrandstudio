@@ -78,9 +78,11 @@ async def reflexion(state: OmniBrandState) -> dict:
         aliases = state.get("model_aliases") or {}
         model = aliases.get("generation", "gen-free")
 
+        enriched: list = []  # return reflexed variants so the reset persists
         for variant in state.get("variants") or []:
-            await _maybe_reflex_variant(state, variant, aggregates, brand_scores, model)
-        return {}
+            if await _maybe_reflex_variant(state, variant, aggregates, brand_scores, model):
+                enriched.append(variant)
+        return {"variants": enriched} if enriched else {}
 
     return await safe_agent_run(_impl, state)
 
@@ -91,26 +93,28 @@ async def _maybe_reflex_variant(
     aggregates: list,
     brand_scores: list,
     model: str,
-) -> None:
-    """Regenerate one variant in place if the panel rejected/low-flagged it.
+) -> bool:
+    """Regenerate one variant if the panel rejected/low-flagged it.
 
-    No-op when the variant has already been retried (hard cap), has no aggregate
-    for its round, or its routing does not trigger reflexion.
+    Returns ``True`` if the variant was reflexed (and must be returned by the
+    caller so the reset persists), ``False`` otherwise. No-op when the variant
+    has already been retried (hard cap), has no aggregate for its round, or its
+    routing does not trigger reflexion.
     """
     round_ = int(variant.get("retry_count", 0))
     if round_ > 0:
-        return  # hard cap: at most one reflexion retry per variant
+        return False  # hard cap: at most one reflexion retry per variant
 
     aggregate = _latest_aggregate(aggregates, variant["task_id"], round_)
     if aggregate is None:
-        return
+        return False
 
     decision = aggregate["routing_decision"]
     trigger = decision == "auto_reject" or (
         decision == "flag" and aggregate["weighted_mean"] < _FLAG_RETRY_MEAN
     )
     if not trigger:
-        return
+        return False
 
     reasons = _collect_reasons(brand_scores, variant["task_id"], round_)
     messages = build_reflexion_messages(
@@ -128,9 +132,10 @@ async def _maybe_reflex_variant(
         agent="reflexion",
     )
 
-    # Enrich the variant in place (variants is an operator.add fan-in field —
-    # returning it would append a duplicate). Reset downstream content and bump
-    # the round so the judges re-score at round+1.
+    # Reset downstream content and bump the round so the judges re-score at
+    # round+1. The caller returns this variant; merge_variants upserts it by
+    # task_id (a plain append would duplicate; an in-place-only edit would be
+    # dropped by the checkpointer).
     variant["generated_content"] = new_content
     variant["personalized_content"] = None
     variant["translated_content"] = None
@@ -145,6 +150,7 @@ async def _maybe_reflex_variant(
         variant_id=variant["task_id"],
         trigger=decision,
     )
+    return True
 
 
 def reflexion_router(state: OmniBrandState) -> list[str] | str:

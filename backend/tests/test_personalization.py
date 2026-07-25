@@ -10,8 +10,10 @@ from pipeline.agents.base import AGENT_WRITE_PERMISSIONS
 from pipeline.agents.personalization import (
     load_segment_profiles,
     personalization_agent,
+    resolve_segment_profile,
     scrub_pii,
 )
+from pipeline.state import merge_variants
 
 
 def _variant(task_id: str, segment: str, generated: str) -> dict:
@@ -53,7 +55,13 @@ def _state(variants: list[dict]) -> dict:
 @pytest.fixture
 def echo_llm(monkeypatch):
     """Mock traced_llm_call: echo the user prompt back as the 'personalized'
-    content and record every call for assertions."""
+    content and record every call for assertions.
+
+    The echo is wrapped with a ``Subject:`` line and a CTA so it satisfies the
+    email channel's required elements — otherwise the agent's validation loop
+    would (correctly) reject it and retry. The persona-specific tone text from
+    the prompt is preserved in the middle, so per-persona differentiation and
+    PII-redaction assertions still hold."""
     calls: list[dict] = []
 
     async def fake(model, messages, task, state, **kwargs):
@@ -63,7 +71,9 @@ def echo_llm(monkeypatch):
             "task": task,
             "agent": kwargs.get("agent"),
         })
-        return messages[1]["content"], {"cost": 0.001}
+        body = messages[-1]["content"]
+        content = f"Subject: A note for you\n{body}\nClick here to get started."
+        return content, {"cost": 0.001}
 
     monkeypatch.setattr(perso, "traced_llm_call", fake)
     return calls
@@ -164,3 +174,110 @@ async def test_traced_llm_call_receives_explicit_agent_label(echo_llm):
     assert len(echo_llm) == 1
     assert echo_llm[0]["task"] == "personalization_agent"
     assert echo_llm[0]["agent"] == "personalization_agent"
+
+
+# ── T4.1 segment resolution (free-text brief label → persona) ──────────────
+
+def test_resolve_exact_persona_name():
+    profiles = load_segment_profiles({})
+    prof = resolve_segment_profile("High-Income Store Spender", profiles)
+    assert "Premium" in prof["tone"]
+
+
+def test_resolve_by_token_overlap():
+    """A free-text segment that shares words with a persona name resolves to
+    that persona rather than the generic fallback."""
+    profiles = load_segment_profiles({})
+    prof = resolve_segment_profile("high income shoppers", profiles)
+    assert "Premium" in prof["tone"]  # → High-Income Store Spender
+
+
+def test_resolve_via_alias_map():
+    profiles = load_segment_profiles({})
+    prof = resolve_segment_profile(
+        "enterprise", profiles, {"enterprise": "High-Income Store Spender"}
+    )
+    assert "Premium" in prof["tone"]
+
+
+def test_resolve_unknown_segment_falls_back_without_crashing():
+    profiles = load_segment_profiles({})
+    prof = resolve_segment_profile("xyzzy no match", profiles)
+    # Generic fallback always carries the three keys the prompt builder needs.
+    assert {"tone", "reading_level", "cta_style"} <= set(prof)
+
+
+def test_resolve_partial_org_override_never_raises_keyerror():
+    """A segment defined via org_config with only a partial key set is merged
+    over the fallback so tone/reading_level/cta_style are always present."""
+    profiles = load_segment_profiles(
+        {"segment_profiles": {"niche": {"tone": "quirky"}}}
+    )
+    prof = resolve_segment_profile("niche", profiles)
+    assert prof["tone"] == "quirky"
+    assert prof["reading_level"] and prof["cta_style"]  # inherited from fallback
+
+
+# ── T4.3 output validation + retry / fallback ──────────────────────────────
+
+async def test_invalid_output_retries_then_falls_back_to_none(monkeypatch):
+    """If the rewrite never satisfies the channel constraints, the agent
+    retries MAX_RETRIES+1 times, then sets personalized_content=None and leaves
+    status untouched so downstream falls back to generated_content."""
+    from pipeline.agents import personalization as perso
+
+    calls: list[dict] = []
+
+    async def bad(model, messages, task, state, **kwargs):
+        calls.append({"task": task})
+        # Missing subject_line and cta → always violates email constraints.
+        return "just some prose with no required elements", {"cost": 0.001}
+
+    monkeypatch.setattr(perso, "traced_llm_call", bad)
+
+    variants = [_variant("t-bad", "High-Income Store Spender", "Buy our platform.")]
+    result = await personalization_agent(_state(variants))
+
+    assert len(calls) == perso.MAX_RETRIES + 1          # retried, not one-shot
+    assert variants[0]["personalized_content"] is None   # fell back
+    assert variants[0]["status"] == "generated"          # status untouched
+    assert result["token_cost_usd"] == pytest.approx(0.001 * (perso.MAX_RETRIES + 1))
+
+
+# ── variants reducer (persistence fix) ─────────────────────────────────────
+
+async def test_agent_returns_enriched_variants_for_persistence(echo_llm):
+    """The agent must RETURN the enriched variants (not just mutate in place),
+    else the checkpointer drops personalized_content."""
+    variants = [_variant("t-hi", "High-Income Store Spender", "Buy our platform.")]
+    result = await personalization_agent(_state(variants))
+    assert "variants" in result
+    assert result["variants"][0]["personalized_content"]
+    assert result["variants"][0]["status"] == "personalized"
+    # write scope still respected
+    assert set(result) <= AGENT_WRITE_PERMISSIONS["personalization_agent"]
+
+
+def test_merge_variants_upserts_by_task_id():
+    existing = [
+        {"task_id": "t1", "generated_content": "g1",
+         "personalized_content": None, "status": "generated"},
+        {"task_id": "t2", "generated_content": "g2",
+         "personalized_content": None, "status": "generated"},
+    ]
+    updates = [{"task_id": "t1", "personalized_content": "p1", "status": "personalized"}]
+    merged = merge_variants(existing, updates)
+    assert len(merged) == 2  # upsert, not append → no duplication
+    t1 = next(v for v in merged if v["task_id"] == "t1")
+    assert t1["personalized_content"] == "p1" and t1["status"] == "personalized"
+    assert t1["generated_content"] == "g1"  # untouched fields preserved
+    t2 = next(v for v in merged if v["task_id"] == "t2")
+    assert t2["personalized_content"] is None  # other variant untouched
+
+
+def test_merge_variants_inserts_and_handles_edges():
+    assert merge_variants([], [{"task_id": "t1", "x": 1}]) == [{"task_id": "t1", "x": 1}]
+    assert merge_variants(None, None) == []
+    # a variant without a task_id is appended, never merged away
+    out = merge_variants([{"task_id": "t1"}], [{"no_id": 1}])
+    assert len(out) == 2
