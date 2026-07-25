@@ -487,6 +487,22 @@ export async function activateGoldenSet({ brandId, setId }) {
   return body;
 }
 
+export async function deleteGoldenSet({ brandId, setId }) {
+  const params = new URLSearchParams({ brand_id: brandId });
+  const response = await fetchWithAutoRefresh(
+    `${API_BASE}/knowledge/golden-dataset/sets/${setId}?${params.toString()}`,
+    {
+      method: 'DELETE',
+      headers: authHeaders(),
+    },
+  );
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(parseErrorMessage(body, `golden set delete failed: ${response.status}`));
+  }
+  return body;
+}
+
 export async function listGoldenExamples(brandId, { status = '', setId = '' } = {}) {
   const params = new URLSearchParams();
   if (status) params.set('status_filter', status);

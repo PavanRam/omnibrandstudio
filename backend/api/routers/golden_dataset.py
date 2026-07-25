@@ -116,6 +116,28 @@ async def activate_set(
     return {"status": "activated", "set_id": set_id}
 
 
+@router.delete("/golden-dataset/sets/{set_id}")
+async def delete_set(
+    set_id: str,
+    brand_id: str,
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    async with get_db() as conn:
+        await _assert_brand_access(conn, user, brand_id)
+        try:
+            await svc.delete_set(
+                conn,
+                org_id=user.org_id,
+                brand_id=brand_id,
+                set_id=set_id,
+                actor_id=user.user_id,
+            )
+            await conn.commit()
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    return {"status": "deleted", "set_id": set_id}
+
+
 @router.post("/golden-dataset", status_code=status.HTTP_201_CREATED)
 async def bulk_insert_examples(
     body: BulkInsertRequest,

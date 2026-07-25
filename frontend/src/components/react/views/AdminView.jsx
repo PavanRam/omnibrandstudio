@@ -28,6 +28,7 @@ import {
   activateGoldenSet,
   createUser,
   deleteGoldenExample,
+  deleteGoldenSet,
   getAllowedLocales,
   listBrandGuides,
   listCustomerSegments,
@@ -133,7 +134,7 @@ export function AdminView({ onLock }) {
 
   const [brandId, setBrandId] = useState(DEFAULT_BRAND_ID);
   const [locale, setLocale] = useState('en-US');
-  const [version, setVersion] = useState('v1');
+  const [version, setVersion] = useState('datasets-v1');
   const [allowedLocales, setAllowedLocales] = useState([]);
 
   const [file, setFile] = useState(null);
@@ -930,6 +931,12 @@ function GoldenDatasetPanel({ brandId, locale, version }) {
       `Activated dataset set ${setId.slice(0, 8)}….`,
     );
 
+  const deleteSet = (setId) =>
+    runAction(
+      () => deleteGoldenSet({ brandId: brandId.trim(), setId }),
+      `Deleted dataset set ${setId.slice(0, 8)}….`,
+    );
+
   const promote = (exampleId) =>
     runAction(
       () => promoteGoldenExample({ brandId: brandId.trim(), exampleId }),
@@ -989,9 +996,19 @@ function GoldenDatasetPanel({ brandId, locale, version }) {
                     </div>
                   </div>
                   {set.status !== 'active' ? (
-                    <Button variant="secondary" size="sm" onClick={() => activate(set.id)}>
-                      Activate
-                    </Button>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <Button variant="secondary" size="sm" onClick={() => activate(set.id)}>
+                        Activate
+                      </Button>
+                      <button
+                        type="button"
+                        aria-label="Delete dataset set"
+                        onClick={() => deleteSet(set.id)}
+                        className="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                      >
+                        <Trash2 size={14} aria-hidden="true" />
+                      </button>
+                    </div>
                   ) : (
                     <CheckCircle2 size={16} aria-hidden="true" className="shrink-0 text-success" />
                   )}

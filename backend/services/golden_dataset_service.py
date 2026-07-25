@@ -341,6 +341,57 @@ async def promote_to_golden(
     )
 
 
+async def delete_set(
+    conn: AsyncConnection,
+    *,
+    org_id: str,
+    brand_id: str,
+    set_id: str,
+    actor_id: str | None = None,
+) -> None:
+    """Delete a draft (non-active) dataset set and its silver examples.
+    Raises ValueError if the set is not found in tenant scope or is currently active."""
+    result = await conn.execute(
+        text(
+            """
+            SELECT status FROM golden_dataset_set
+            WHERE id = :set_id AND org_id = :org_id AND brand_id = :brand_id
+            """
+        ),
+        {"set_id": set_id, "org_id": org_id, "brand_id": brand_id},
+    )
+    row = result.mappings().first()
+    if row is None:
+        raise ValueError("set not found in tenant scope")
+    if row["status"] == "active":
+        raise ValueError("cannot delete an active dataset set; archive it first")
+
+    await conn.execute(
+        text(
+            "DELETE FROM golden_dataset WHERE set_id = :set_id AND org_id = :org_id"
+        ),
+        {"set_id": set_id, "org_id": org_id},
+    )
+    await conn.execute(
+        text(
+            """
+            DELETE FROM golden_dataset_set
+            WHERE id = :set_id AND org_id = :org_id AND brand_id = :brand_id
+            """
+        ),
+        {"set_id": set_id, "org_id": org_id, "brand_id": brand_id},
+    )
+    await write_audit(
+        conn,
+        entity_type="golden_dataset",
+        action="set_deleted",
+        actor_id=actor_id,
+        entity_id=set_id,
+        brand_id=brand_id,
+        org_id=org_id,
+    )
+
+
 async def delete_example(
     conn: AsyncConnection,
     *,
