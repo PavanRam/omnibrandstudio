@@ -17,19 +17,29 @@ async def get_recent_campaigns(
         result = await conn.execute(
             text(
                 """
+                WITH variant_counts AS (
+                    SELECT campaign_id, COUNT(*) AS variant_count
+                    FROM content_variants
+                    GROUP BY campaign_id
+                ),
+                campaign_costs AS (
+                    SELECT campaign_id, COALESCE(SUM(total_cost_usd), 0) AS token_cost_usd
+                    FROM campaign_cost_attribution
+                    GROUP BY campaign_id
+                )
                 SELECT
                     c.id,
                     c.brand_id,
                     c.status,
                     c.created_at,
-                    c.token_cost_usd,
-                    COUNT(v.id) AS variant_count
+                    COALESCE(cc.token_cost_usd, c.token_cost_usd, 0) AS token_cost_usd,
+                    COALESCE(vc.variant_count, 0) AS variant_count
                 FROM campaigns c
-                LEFT JOIN content_variants v ON v.campaign_id = c.id
+                LEFT JOIN variant_counts vc ON vc.campaign_id = c.id
+                LEFT JOIN campaign_costs cc ON cc.campaign_id = c.id
                 WHERE c.org_id = :org_id
                   AND (:brand_filter_disabled OR c.brand_id = ANY(CAST(:brand_ids AS UUID[])))
-                                    AND (:created_by IS NULL OR c.created_by = CAST(:created_by AS UUID))
-                GROUP BY c.id
+                  AND (:created_by_any OR c.created_by = CAST(:created_by AS UUID))
                 ORDER BY c.created_at DESC
                 LIMIT :limit
                 """
@@ -38,7 +48,8 @@ async def get_recent_campaigns(
                 "org_id": org_id,
                 "brand_filter_disabled": len(brand_ids) == 0,
                 "brand_ids": brand_ids,
-                "created_by": created_by,
+                "created_by_any": created_by is None,
+                "created_by": created_by or "00000000-0000-0000-0000-000000000000",
                 "limit": limit,
             },
         )

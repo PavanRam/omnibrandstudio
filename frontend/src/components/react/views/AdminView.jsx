@@ -1,11 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Building2,
   Users,
   Upload,
   RefreshCw,
   LockKeyhole,
-  Database,
   Star,
   Trash2,
   ShieldCheck,
@@ -29,12 +28,13 @@ import {
   activateGoldenSet,
   createUser,
   deleteGoldenExample,
+  deleteGoldenSet,
+  getAllowedLocales,
   listBrandGuides,
   listCustomerSegments,
   listGoldenExamples,
   listGoldenSets,
   listUsers,
-  openGoldenSet,
   promoteGoldenExample,
   uploadBrandGuide,
   uploadCustomerSegments,
@@ -127,9 +127,15 @@ export function AdminView({ onLock }) {
   const { user } = useAuth();
   const [tab, setTab] = useState('overview');
 
+  const scopedBrandIds = useMemo(() => {
+    const values = Array.isArray(user?.brand_ids) ? user.brand_ids : [];
+    return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+  }, [user?.brand_ids]);
+
   const [brandId, setBrandId] = useState(DEFAULT_BRAND_ID);
   const [locale, setLocale] = useState('en-US');
-  const [version, setVersion] = useState('v1');
+  const [version, setVersion] = useState('datasets-v1');
+  const [allowedLocales, setAllowedLocales] = useState([]);
 
   const [file, setFile] = useState(null);
   const [guides, setGuides] = useState([]);
@@ -153,6 +159,24 @@ export function AdminView({ onLock }) {
   const [userCreating, setUserCreating] = useState(false);
 
   const isAdmin = Boolean(user?.roles?.includes('admin'));
+  const hasScopedBrandOptions = scopedBrandIds.length > 0;
+  let brandContextLabel = 'Using the configured default brand for this environment.';
+  if (hasScopedBrandOptions) {
+    if (scopedBrandIds.length > 1) {
+      brandContextLabel = 'Select a brand from your account scope.';
+    } else {
+      brandContextLabel = 'Brand is scoped from your account.';
+    }
+  }
+
+  useEffect(() => {
+    setBrandId((current) => {
+      if (scopedBrandIds.length === 0) {
+        return current.trim() || DEFAULT_BRAND_ID;
+      }
+      return scopedBrandIds.includes(current) ? current : scopedBrandIds[0];
+    });
+  }, [scopedBrandIds]);
 
   const canUpload = useMemo(
     () => Boolean(brandId.trim() && locale.trim() && version.trim() && file),
@@ -217,20 +241,29 @@ export function AdminView({ onLock }) {
     }
   };
 
-  const refreshGuides = async () => {
+  const refreshGuides = useCallback(async ({ quiet = false } = {}) => {
+    if (!brandId.trim()) return;
     setLoadingGuides(true);
     setError('');
-    setStatus('');
+    if (!quiet) setStatus('');
     try {
       const payload = await listBrandGuides(brandId.trim());
-      setGuides(payload.items || []);
-      setStatus(`Loaded ${payload.count || 0} guide record(s).`);
+      const nextGuides = payload.items || [];
+      setGuides(nextGuides);
+      const availableVersions = new Set(
+        nextGuides.map((guide) => String(guide?.version || '').trim()).filter(Boolean),
+      );
+      const preferredVersion = nextGuides[0]?.version?.trim();
+      if (preferredVersion && !availableVersions.has(version.trim())) {
+        setVersion(preferredVersion);
+      }
+      if (!quiet) setStatus(`Loaded ${payload.count || 0} guide record(s).`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load brand guides');
     } finally {
       setLoadingGuides(false);
     }
-  };
+  }, [brandId, version]);
 
   const submitGuide = async (event) => {
     event.preventDefault();
@@ -256,20 +289,21 @@ export function AdminView({ onLock }) {
     }
   };
 
-  const refreshSegments = async () => {
+  const refreshSegments = useCallback(async ({ quiet = false } = {}) => {
+    if (!brandId.trim() || !locale.trim()) return;
     setLoadingSegments(true);
     setError('');
-    setStatus('');
+    if (!quiet) setStatus('');
     try {
       const payload = await listCustomerSegments(brandId.trim(), locale.trim(), version.trim());
       setSegments(payload.items || []);
-      setStatus(`Loaded ${payload.count || 0} segment record(s).`);
+      if (!quiet) setStatus(`Loaded ${payload.count || 0} segment record(s).`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load segments');
     } finally {
       setLoadingSegments(false);
     }
-  };
+  }, [brandId, locale, version]);
 
   const submitSegments = async (event) => {
     event.preventDefault();
@@ -297,13 +331,26 @@ export function AdminView({ onLock }) {
     }
   };
 
-  // Populate KPI counts once when an admin opens the console.
   useEffect(() => {
     if (!isAdmin) return;
     refreshUsers({ showStatus: false });
-    refreshGuides();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin || !brandId.trim()) return;
+    if (tab === 'knowledge') {
+      refreshGuides({ quiet: true });
+      refreshSegments({ quiet: true });
+    }
+  }, [brandId, isAdmin, refreshGuides, refreshSegments, tab, locale, version]);
+
+  // Load allowed locales whenever brandId changes
+  useEffect(() => {
+    if (!brandId.trim()) return;
+    getAllowedLocales(brandId.trim())
+      .then((payload) => setAllowedLocales(payload.allowed_locales || []))
+      .catch(() => setAllowedLocales([]));
+  }, [brandId]);
 
   if (!isAdmin) {
     return (
@@ -369,8 +416,8 @@ export function AdminView({ onLock }) {
       <div className="mt-5">
         {tab === 'overview' && (
           <OverviewPanel
-            orgId={DEFAULT_ORG_ID}
-            brandId={DEFAULT_BRAND_ID}
+            orgId={user?.org_id || DEFAULT_ORG_ID}
+            brandId={brandId || DEFAULT_BRAND_ID}
             users={managedUsers}
             guides={guides}
             segments={segments}
@@ -404,11 +451,14 @@ export function AdminView({ onLock }) {
         {(tab === 'knowledge' || tab === 'golden') && (
           <ContextBar
             brandId={brandId}
+            brandIds={scopedBrandIds}
             setBrandId={setBrandId}
+            brandContextLabel={brandContextLabel}
             locale={locale}
             setLocale={setLocale}
             version={version}
             setVersion={setVersion}
+            allowedLocales={allowedLocales}
           />
         )}
 
@@ -629,23 +679,80 @@ function UsersPanel({ users, loading, error, status, onRefresh, form, canCreate,
 
 /* --------------------------------------------------------------- Context bar */
 
-function ContextBar({ brandId, setBrandId, locale, setLocale, version, setVersion }) {
+const COMMON_LOCALES = [
+  { value: 'en-US', label: 'en-US' },
+  { value: 'en-GB', label: 'en-GB' },
+  { value: 'es-ES', label: 'es-ES' },
+  { value: 'fr-FR', label: 'fr-FR' },
+  { value: 'de-DE', label: 'de-DE' },
+  { value: 'ja-JP', label: 'ja-JP' },
+  { value: 'pt-BR', label: 'pt-BR' },
+  { value: 'it-IT', label: 'it-IT' },
+  { value: 'nl-NL', label: 'nl-NL' },
+  { value: 'ko-KR', label: 'ko-KR' },
+];
+
+function LocaleChipSelect({ value, onChange, allowedLocales = [] }) {
+  const options = allowedLocales.length > 0 ? allowedLocales : COMMON_LOCALES.map((l) => l.value);
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {options.map((loc) => (
+        <button
+          key={loc}
+          type="button"
+          onClick={() => onChange(loc)}
+          className={cn(
+            'rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors',
+            value === loc
+              ? 'border-brand bg-brand text-brand-fg'
+              : 'border-border bg-surface-2 text-muted hover:border-brand hover:text-brand',
+          )}
+        >
+          {loc}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ContextBar({ brandId, brandIds, setBrandId, brandContextLabel, locale, setLocale, version, setVersion, allowedLocales }) {
+  const brandCount = brandIds.length;
+  const showBrandSelect = brandCount > 1;
+
   return (
     <div className="mb-4 rounded-2xl border border-border bg-surface-2/60 p-3">
       <div className="mb-2 flex items-center gap-1.5 px-1 text-xs font-semibold uppercase tracking-wide text-faint">
         <Building2 size={12} aria-hidden="true" /> Working context
       </div>
-      <div className="grid gap-2 sm:grid-cols-[2fr_1fr_1fr]">
-        <input
-          className={cn(inputCls, 'font-mono text-xs')}
-          value={brandId}
-          onChange={(e) => setBrandId(e.target.value)}
-          placeholder="Brand ID"
-          aria-label="Brand ID"
-        />
-        <input className={inputCls} value={locale} onChange={(e) => setLocale(e.target.value)} aria-label="Locale" placeholder="Locale" />
+      <div className="grid gap-2 sm:grid-cols-[2fr_1fr]">
+        {showBrandSelect ? (
+          <select
+            className={cn(inputCls, 'font-mono text-xs')}
+            value={brandId}
+            onChange={(e) => setBrandId(e.target.value)}
+            aria-label="Brand"
+          >
+            {brandIds.map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            className={cn(inputCls, 'font-mono text-xs text-muted')}
+            value={brandId}
+            readOnly
+            aria-label="Brand"
+          />
+        )}
         <input className={inputCls} value={version} onChange={(e) => setVersion(e.target.value)} aria-label="Version" placeholder="Version" />
       </div>
+      <div className="mt-2 px-0.5">
+        <p className="mb-1.5 text-xs font-semibold text-faint">Locale</p>
+        <LocaleChipSelect value={locale} onChange={setLocale} allowedLocales={allowedLocales} />
+      </div>
+      <p className="mt-2 px-1 text-xs text-faint">{brandContextLabel}</p>
     </div>
   );
 }
@@ -774,14 +881,14 @@ function GoldenDatasetPanel({ brandId, locale, version }) {
   const [sets, setSets] = useState([]);
   const [examples, setExamples] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [opening, setOpening] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
 
-  const refresh = async () => {
+  const refresh = useCallback(async ({ quiet = false } = {}) => {
+    if (!brandId.trim()) return;
     setLoading(true);
     setError('');
-    setStatus('');
+    if (!quiet) setStatus('');
     try {
       const [setsPayload, examplesPayload] = await Promise.all([
         listGoldenSets(brandId.trim()),
@@ -789,34 +896,22 @@ function GoldenDatasetPanel({ brandId, locale, version }) {
       ]);
       setSets(setsPayload.items || []);
       setExamples(examplesPayload.items || []);
-      setStatus(
-        `Loaded ${setsPayload.count || 0} dataset set(s) and ${examplesPayload.count || 0} example(s).`,
-      );
+      if (!quiet) {
+        setStatus(
+          `Loaded ${setsPayload.count || 0} dataset set(s) and ${examplesPayload.count || 0} example(s).`,
+        );
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load golden dataset');
     } finally {
       setLoading(false);
     }
-  };
+  }, [brandId]);
 
-  const openSet = async () => {
-    setOpening(true);
-    setError('');
-    setStatus('');
-    try {
-      const result = await openGoldenSet({
-        brandId: brandId.trim(),
-        locale: locale.trim(),
-        guideVersion: version.trim() || null,
-      });
-      setStatus(`Opened draft dataset set ${result.set_id?.slice(0, 8)}….`);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to open dataset set');
-    } finally {
-      setOpening(false);
-    }
-  };
+  useEffect(() => {
+    if (!brandId.trim()) return;
+    refresh({ quiet: true });
+  }, [brandId, refresh]);
 
   const runAction = async (fn, message) => {
     setError('');
@@ -834,6 +929,12 @@ function GoldenDatasetPanel({ brandId, locale, version }) {
     runAction(
       () => activateGoldenSet({ brandId: brandId.trim(), setId }),
       `Activated dataset set ${setId.slice(0, 8)}….`,
+    );
+
+  const deleteSet = (setId) =>
+    runAction(
+      () => deleteGoldenSet({ brandId: brandId.trim(), setId }),
+      `Deleted dataset set ${setId.slice(0, 8)}….`,
     );
 
   const promote = (exampleId) =>
@@ -866,9 +967,6 @@ function GoldenDatasetPanel({ brandId, locale, version }) {
             <RefreshCw size={14} aria-hidden="true" className={loading ? 'animate-spin' : ''} />
             {loading ? 'Loading…' : 'Refresh'}
           </Button>
-          <Button variant="primary" size="sm" onClick={openSet} disabled={opening}>
-            <Database size={14} aria-hidden="true" /> {opening ? 'Opening…' : 'New draft set'}
-          </Button>
         </div>
       </div>
 
@@ -898,9 +996,19 @@ function GoldenDatasetPanel({ brandId, locale, version }) {
                     </div>
                   </div>
                   {set.status !== 'active' ? (
-                    <Button variant="secondary" size="sm" onClick={() => activate(set.id)}>
-                      Activate
-                    </Button>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <Button variant="secondary" size="sm" onClick={() => activate(set.id)}>
+                        Activate
+                      </Button>
+                      <button
+                        type="button"
+                        aria-label="Delete dataset set"
+                        onClick={() => deleteSet(set.id)}
+                        className="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                      >
+                        <Trash2 size={14} aria-hidden="true" />
+                      </button>
+                    </div>
                   ) : (
                     <CheckCircle2 size={16} aria-hidden="true" className="shrink-0 text-success" />
                   )}
@@ -913,9 +1021,36 @@ function GoldenDatasetPanel({ brandId, locale, version }) {
         <div className="rounded-xl border border-border bg-surface-2 p-3.5">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Examples</h3>
           {examples.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-border bg-surface px-3 py-6 text-center text-sm text-muted">
-              No examples yet.
-            </p>
+            <div className="space-y-3">
+              <p className="text-xs text-faint">
+                Golden examples appear here after you promote a high-scoring variant from a completed campaign.
+              </p>
+              {/* Template card — shows what a golden example looks like */}
+              <div className="rounded-lg border border-dashed border-brand/30 bg-brand/5 px-3 py-3 opacity-70">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <Badge tone="brand">golden</Badge>
+                      <span className="truncate text-xs font-medium text-fg">linkedin · en-US</span>
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-xs text-muted">
+                      Get ready to elevate your AI strategy. Our latest report shows enterprise leaders
+                      cutting onboarding time by 40% with intelligent automation — see how your peers
+                      are doing it.
+                    </p>
+                    <p className="mt-1.5 text-[10px] text-faint italic">Composite score: 0.87 · Example template</p>
+                  </div>
+                  <div className="flex shrink-0 gap-1 opacity-40">
+                    <span className="grid h-7 w-7 place-items-center rounded-md text-muted">
+                      <Star size={14} aria-hidden="true" />
+                    </span>
+                    <span className="grid h-7 w-7 place-items-center rounded-md text-muted">
+                      <Trash2 size={14} aria-hidden="true" />
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
           ) : (
             <ul className="space-y-2">
               {examples.map((example) => (

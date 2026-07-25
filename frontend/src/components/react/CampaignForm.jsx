@@ -1,7 +1,8 @@
-import { useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { Sparkles, Loader2, Megaphone } from 'lucide-react';
 import { cn } from '@/lib/cn.js';
 import { MultiSelectField } from './ui/MultiSelectField.jsx';
+import { getAllowedLocales } from '@/lib/api.js';
 
 // Well-known local dev brand seeded by scripts/seed_prompts.py.
 const DEFAULT_BRAND_ID = '00000000-0000-0000-0000-000000000002';
@@ -46,7 +47,7 @@ const CHANNELS = [
   { value: 'whatsapp', label: 'WhatsApp' },
 ];
 
-const LOCALES = [
+const LOCALES_FALLBACK = [
   { value: 'en-US', label: 'English (US)' },
   { value: 'es-ES', label: 'Spanish (ES)' },
   { value: 'fr-FR', label: 'French (FR)' },
@@ -124,6 +125,7 @@ export function CampaignForm({ onSubmit, busy }) {
   };
 
   const [brandId, setBrandId] = useState(DEFAULT_BRAND_ID);
+  const [localeOptions, setLocaleOptions] = useState(LOCALES_FALLBACK);
   // Prefilled so the example acts as real, editable text and the form is
   // submittable on first load (all other required fields have defaults too).
   const [objective, setObjective] = useState('Launch summer promo for hydration packs');
@@ -137,6 +139,20 @@ export function CampaignForm({ onSubmit, busy }) {
 
   const toggle = (setter, list) => (value) =>
     setter(list.includes(value) ? list.filter((v) => v !== value) : [...list, value]);
+
+  // Load allowed locales for the selected brand
+  useEffect(() => {
+    getAllowedLocales(brandId)
+      .then((payload) => {
+        const locs = payload.allowed_locales || [];
+        if (locs.length > 0) {
+          setLocaleOptions(locs.map((v) => ({ value: v, label: v })));
+        } else {
+          setLocaleOptions(LOCALES_FALLBACK);
+        }
+      })
+      .catch(() => setLocaleOptions(LOCALES_FALLBACK));
+  }, [brandId]);
 
   const taskCount = channels.length * locales.length * segments.length;
 
@@ -263,7 +279,7 @@ export function CampaignForm({ onSubmit, busy }) {
           <ChipGroup
             legend="Locales"
             required
-            options={LOCALES}
+            options={localeOptions}
             selected={locales}
             onToggle={toggle(setLocales, locales)}
           />

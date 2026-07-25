@@ -1,10 +1,12 @@
+import { useEffect } from 'react';
 import { AppShell } from './AppShell.jsx';
 import { ConversationView } from './views/ConversationView.jsx';
 import { CampaignsGalleryView } from './views/CampaignsGalleryView.jsx';
 import { AdminView } from './views/AdminView.jsx';
+import { checkAndRefreshToken } from '@/lib/api.js';
 
 const ROUTES = {
-  app: { title: 'Campaign Copilot', View: ConversationView },
+  app: { title: 'Campaign Studio', View: ConversationView },
   gallery: { title: 'Campaign Gallery', View: CampaignsGalleryView },
   admin: { title: 'Admin Panel', View: AdminView },
 };
@@ -16,6 +18,16 @@ const ROUTES = {
 export default function App({ route = 'app' }) {
   const entry = ROUTES[route] ?? ROUTES.app;
   const { View, title } = entry;
+
+  // Proactively refresh the access token on app load if it is close to expiry.
+  // Also sets up a 4-minute background interval so the token never silently
+  // expires while the page is open.
+  useEffect(() => {
+    checkAndRefreshToken().catch(() => {});
+    const id = setInterval(() => checkAndRefreshToken().catch(() => {}), 4 * 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
+
   return (
     <AppShell currentRoute={route} title={title}>
       <View />

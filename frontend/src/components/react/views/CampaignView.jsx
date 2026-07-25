@@ -33,7 +33,7 @@ const STATUS_COPY = {
 };
 
 export function CampaignView() {
-  const { phase, campaignId, status, campaign, error, elapsedMs, submit, reset } =
+  const { phase, campaignId, status, campaign, campaignStatus, error, elapsedMs, submit, reset } =
     useCampaign();
 
   // Remember the submitted payload so we can size the loading skeletons.
@@ -53,9 +53,9 @@ export function CampaignView() {
   const busy = phase === 'submitting' || phase === 'polling';
 
   const costLabel = useMemo(() => {
-    const cost = campaign?.token_cost_usd;
+    const cost = campaign?.token_cost_usd ?? campaignStatus?.token_cost_usd;
     return typeof cost === 'number' ? `$${cost.toFixed(4)}` : null;
-  }, [campaign]);
+  }, [campaign, campaignStatus]);
 
   return (
     <Page
@@ -77,6 +77,16 @@ export function CampaignView() {
 
         {/* Results column */}
         <div className="min-w-0">
+          {campaignId ? (
+            <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface-2 px-3 py-2 text-xs text-muted">
+              <span className="font-medium text-fg">Campaign total cost</span>
+              <Badge tone="neutral" className="font-mono">
+                {costLabel || 'calculating...'}
+              </Badge>
+              <span>Campaign {campaignId.slice(0, 12)}...</span>
+            </div>
+          ) : null}
+
           {phase === 'idle' && (
             <div className="grid min-h-[320px] place-items-center rounded-3xl border border-dashed border-border bg-surface-2/40 p-8 text-center">
               <div className="max-w-sm">

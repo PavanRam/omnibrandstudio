@@ -1,7 +1,9 @@
 const metaEnv = import.meta.env ?? {};
 const API_BASE = metaEnv.PUBLIC_API_BASE_URL || 'http://localhost:8000';
+export const API_BASE_URL = API_BASE;
 const ACCESS_TOKEN_KEY = 'omnibrand_access_token';
 const REFRESH_TOKEN_KEY = 'omnibrand_refresh_token';
+export const TERMINAL_STATUSES = new Set(['published', 'failed', 'cancelled', 'awaiting_review']);
 
 function resolveApiKey() {
   const configured = (metaEnv.PUBLIC_API_KEY || '').trim();
@@ -92,6 +94,9 @@ async function refreshAccessToken() {
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
         setStoredTokens({ accessToken: '', refreshToken: '' });
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new Event('obs:auth-expired'));
+        }
         return false;
       }
 
@@ -125,6 +130,78 @@ async function fetchWithAutoRefresh(url, options = {}, allowRetry = true) {
     ...authHeaders(),
   };
   return fetch(url, { ...options, headers: retryHeaders });
+}
+
+/**
+ * Proactively refresh the access token if it is within 5 minutes of expiry.
+ * Call this on app load and optionally on a periodic timer.
+ * Returns true if the token was refreshed or was still valid; false if the
+ * refresh token is absent or the refresh request failed.
+ */
+export async function checkAndRefreshToken() {
+  const accessToken = getStoredAccessToken();
+  if (!accessToken) return Boolean(getStoredRefreshToken());
+
+  // Decode expiry from the JWT payload (no signature verification needed here —
+  // the server verifies on every API call; we only need the exp claim).
+  const claims = decodeJwtClaims(accessToken);
+  if (!claims || typeof claims.exp !== 'number') {
+    // Can't decode: attempt a refresh to be safe.
+    return refreshAccessToken();
+  }
+
+  const expiresInMs = claims.exp * 1000 - Date.now();
+  const fiveMinutesMs = 5 * 60 * 1000;
+  if (expiresInMs > fiveMinutesMs) {
+    return true; // Still valid, no refresh needed.
+  }
+
+  return refreshAccessToken();
+}
+
+export function formatApiError(error) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === 'string' && error.trim()) {
+    return error;
+  }
+  return 'Unexpected API error';
+}
+
+export async function createCampaign(payload) {
+  const response = await fetchWithAutoRefresh(`${API_BASE}/campaigns`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(parseErrorMessage(body, `campaign create failed: ${response.status}`));
+  }
+  return body;
+}
+
+export async function getCampaignStatus(campaignId) {
+  const response = await fetchWithAutoRefresh(`${API_BASE}/campaigns/${campaignId}/status`, {
+    headers: authHeaders(),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(parseErrorMessage(body, `campaign status failed: ${response.status}`));
+  }
+  return body;
+}
+
+export async function getCampaign(campaignId) {
+  const response = await fetchWithAutoRefresh(`${API_BASE}/campaigns/${campaignId}`, {
+    headers: authHeaders(),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(parseErrorMessage(body, `campaign detail failed: ${response.status}`));
+  }
+  return body;
 }
 
 export async function loginWithPassword(email, password) {
@@ -180,41 +257,53 @@ export function clearStoredAuth() {
   setStoredTokens({ accessToken: '', refreshToken: '' });
 }
 
+/**
+ * Returns true if any auth credential (access token or refresh token) is
+ * stored locally. Use this to detect stale sessionStorage users that no
+ * longer have backing tokens.
+ */
+export function hasStoredAuth() {
+  return !!(getStoredAccessToken() || getStoredRefreshToken());
+}
+
 export function getCurrentAuthClaims() {
   const token = getStoredAccessToken();
   return token ? decodeJwtClaims(token) : null;
 }
 
 export async function createConversation(brandId) {
-  const response = await fetch(`${API_BASE}/conversations`, {
+  const response = await fetchWithAutoRefresh(`${API_BASE}/conversations`, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ brand_id: brandId }),
   });
+  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(`create conversation failed: ${response.status}`);
+    throw new Error(parseErrorMessage(body, `create conversation failed: ${response.status}`));
   }
-  return response.json();
+  return body;
 }
 
 export async function fetchRecentCampaigns() {
-  const response = await fetch(`${API_BASE}/me/recent-campaigns`, {
+  const response = await fetchWithAutoRefresh(`${API_BASE}/me/recent-campaigns`, {
     headers: authHeaders(),
   });
+  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(`recent campaigns failed: ${response.status}`);
+    throw new Error(parseErrorMessage(body, `recent campaigns failed: ${response.status}`));
   }
-  return response.json();
+  return body;
 }
 
 export async function fetchRecentConversations() {
-  const response = await fetch(`${API_BASE}/me/recent-conversations`, {
+  const response = await fetchWithAutoRefresh(`${API_BASE}/me/recent-conversations`, {
     headers: authHeaders(),
   });
+  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(`recent conversations failed: ${response.status}`);
+    throw new Error(parseErrorMessage(body, `recent conversations failed: ${response.status}`));
   }
-  return response.json();
+  return body;
 }
 
 export function openConversationSocket(conversationId) {
@@ -242,25 +331,27 @@ export async function fetchCampaignReplay(campaignId, limit = 60, beforeEventId 
     params.set('before_event_id', beforeEventId);
   }
 
-  const response = await fetch(`${API_BASE}/campaigns/${campaignId}/events/replay?${params.toString()}`, {
+  const response = await fetchWithAutoRefresh(`${API_BASE}/campaigns/${campaignId}/events/replay?${params.toString()}`, {
     headers: authHeaders(),
   });
+  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(`campaign replay failed: ${response.status}`);
+    throw new Error(parseErrorMessage(body, `campaign replay failed: ${response.status}`));
   }
-  return response.json();
+  return body;
 }
 
 export async function rerunCampaign(campaignId, fromNode, reason = null) {
-  const response = await fetch(`${API_BASE}/campaigns/${campaignId}/rerun`, {
+  const response = await fetchWithAutoRefresh(`${API_BASE}/campaigns/${campaignId}/rerun`, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ resume_from_node: fromNode, user_edit: reason }),
   });
+  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(`campaign rerun failed: ${response.status}`);
+    throw new Error(parseErrorMessage(body, `campaign rerun failed: ${response.status}`));
   }
-  return response.json();
+  return body;
 }
 
 export function getApiKey() {
@@ -274,25 +365,27 @@ export async function uploadBrandGuide({ brandId, locale, version, file }) {
   form.append('version', version);
   form.append('guide_file', file);
 
-  const response = await fetch(`${API_BASE}/knowledge/brand-guides`, {
+  const response = await fetchWithAutoRefresh(`${API_BASE}/knowledge/brand-guides`, {
     method: 'POST',
     headers: authHeaders(),
     body: form,
   });
+  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(`brand guide upload failed: ${response.status}`);
+    throw new Error(parseErrorMessage(body, `brand guide upload failed: ${response.status}`));
   }
-  return response.json();
+  return body;
 }
 
 export async function listBrandGuides(brandId) {
-  const response = await fetch(`${API_BASE}/knowledge/brand-guides/${brandId}`, {
+  const response = await fetchWithAutoRefresh(`${API_BASE}/knowledge/brand-guides/${brandId}`, {
     headers: authHeaders(),
   });
+  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(`brand guide list failed: ${response.status}`);
+    throw new Error(parseErrorMessage(body, `brand guide list failed: ${response.status}`));
   }
-  return response.json();
+  return body;
 }
 
 export async function uploadCustomerSegments({ brandId, locale, version, file }) {
@@ -302,54 +395,84 @@ export async function uploadCustomerSegments({ brandId, locale, version, file })
   form.append('version', version);
   form.append('segment_file', file);
 
-  const response = await fetch(`${API_BASE}/knowledge/segments`, {
+  const response = await fetchWithAutoRefresh(`${API_BASE}/knowledge/segments`, {
     method: 'POST',
     headers: authHeaders(),
     body: form,
   });
+  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(`segment upload failed: ${response.status}`);
+    throw new Error(parseErrorMessage(body, `segment upload failed: ${response.status}`));
   }
-  return response.json();
+  return body;
 }
 
 export async function listCustomerSegments(brandId, locale, version = '') {
   const params = new URLSearchParams({ locale });
   if (version) params.set('version', version);
 
-  const response = await fetch(`${API_BASE}/knowledge/segments/${brandId}?${params.toString()}`, {
+  const response = await fetchWithAutoRefresh(`${API_BASE}/knowledge/segments/${brandId}?${params.toString()}`, {
     headers: authHeaders(),
   });
+  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(`segment list failed: ${response.status}`);
+    throw new Error(parseErrorMessage(body, `segment list failed: ${response.status}`));
   }
-  return response.json();
+  return body;
+}
+
+export async function getAllowedLocales(brandId) {
+  const response = await fetchWithAutoRefresh(
+    `${API_BASE}/knowledge/brands/${brandId}/allowed-locales`,
+    { headers: authHeaders() },
+  );
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { allowed_locales: [] };
+  return body;
+}
+
+export async function setAllowedLocales(brandId, locales) {
+  const response = await fetchWithAutoRefresh(
+    `${API_BASE}/knowledge/brands/${brandId}/allowed-locales`,
+    {
+      method: 'PATCH',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ allowed_locales: locales }),
+    },
+  );
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(parseErrorMessage(body, `set allowed locales failed: ${response.status}`));
+  }
+  return body;
 }
 
 export async function listGoldenSets(brandId) {
-  const response = await fetch(`${API_BASE}/knowledge/golden-dataset/sets/${brandId}`, {
+  const response = await fetchWithAutoRefresh(`${API_BASE}/knowledge/golden-dataset/sets/${brandId}`, {
     headers: authHeaders(),
   });
+  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(`golden set list failed: ${response.status}`);
+    throw new Error(parseErrorMessage(body, `golden set list failed: ${response.status}`));
   }
-  return response.json();
+  return body;
 }
 
 export async function openGoldenSet({ brandId, locale = 'en-US', guideVersion = null }) {
-  const response = await fetch(`${API_BASE}/knowledge/golden-dataset/sets`, {
+  const response = await fetchWithAutoRefresh(`${API_BASE}/knowledge/golden-dataset/sets`, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ brand_id: brandId, locale, guide_version: guideVersion }),
   });
+  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(`golden set create failed: ${response.status}`);
+    throw new Error(parseErrorMessage(body, `golden set create failed: ${response.status}`));
   }
-  return response.json();
+  return body;
 }
 
 export async function activateGoldenSet({ brandId, setId }) {
-  const response = await fetch(
+  const response = await fetchWithAutoRefresh(
     `${API_BASE}/knowledge/golden-dataset/sets/${setId}/activate`,
     {
       method: 'POST',
@@ -357,10 +480,27 @@ export async function activateGoldenSet({ brandId, setId }) {
       body: JSON.stringify({ brand_id: brandId }),
     },
   );
+  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(`golden set activate failed: ${response.status}`);
+    throw new Error(parseErrorMessage(body, `golden set activate failed: ${response.status}`));
   }
-  return response.json();
+  return body;
+}
+
+export async function deleteGoldenSet({ brandId, setId }) {
+  const params = new URLSearchParams({ brand_id: brandId });
+  const response = await fetchWithAutoRefresh(
+    `${API_BASE}/knowledge/golden-dataset/sets/${setId}?${params.toString()}`,
+    {
+      method: 'DELETE',
+      headers: authHeaders(),
+    },
+  );
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(parseErrorMessage(body, `golden set delete failed: ${response.status}`));
+  }
+  return body;
 }
 
 export async function listGoldenExamples(brandId, { status = '', setId = '' } = {}) {
@@ -369,18 +509,19 @@ export async function listGoldenExamples(brandId, { status = '', setId = '' } = 
   if (setId) params.set('set_id', setId);
   const qs = params.toString();
   const suffix = qs ? `?${qs}` : '';
-  const response = await fetch(
+  const response = await fetchWithAutoRefresh(
     `${API_BASE}/knowledge/golden-dataset/${brandId}${suffix}`,
     { headers: authHeaders() },
   );
+  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(`golden example list failed: ${response.status}`);
+    throw new Error(parseErrorMessage(body, `golden example list failed: ${response.status}`));
   }
-  return response.json();
+  return body;
 }
 
 export async function promoteGoldenExample({ brandId, exampleId }) {
-  const response = await fetch(
+  const response = await fetchWithAutoRefresh(
     `${API_BASE}/knowledge/golden-dataset/${exampleId}/promote`,
     {
       method: 'POST',
@@ -388,27 +529,29 @@ export async function promoteGoldenExample({ brandId, exampleId }) {
       body: JSON.stringify({ brand_id: brandId }),
     },
   );
+  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(`golden example promote failed: ${response.status}`);
+    throw new Error(parseErrorMessage(body, `golden example promote failed: ${response.status}`));
   }
-  return response.json();
+  return body;
 }
 
 export async function deleteGoldenExample({ brandId, exampleId }) {
   const params = new URLSearchParams({ brand_id: brandId });
-  const response = await fetch(
+  const response = await fetchWithAutoRefresh(
     `${API_BASE}/knowledge/golden-dataset/${exampleId}?${params.toString()}`,
     { method: 'DELETE', headers: authHeaders() },
   );
+  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(`golden example delete failed: ${response.status}`);
+    throw new Error(parseErrorMessage(body, `golden example delete failed: ${response.status}`));
   }
-  return response.json();
+  return body;
 }
 
 export async function fetchPendingReviews({ status = 'pending', limit = 20, offset = 0 } = {}) {
   const params = new URLSearchParams({ status, limit: String(limit), offset: String(offset) });
-  const response = await fetch(`${API_BASE}/reviews?${params.toString()}`, {
+  const response = await fetchWithAutoRefresh(`${API_BASE}/reviews?${params.toString()}`, {
     headers: authHeaders(),
   });
   const body = await response.json().catch(() => ({}));
@@ -419,7 +562,7 @@ export async function fetchPendingReviews({ status = 'pending', limit = 20, offs
 }
 
 export async function decideReview(reviewRequestId, decision, { reviewerNote = null, editedContent = null } = {}) {
-  const response = await fetch(`${API_BASE}/reviews/${reviewRequestId}/decide`, {
+  const response = await fetchWithAutoRefresh(`${API_BASE}/reviews/${reviewRequestId}/decide`, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({

@@ -12,6 +12,9 @@ export function useSSE(createStream, enabled) {
 
     const stream = createStream();
     stream.onopen = () => setConnected(true);
+    // Do NOT close the stream on error. A native EventSource auto-reconnects
+    // after a transient error as long as it is left open — closing it here would
+    // permanently drop the campaign event stream mid-run (pipelines take minutes).
     stream.onerror = () => setConnected(false);
     stream.onmessage = (event) => {
       try {

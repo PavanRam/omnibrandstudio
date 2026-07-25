@@ -12,7 +12,6 @@ from datetime import UTC, datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-import aiosmtplib
 import structlog
 
 from core.config import settings
@@ -29,6 +28,9 @@ async def publishing_agent(state: OmniBrandState) -> dict:
     """Last pipeline node.  Sends one HTML email per eligible variant."""
 
     async def _impl(state: OmniBrandState) -> dict:
+        # Lazy import to avoid ModuleNotFoundError at API startup
+        import aiosmtplib
+
         campaign_id = state.get("campaign_id", "")
         brief = state.get("brief")
 

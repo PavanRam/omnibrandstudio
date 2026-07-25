@@ -25,6 +25,8 @@ def resolve_model_aliases(tier: str | None = None) -> dict[str, str]:
             "judge-3": "judge-3",
             "util-fast": "util-fast",
             "eval": "eval-model",
+            "understanding": "understanding",
+            "responder": "responder-chat",
         }
     return {
         "generation": "gen-free",
@@ -33,6 +35,8 @@ def resolve_model_aliases(tier: str | None = None) -> dict[str, str]:
         "judge-3": "judge-3-free",
         "util-fast": "util-fast",
         "eval": "eval-model",
+        "understanding": "understanding",
+        "responder": "responder-chat",
     }
 
 
@@ -84,6 +88,7 @@ def build_initial_state(
         publication_receipts=[],
         failed_task_ids=[],
         errors=[],
+        guardrail_flags=[],
         current_phase="starting",
         human_review_requested=False,
         publishing_paused=False,

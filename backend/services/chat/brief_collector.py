@@ -1,91 +1,14 @@
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
-from pipeline.agents.base import traced_llm_call
-from pipeline.conversation_models import ExtractionMeta, PartialBrief
+from pipeline.conversation_models import PartialBrief
 
-_EXTRACTION_PROMPT = (
-    "Extract structured campaign brief updates from the user message. "
-    "Return strict JSON with keys: objective, target_audience, key_messages, tone_override, "
-    "channels, locales, audience_segments, token_budget, raw_text, field_confidence. "
-    "field_confidence must be an object with numeric 0..1 confidence for extracted fields. "
-    "Use null for unknown scalars and [] for unknown arrays."
-)
 _STRIP_CHARS = " \t\r\n\"'"
 
 
 class BriefCollector:
-    async def update_partial_brief_with_meta(
-        self,
-        *,
-        current: PartialBrief,
-        user_message: str,
-        state: dict[str, Any],
-    ) -> tuple[PartialBrief, ExtractionMeta]:
-        if self._is_non_brief_turn(user_message):
-            merged = self._merge(current, {}, user_message)
-            return merged, ExtractionMeta(field_confidence={}, source="non_brief")
-
-        fallback_patch = self._fallback_patch_from_text(user_message)
-        fallback_confidence = self._fallback_confidence(fallback_patch)
-
-        content, _ = await traced_llm_call(
-            model=state.get("model_aliases", {}).get("brief_collector", "brief-collector"),
-            messages=[
-                {"role": "system", "content": _EXTRACTION_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            task="brief_collector",
-            state=state,
-            temperature=0,
-        )
-
-        patch, meta = self._parse_patch_with_meta(content)
-        if not patch:
-            patch = fallback_patch
-            meta = ExtractionMeta(field_confidence=fallback_confidence, source="fallback")
-        elif fallback_patch:
-            patch = self._merge_missing_patch_fields(patch, fallback_patch)
-            for key, value in fallback_confidence.items():
-                meta.field_confidence.setdefault(key, value)
-
-        merged = self._merge(current, patch, user_message)
-        return merged, meta
-
-    async def update_partial_brief(
-        self,
-        *,
-        current: PartialBrief,
-        user_message: str,
-        state: dict[str, Any],
-    ) -> PartialBrief:
-        merged, _ = await self.update_partial_brief_with_meta(
-            current=current,
-            user_message=user_message,
-            state=state,
-        )
-        return merged
-
-    def _parse_patch_with_meta(self, content: str) -> tuple[dict[str, Any], ExtractionMeta]:
-        parsed = self._parse_patch(content)
-        if not parsed:
-            return {}, ExtractionMeta(field_confidence={}, source="llm")
-
-        raw_conf = parsed.pop("field_confidence", {})
-        confidence: dict[str, float] = {}
-        if isinstance(raw_conf, dict):
-            for key, value in raw_conf.items():
-                try:
-                    numeric = float(value)
-                except (TypeError, ValueError):
-                    continue
-                confidence[str(key)] = max(0.0, min(1.0, numeric))
-
-        return parsed, ExtractionMeta(field_confidence=confidence, source="llm")
-
     def next_question(self, brief: PartialBrief) -> str:
         missing = brief.missing_slots()
         if not missing:
@@ -100,15 +23,6 @@ class BriefCollector:
         }
         slot = missing[0]
         return question_by_slot.get(slot, "Please provide the missing campaign details.")
-
-    def _parse_patch(self, content: str) -> dict[str, Any]:
-        try:
-            parsed = json.loads(content)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            pass
-        return {}
 
     def _is_non_brief_turn(self, text: str) -> bool:
         normalized = " ".join(text.lower().strip().split())

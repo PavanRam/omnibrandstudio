@@ -113,12 +113,17 @@ async def _maybe_reflex_variant(
         return
 
     reasons = _collect_reasons(brand_scores, variant["task_id"], round_)
+    # Re-inject brand guide excerpts for grounding during reflexion revision.
+    rag_context = state.get("rag_context") or {}
+    brand_guide_chunks = rag_context.get("brand_guide_chunks") or []
+    brand_guide_text = "\n---\n".join(brand_guide_chunks[:5]) or "(none available)"
     messages = build_reflexion_messages(
         content=_variant_content(variant),
         reasons=reasons,
         critical=aggregate.get("critical_violations", []),
         channel=variant.get("channel", "unknown"),
         locale=variant.get("locale", "en"),
+        brand_guide=brand_guide_text,
     )
     new_content, _usage = await traced_llm_call(
         model=model,

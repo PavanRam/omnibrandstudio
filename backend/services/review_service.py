@@ -22,12 +22,13 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pipeline.graph import build_graph
 from sqlalchemy import text
 
-from services import airtable_service
+from services import airtable_service, rejection_service
 from services.audit_service import write_audit
 
 log = structlog.get_logger()
 
 _DECISION_TO_STATUS = {"approved": "approved", "rejected": "rejected", "edited": "edited"}
+_DECISION_TO_AIRTABLE = {"approved": "Approved", "rejected": "Rejected", "edited": "Edited"}
 
 
 def _to_psycopg_dsn(raw_dsn: str) -> str:
@@ -82,11 +83,26 @@ async def persist_review_batch(state: dict) -> int:
     reviews = state.get("review_requests", [])
     sla_deadline = datetime.now(UTC) + timedelta(hours=settings.REVIEW_SLA_HOURS)
     reviewer = ((state.get("org_config") or {}).get("review") or {}).get("default_assignee")
+    generated_at = datetime.now(UTC)
 
     task_to_variant_id: dict[str, str] = {}
+    task_to_variant: dict[str, dict] = {v["task_id"]: v for v in variants}
     mirror_payloads: list[dict] = []
 
     async with get_db() as conn:
+        requester_email = (
+            await conn.execute(
+                text(
+                    """
+                    SELECT u.email FROM campaigns c
+                    LEFT JOIN users u ON u.id = c.created_by
+                    WHERE c.id = CAST(:cid AS UUID)
+                    """
+                ),
+                {"cid": campaign_id},
+            )
+        ).scalar_one_or_none()
+
         for variant in variants:
             variant_id = new_uuid7()
             task_to_variant_id[variant["task_id"]] = variant_id
@@ -187,24 +203,42 @@ async def persist_review_batch(state: dict) -> int:
                     "reviewed_by": reviewer,
                 },
             )
+            variant = task_to_variant.get(review["variant_id"]) or {}
             mirror_payloads.append(
                 {
                     "review_request_id": review_row_id,
                     "campaign_id": campaign_id,
                     "variant_id": variant_id,
-                    "status": "pending",
                     "routing_reason": review.get("routing_reason"),
+                    "Generated Content": variant.get("generated_content"),
+                    "Personalized Content": variant.get("personalized_content"),
+                    "Translated Content": variant.get("translated_content"),
+                    "Generated At": generated_at.isoformat(),
+                    "Requester Email": requester_email,
+                    "Decision": "Pending",
+                    "Sync Status": "Not Synced",
                 }
             )
 
         await conn.execute(
-            text("UPDATE campaigns SET status = 'awaiting_review' WHERE id = CAST(:cid AS UUID)"),
+            text(
+                """
+                UPDATE campaigns
+                SET status = 'awaiting_review',
+                    token_cost_usd = COALESCE((
+                        SELECT SUM(total_cost_usd)
+                        FROM campaign_cost_attribution
+                        WHERE campaign_id = campaigns.id
+                    ), 0)
+                WHERE id = CAST(:cid AS UUID)
+                """
+            ),
             {"cid": campaign_id},
         )
         await conn.commit()
 
     for payload in mirror_payloads:
-        await airtable_service.upsert_review(payload)
+        await airtable_service.sync_review(payload)
 
     log.info(
         "review_batch_persisted",
@@ -213,6 +247,20 @@ async def persist_review_batch(state: dict) -> int:
         reviews=len(mirror_payloads),
     )
     return len(mirror_payloads)
+
+
+async def resolve_reviewer_email(email: str) -> str | None:
+    """Look up a user id by email. Used only by the Airtable webhook route
+    (``api/routers/reviews.py::airtable_decide``) to attribute a decision made in
+    Airtable to the individual reviewer who set it there — never called with a
+    caller-supplied value on behalf of the human ``/decide`` route, since that
+    would let any authenticated caller re-attribute a decision to someone else's
+    identity in the audit log."""
+    async with get_db() as conn:
+        resolved = (
+            await conn.execute(text("SELECT id FROM users WHERE email = :email"), {"email": email})
+        ).scalar_one_or_none()
+    return str(resolved) if resolved is not None else None
 
 
 async def apply_decision(
@@ -226,6 +274,12 @@ async def apply_decision(
 ) -> dict[str, Any]:
     """Apply a reviewer decision to Postgres (review row + variant), audit it, and
     report whether the campaign's reviews are now all decided.
+
+    ``actor_id`` is always the audit/``reviewed_by`` actor — callers that need to
+    attribute the decision to someone other than their own authenticated identity
+    (e.g. the Airtable webhook route, on behalf of a reviewer who acted in the
+    grid) must resolve that identity themselves via :func:`resolve_reviewer_email`
+    *before* calling this function, and only when authorized to do so.
 
     Raises ``LookupError`` (404), ``PermissionError`` (403), or ``ValueError`` (409)
     for the router to translate into HTTP status codes.
@@ -255,6 +309,21 @@ async def apply_decision(
             raise PermissionError("review request outside brand scope")
         if str(row["status"]) != "pending":
             raise ValueError(f"review already decided (status={row['status']})")
+
+        # Requester email (recipient) + objective for a possible rejection notice.
+        campaign_meta = (
+            await conn.execute(
+                text(
+                    """
+                    SELECT u.email AS requester_email, c.brief->>'objective' AS objective
+                    FROM campaigns c
+                    LEFT JOIN users u ON u.id = c.created_by
+                    WHERE c.id = CAST(:cid AS UUID)
+                    """
+                ),
+                {"cid": str(row["campaign_id"])},
+            )
+        ).mappings().first()
 
         await conn.execute(
             text(
@@ -317,7 +386,36 @@ async def apply_decision(
         ).scalar_one()
         await conn.commit()
 
-    await airtable_service.patch_decision(review_request_id, decision, final_status)
+    await airtable_service.sync_review(
+        {
+            "review_request_id": review_request_id,
+            "Decision": _DECISION_TO_AIRTABLE[decision],
+            "Reviewer Note": reviewer_note,
+            "Sync Status": "Synced",
+        }
+    )
+
+    # On rejection, notify the campaign requester by email with the reviewer's
+    # reason. Best-effort (never blocks the decision). Recipient falls back to a
+    # configured address when the campaign has no resolvable requester email
+    # (e.g. API-key-created campaigns with no linked user).
+    if decision == "rejected":
+        requester_email = campaign_meta["requester_email"] if campaign_meta else None
+        objective = (campaign_meta["objective"] if campaign_meta else "") or ""
+        recipient = (
+            requester_email
+            or next(
+                (e.strip() for e in (settings.PUBLISH_RECIPIENT_EMAILS or "").split(",") if e.strip()),
+                "",
+            )
+            or settings.DEV_ADMIN_EMAIL
+        )
+        await rejection_service.send_rejection_email(
+            recipient,
+            reviewer_note or "",
+            campaign_id=str(row["campaign_id"]),
+            objective=objective,
+        )
 
     return {
         "campaign_id": str(row["campaign_id"]),
@@ -382,7 +480,12 @@ async def resume_campaign(campaign_id: str) -> str:
                 """
                 UPDATE campaigns
                 SET status = :status,
-                    completed_at = CASE WHEN :done THEN NOW() ELSE completed_at END
+                    completed_at = CASE WHEN :done THEN NOW() ELSE completed_at END,
+                    token_cost_usd = COALESCE((
+                        SELECT SUM(total_cost_usd)
+                        FROM campaign_cost_attribution
+                        WHERE campaign_id = campaigns.id
+                    ), 0)
                 WHERE id = CAST(:cid AS UUID)
                 """
             ),

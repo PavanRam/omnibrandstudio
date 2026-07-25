@@ -1,4 +1,4 @@
-.PHONY: install install-dev run worker dev run-local-eval test-local-eval check-local-eval test test-unit test-integration smoke lint format migrate migrate-docker migrate-down migrate-history seed seed-admin check-env up down down-reset logs certs setup
+.PHONY: install install-dev run worker dev frontend dev-full run-local-eval test-local-eval check-local-eval test test-unit test-integration smoke lint format migrate migrate-docker migrate-down migrate-history seed seed-admin check-env up down down-reset fresh-start restart logs certs setup poll-reviews urls
 
 # ── Dependencies ─────────────────────────────────────────────────────────────
 install:
@@ -15,6 +15,12 @@ worker:
 	cd backend && uv run python -m worker.main
 
 dev:
+	honcho start -f Procfile.backend
+
+frontend:
+	cd frontend && npm run dev
+
+dev-full:
 	honcho start
 
 run-local-eval:
@@ -41,6 +47,11 @@ test-integration:
 
 smoke:
 	uv run python scripts/smoke_test.py
+
+# Free-plan-friendly alternative to an Airtable webhook Automation: polls the
+# Reviews table for reviewer decisions and applies them via /airtable-decide.
+poll-reviews:
+	uv run python scripts/airtable_poll_reviews.py
 
 # ── Code quality ──────────────────────────────────────────────────────────────
 lint:
@@ -117,8 +128,33 @@ down:
 down-reset:
 	docker compose down -v
 
+fresh-start: install certs up
+
+restart: down up
+
 logs:
 	docker compose logs -f api worker
+
+# ── Observability access ──────────────────────────────────────────────────────
+# Print the URLs + login credentials for every local observability tool. Reads
+# secrets from .env so the printed values match what the containers actually use.
+urls:
+	@echo ""
+	@echo "OmniBrand Studio — local service access"
+	@echo "======================================================================"
+	@if [ -f .env ]; then . ./.env; fi; \
+	printf "%-14s %-30s %-22s %s\n" "TOOL" "URL" "USER" "PASSWORD"; \
+	printf "%-14s %-30s %-22s %s\n" "----" "---" "----" "--------"; \
+	printf "%-14s %-30s %-22s %s\n" "App API"     "http://localhost:8000/docs" "$${DEV_ADMIN_EMAIL:-admin@omnibrand.local}" "$${DEV_ADMIN_PASSWORD:-OmniBrand!123}"; \
+	printf "%-14s %-30s %-22s %s\n" "Grafana"     "http://localhost:3000"      "admin" "$${GRAFANA_ADMIN_PASSWORD:-admin}"; \
+	printf "%-14s %-30s %-22s %s\n" "Prometheus"  "http://localhost:9090"      "-" "(no auth)"; \
+	printf "%-14s %-30s %-22s %s\n" "Jaeger"      "http://localhost:16686"     "-" "(no auth)"; \
+	printf "%-14s %-30s %-22s %s\n" "Langfuse"    "http://localhost:3001"      "$${LANGFUSE_INIT_USER_EMAIL:-admin@omnibrand.local}" "$${LANGFUSE_INIT_USER_PASSWORD:-OmniBrand!123}"; \
+	printf "%-14s %-30s %-22s %s\n" "MinIO"       "http://localhost:9001"      "omnibrand" "$${MINIO_PASSWORD}"; \
+	printf "%-14s %-30s %-22s %s\n" "Mailhog"     "http://localhost:8025"      "-" "(no auth)"; \
+	echo ""; \
+	echo "See docs/observability/ for dashboards, metric catalog, and query recipes."
+	@echo ""
 
 # ── TLS / JWT keys ────────────────────────────────────────────────────────────
 certs:
@@ -132,4 +168,4 @@ certs:
 setup: install certs up
 	@echo ""
 	@echo "Foundation ready. Run 'make smoke' to verify."
-	@echo "Run 'make run' (API) + 'make worker' (worker) or 'make dev' (both)."
+	@echo "Backend only: make dev | Frontend only: make frontend | Both: make dev-full"

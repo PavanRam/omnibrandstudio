@@ -136,6 +136,10 @@ class SessionManager:
                         FROM conversations
                         WHERE org_id = :org_id
                           AND created_by = CAST(:created_by AS UUID)
+                          AND EXISTS (
+                              SELECT 1 FROM conversation_messages
+                              WHERE conversation_id = conversations.id
+                          )
                         ORDER BY updated_at DESC
                         LIMIT :limit
                         """
@@ -155,6 +159,10 @@ class SessionManager:
                             updated_at
                         FROM conversations
                         WHERE org_id = :org_id
+                          AND EXISTS (
+                              SELECT 1 FROM conversation_messages
+                              WHERE conversation_id = conversations.id
+                          )
                         ORDER BY updated_at DESC
                         LIMIT :limit
                         """

@@ -4,6 +4,14 @@
 
 > **Full setup guide → [`docs/setup.md`](docs/setup.md)**
 
+## What This Repository Contains
+
+- A FastAPI API for campaign intake, review, publishing, auth, and admin flows
+- A LangGraph worker pipeline for agent orchestration and scoring
+- A PostgreSQL and Redis-backed runtime for state, queues, and attribution
+- A local observability stack with Grafana, Prometheus, Jaeger, and Langfuse
+- A separate Astro frontend for the studio UI
+
 ---
 
 ## Architecture Overview
@@ -80,37 +88,48 @@ intake_agent
 
 ## Quick Start
 
+### First-time setup
+
 ```bash
-# 1. Install Python deps
-make install
-
-# 2. Generate JWT RSA keypair
-make certs
-
-# 3. Create and fill in .env  (see docs/setup.md for all variables)
+# Create and fill in .env (see docs/setup.md for all variables)
 cp .env.example .env
 
-# 4. Start all infrastructure, run migrations, seed data
-make up
-
-# 5. Start API + worker
-make run      # terminal 1
-make worker   # terminal 2
-
-# 6. Start frontend
-cd frontend && npm install && npm run dev   # terminal 3 → http://localhost:4321
-
-# 7. Verify everything works
+# Install dependencies, generate JWT keys, and start the Docker stack
+make fresh-start
 make smoke
+make urls
 ```
 
-Or as a single command (steps 1–4):
+### Restart an existing local instance
 
 ```bash
-make setup
+make restart
+make urls
+```
+
+### Local development modes
+
+```bash
+make dev         # backend only: API + worker
+make frontend    # frontend only
+make dev-full    # backend + frontend together
 ```
 
 For the full setup guide including all environment variables, API keys, and configuration options, see **[`docs/setup.md`](docs/setup.md)**.
+
+### Common commands
+
+| Command | Purpose |
+|---|---|
+| `make fresh-start` | Install dependencies, generate JWT keys, and start the Docker stack |
+| `make restart` | Stop and restart the Docker stack without wiping volumes |
+| `make smoke` | Run the end-to-end acceptance check |
+| `make test` | Run the backend test suite |
+| `make lint` | Run Ruff and mypy |
+| `make logs` | Tail API and worker logs |
+| `make urls` | Print local URLs and credentials |
+| `make down` | Stop containers and keep data |
+| `make down-reset` | Stop containers and remove Docker volumes |
 
 ---
 
@@ -131,6 +150,15 @@ For the full setup guide including all environment variables, API keys, and conf
 
 ## Documentation
 
+### Repository Map
+
+| Area | Purpose | Guide |
+|---|---|---|
+| `backend/` | API, worker, pipeline, services, tests | [`backend/README.md`](backend/README.md) |
+| `frontend/` | Astro studio frontend | [`frontend/readme.md`](frontend/readme.md) |
+| `infra/` | Compose-time infrastructure, LiteLLM, Grafana, Prometheus, nginx | [`infra/README.md`](infra/README.md) |
+| `docs/` | Internal references, runbooks, observability, and architecture notes | See the guides below |
+
 | Doc | Contents |
 |---|---|
 | [`docs/setup.md`](docs/setup.md) | One-time setup, configuration reference, run instructions |
@@ -139,6 +167,12 @@ For the full setup guide including all environment variables, API keys, and conf
 | [`docs/intake_agent.md`](docs/intake_agent.md) | Intake agent design |
 | [`docs/publish_agent.md`](docs/publish_agent.md) | Publishing agent + email template design |
 | [`CLAUDE.md`](CLAUDE.md) | Agent coding guide, invariants, model aliases |
+
+### Working Notes
+
+- Use `uv` for Python dependencies and command execution; do not use `pip` or Poetry.
+- Use Docker for the full local stack. `make up` and `make restart` are the standard entry points.
+- After schema-affecting changes, keep migrations and seed data current before validating runtime behavior.
 
 ---
 

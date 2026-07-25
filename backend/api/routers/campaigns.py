@@ -103,6 +103,21 @@ async def _load_cost_attribution(campaign_id: str) -> dict[str, list[dict[str, A
     return cost_data
 
 
+async def _fetch_campaign_cost_usd(conn: Any, campaign_id: str) -> float:
+    result = await conn.execute(
+        text(
+            """
+            SELECT COALESCE(SUM(total_cost_usd), 0)::DOUBLE PRECISION AS token_cost_usd
+            FROM campaign_cost_attribution
+            WHERE campaign_id = CAST(:campaign_id AS UUID)
+            """
+        ),
+        {"campaign_id": campaign_id},
+    )
+    row = result.mappings().first()
+    return float((row or {}).get("token_cost_usd") or 0.0)
+
+
 def _summarise_variants(variants: list) -> list[dict]:
     def _preview(value: Any, limit: int = 280) -> str | None:
         if not isinstance(value, str):
@@ -584,7 +599,12 @@ async def approve_campaign(campaign_id: str, body: ReviewDecision) -> dict:
                 """
                 UPDATE campaigns
                 SET status = :status,
-                    completed_at = NOW()
+                    completed_at = NOW(),
+                    token_cost_usd = COALESCE((
+                        SELECT SUM(total_cost_usd)
+                        FROM campaign_cost_attribution
+                        WHERE campaign_id = campaigns.id
+                    ), 0)
                 WHERE id = :campaign_id
                 """
             ),
@@ -601,6 +621,75 @@ async def approve_campaign(campaign_id: str, body: ReviewDecision) -> dict:
         "status": next_status,
         "reviewer_note": body.reviewer_note,
     }
+
+
+async def _load_airtable_review_records(campaign_id: str) -> list[dict]:
+    """Load review records for the campaign.
+
+    Tries Airtable first (when configured). Falls back to the local
+    review_requests table so the gallery always shows review data even
+    when Airtable is not wired up.
+    """
+    try:
+        from services.airtable_service import airtable_enabled, get_review_records_by_campaign_id
+
+        if airtable_enabled():
+            records = await get_review_records_by_campaign_id(campaign_id)
+            if records:
+                return records
+    except Exception as exc:  # noqa: BLE001
+        log.warning("airtable_records_load_failed", campaign_id=campaign_id, error=str(exc))
+
+    # Fallback: read from the local review_requests table
+    try:
+        async with get_db() as conn:
+            result = await conn.execute(
+                text(
+                    """
+                    SELECT
+                        rr.id AS review_request_id,
+                        rr.variant_id,
+                        rr.campaign_id,
+                        rr.status,
+                        rr.decision,
+                        rr.reviewer_note,
+                        rr.routing_reason,
+                        rr.created_at AS generated_at,
+                        rr.reviewed_at,
+                        cv.final_content AS generated_content,
+                        cv.personalized_content,
+                        cv.locale,
+                        cv.channel
+                    FROM review_requests rr
+                    LEFT JOIN content_variants cv ON cv.id = rr.variant_id
+                    WHERE rr.campaign_id = CAST(:campaign_id AS UUID)
+                    ORDER BY rr.created_at DESC
+                    """
+                ),
+                {"campaign_id": campaign_id},
+            )
+            rows = result.mappings().all()
+        return [
+            {
+                "review_request_id": str(row["review_request_id"]),
+                "variant_id": str(row["variant_id"]) if row["variant_id"] else None,
+                "campaign_id": str(row["campaign_id"]),
+                "status": row["status"],
+                "Decision": str(row["decision"] or "pending").capitalize(),
+                "Reviewer Note": row["reviewer_note"] or "",
+                "Generated Content": row["generated_content"] or "",
+                "Personalized Content": row["personalized_content"] or "",
+                "Generated At": row["generated_at"].isoformat() if row["generated_at"] else "",
+                "Requester Email": "",
+                "locale": row["locale"] or "",
+                "channel": row["channel"] or "",
+                "routing_reason": row["routing_reason"] or "",
+            }
+            for row in rows
+        ]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("db_review_records_load_failed", campaign_id=campaign_id, error=str(exc))
+        return []
 
 
 @router.get("/{campaign_id}")
@@ -644,13 +733,14 @@ async def get_campaign(campaign_id: str) -> dict:
             {"campaign_id": normalized_campaign_id},
         )
         variant_rows = variants_result.mappings().all()
+        total_cost_usd = await _fetch_campaign_cost_usd(conn, normalized_campaign_id)
 
     return {
         "id": str(campaign_row["id"]),
         "org_id": str(campaign_row["org_id"]),
         "brand_id": str(campaign_row["brand_id"]),
         "status": str(campaign_row["status"]),
-        "token_cost_usd": float(campaign_row["token_cost_usd"]),
+        "token_cost_usd": total_cost_usd,
         "created_at": campaign_row["created_at"],
         "started_at": campaign_row["started_at"],
         "completed_at": campaign_row["completed_at"],
@@ -670,6 +760,7 @@ async def get_campaign(campaign_id: str) -> dict:
             }
             for row in variant_rows
         ],
+        "airtable_review_records": await _load_airtable_review_records(normalized_campaign_id),
     }
 
 
@@ -689,6 +780,7 @@ async def get_campaign_status(campaign_id: str) -> dict:
             {"campaign_id": normalized_campaign_id},
         )
         row = result.mappings().first()
+        total_cost_usd = await _fetch_campaign_cost_usd(conn, normalized_campaign_id)
 
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=CAMPAIGN_NOT_FOUND)
@@ -698,7 +790,7 @@ async def get_campaign_status(campaign_id: str) -> dict:
         "status": str(row["status"]),
         "started_at": row["started_at"],
         "completed_at": row["completed_at"],
-        "token_cost_usd": float(row["token_cost_usd"]),
+        "token_cost_usd": total_cost_usd,
         "created_at": row["created_at"],
     }
 

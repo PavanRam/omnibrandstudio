@@ -192,6 +192,7 @@ async def personalization_agent(state: OmniBrandState) -> dict:
 
         total_cost = 0.0
         personalized = 0
+        guardrail_flags: list[str] = []
         for variant in state.get("variants", []):
             source = variant.get("generated_content")
             if not source or variant.get("status") == "personalized":
@@ -227,6 +228,16 @@ async def personalization_agent(state: OmniBrandState) -> dict:
             total_cost += usage.get("cost", 0.0)
             personalized += 1
 
+            # Output guardrail (flag-only, fail-open).
+            if content:
+                from pipeline.agents.safety import screen_output_safety
+
+                brand_name = (state.get("brand_config") or {}).get("name")
+                safety_flags = await screen_output_safety(content, brand_name=brand_name)
+                if safety_flags:
+                    task_id = variant.get("task_id") or "unknown"
+                    guardrail_flags.extend(f"{task_id}:{f}" for f in safety_flags)
+
         log.info(
             "agent_complete",
             agent="personalization_agent",
@@ -241,6 +252,6 @@ async def personalization_agent(state: OmniBrandState) -> dict:
                 "personalized": personalized,
             },
         )
-        return {"token_cost_usd": total_cost}
+        return {"token_cost_usd": float(state.get("token_cost_usd", 0.0) or 0.0) + total_cost, "guardrail_flags": guardrail_flags}
 
     return await safe_agent_run(_impl, state)

@@ -1,0 +1,218 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "templating": {
+    "list": [
+      {
+        "name": "window",
+        "type": "interval",
+        "label": "Time bucket",
+        "query": "1m,5m,15m,1h,6h,1d",
+        "current": {"text": "1h", "value": "1h"},
+        "auto": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Total LLM Cost (USD)",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 4, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10}, {"color": "red", "value": 100}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "textMode": "auto"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT COALESCE(SUM(total_cost_usd),0) AS total_cost FROM campaign_cost_attribution WHERE $__timeFilter(created_at)"}
+      ]
+    },
+    {
+      "id": 2,
+      "title": "LLM Calls",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "fixed", "fixedColor": "blue"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "textMode": "auto"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT COUNT(*) AS calls FROM campaign_cost_attribution WHERE $__timeFilter(created_at)"}
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Distinct Campaigns",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "fixed", "fixedColor": "purple"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "textMode": "auto"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT COUNT(DISTINCT campaign_id) AS campaigns FROM campaign_cost_attribution WHERE $__timeFilter(created_at)"}
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Avg Cost / Campaign (USD)",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 4, "color": {"mode": "fixed", "fixedColor": "orange"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "textMode": "auto"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT COALESCE(SUM(total_cost_usd),0) / NULLIF(COUNT(DISTINCT campaign_id),0) AS avg_cost FROM campaign_cost_attribution WHERE $__timeFilter(created_at)"}
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Cost Over Time (USD)",
+      "type": "timeseries",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "custom": {"drawStyle": "bars", "fillOpacity": 40, "stacking": {"mode": "normal"}}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["sum"]}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "time_series", "rawSql": "SELECT $__timeGroup(created_at, '$window') AS time, provider AS metric, SUM(total_cost_usd) AS cost FROM campaign_cost_attribution WHERE $__timeFilter(created_at) GROUP BY 1, provider ORDER BY 1"}
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Cost by Resolved Model (USD)",
+      "type": "barchart",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}, "overrides": []},
+      "options": {"orientation": "horizontal", "legend": {"showLegend": false}, "xTickLabelRotation": 0},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT model_resolved AS model, SUM(total_cost_usd) AS cost FROM campaign_cost_attribution WHERE $__timeFilter(created_at) GROUP BY model_resolved ORDER BY cost DESC"}
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Cost by Agent (USD)",
+      "type": "barchart",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}, "overrides": []},
+      "options": {"orientation": "horizontal", "legend": {"showLegend": false}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT agent_name AS agent, SUM(total_cost_usd) AS cost FROM campaign_cost_attribution WHERE $__timeFilter(created_at) GROUP BY agent_name ORDER BY cost DESC"}
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Cost by Provider (USD)",
+      "type": "piechart",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD"}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "right", "values": ["value", "percent"]}, "pieType": "donut", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT provider, SUM(total_cost_usd) AS cost FROM campaign_cost_attribution WHERE $__timeFilter(created_at) GROUP BY provider ORDER BY cost DESC"}
+      ]
+    },
+    {
+      "id": 20,
+      "title": "── TOKENS (separate from cost) ──",
+      "type": "text",
+      "gridPos": {"h": 2, "w": 24, "x": 0, "y": 20},
+      "options": {"mode": "markdown", "content": "### Token usage\nInput / output / cached tokens are tracked independently of cost. Use these to understand model workload and prompt efficiency, not just spend."}
+    },
+    {
+      "id": 21,
+      "title": "Total Input Tokens",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 22},
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "fixed", "fixedColor": "green"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT COALESCE(SUM(input_tokens),0) AS input_tokens FROM campaign_cost_attribution WHERE $__timeFilter(created_at)"}
+      ]
+    },
+    {
+      "id": 22,
+      "title": "Total Output Tokens",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 22},
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "fixed", "fixedColor": "blue"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT COALESCE(SUM(output_tokens),0) AS output_tokens FROM campaign_cost_attribution WHERE $__timeFilter(created_at)"}
+      ]
+    },
+    {
+      "id": 23,
+      "title": "Total Cached Tokens",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 22},
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "fixed", "fixedColor": "purple"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT COALESCE(SUM(cached_tokens),0) AS cached_tokens FROM campaign_cost_attribution WHERE $__timeFilter(created_at)"}
+      ]
+    },
+    {
+      "id": 24,
+      "title": "Input : Output Ratio",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 22},
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 2, "color": {"mode": "fixed", "fixedColor": "orange"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT COALESCE(SUM(input_tokens),0)::numeric / NULLIF(SUM(output_tokens),0) AS ratio FROM campaign_cost_attribution WHERE $__timeFilter(created_at)"}
+      ]
+    },
+    {
+      "id": 25,
+      "title": "Tokens Over Time (input vs output)",
+      "type": "timeseries",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 26},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "line", "fillOpacity": 20}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["sum"]}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "time_series", "rawSql": "SELECT $__timeGroup(created_at, '$window') AS time, SUM(input_tokens) AS \"input\", SUM(output_tokens) AS \"output\", SUM(cached_tokens) AS cached FROM campaign_cost_attribution WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"}
+      ]
+    },
+    {
+      "id": 26,
+      "title": "Tokens by Resolved Model",
+      "type": "barchart",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 26},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {"orientation": "horizontal", "stacking": "normal", "legend": {"displayMode": "list", "placement": "bottom"}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT model_resolved AS model, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens FROM campaign_cost_attribution WHERE $__timeFilter(created_at) GROUP BY model_resolved ORDER BY (SUM(input_tokens)+SUM(output_tokens)) DESC"}
+      ]
+    },
+    {
+      "id": 30,
+      "title": "Top 20 Campaigns by Cost",
+      "type": "table",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 34},
+      "fieldConfig": {"defaults": {}, "overrides": [
+        {"matcher": {"id": "byName", "options": "cost_usd"}, "properties": [{"id": "unit", "value": "currencyUSD"}, {"id": "decimals", "value": 4}, {"id": "custom.cellOptions", "value": {"type": "color-background"}}]}
+      ]},
+      "options": {"showHeader": true, "sortBy": [{"displayName": "cost_usd", "desc": true}]},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT campaign_id::text AS campaign_id, COUNT(*) AS llm_calls, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(total_cost_usd) AS cost_usd FROM campaign_cost_attribution WHERE $__timeFilter(created_at) GROUP BY campaign_id ORDER BY cost_usd DESC LIMIT 20"}
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["omnibrand", "cost", "tokens"],
+  "time": {"from": "now-7d", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Cost & Token Attribution",
+  "uid": "omnibrand-cost",
+  "version": 1
+}

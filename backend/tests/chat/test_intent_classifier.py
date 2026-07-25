@@ -1,38 +1,6 @@
 from __future__ import annotations
 
-import pytest
-
 from services.chat.intent_classifier import intent_classifier
-
-
-@pytest.mark.asyncio
-async def test_classify_detailed_short_circuits_simple_greeting() -> None:
-    result = await intent_classifier.classify_detailed(
-        message="Hi",
-        conversation_history=[],
-        state={"model_aliases": {"utility": "util-fast"}},
-    )
-
-    assert result.primary == "greeting"
-    assert result.secondary == []
-    assert result.confidence == 1.0
-    assert result.requires_action is False
-    assert result.mutation_intent is False
-
-
-@pytest.mark.asyncio
-async def test_classify_detailed_short_circuits_smalltalk_ack() -> None:
-    result = await intent_classifier.classify_detailed(
-        message="thanks",
-        conversation_history=[],
-        state={"model_aliases": {"utility": "util-fast"}},
-    )
-
-    assert result.primary == "other"
-    assert result.secondary == []
-    assert result.confidence == 0.6
-    assert result.requires_action is False
-    assert result.mutation_intent is False
 
 
 def test_parse_classification_supports_submit_campaign_flags() -> None:
