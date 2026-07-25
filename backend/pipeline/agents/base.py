@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import UTC, datetime
@@ -28,6 +29,64 @@ __all__ = [
 ]
 
 _MODEL_PRICING_CACHE: dict[str, tuple[float, float] | None] = {}
+
+# PII guardrail — enforced centrally here so every agent gets protection simply
+# by calling traced_llm_call, rather than each agent needing to remember to scrub
+# itself. Independent copy of personalization.py's patterns (not imported from
+# there) to avoid a circular import: personalization.py already imports from
+# this module.
+_PII_PATTERNS: dict[str, re.Pattern[str]] = {
+    "EMAIL": re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
+    "PHONE": re.compile(r"(?<!\d)(?:\+?\d[\d\s().-]{7,}\d)(?!\d)"),
+    "SSN": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
+    "CREDIT_CARD": re.compile(r"\b(?:\d[ -]?){13,16}\b"),
+}
+
+
+def _scrub_pii(text: str | None) -> tuple[str, list[str]]:
+    """Redact PII from `text`; return (redacted_text, found_types)."""
+    if not text:
+        return text or "", []
+    found: list[str] = []
+    redacted = text
+    # SSN / card before PHONE so digit runs are not partially eaten.
+    for label in ("EMAIL", "SSN", "CREDIT_CARD", "PHONE"):
+        pattern = _PII_PATTERNS[label]
+        if pattern.search(redacted):
+            found.append(label)
+            redacted = pattern.sub(f"[REDACTED_{label}]", redacted)
+    return redacted, found
+
+
+def _scrub_messages_pii(messages: list[dict], *, agent: str, task: str) -> None:
+    """Redact PII from user message content in place before it is sent to the LLM."""
+    for msg in messages:
+        if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+            redacted, pii_types = _scrub_pii(msg["content"])
+            if pii_types:
+                msg["content"] = redacted
+                log.warning(
+                    "guardrail_pii_redacted",
+                    agent=agent,
+                    task=task,
+                    pii_types=pii_types,
+                    direction="input",
+                )
+
+
+def _scrub_output_pii(content: str, *, agent: str, task: str) -> str:
+    """Redact PII from assistant output before it leaves the wrapper."""
+    redacted, pii_types = _scrub_pii(content)
+    if pii_types:
+        log.warning(
+            "guardrail_pii_redacted",
+            agent=agent,
+            task=task,
+            pii_types=pii_types,
+            direction="output",
+        )
+        return redacted
+    return content
 
 
 async def publish_campaign_event(
@@ -360,6 +419,8 @@ async def traced_llm_call(
     agent = kwargs.pop("agent", task)
     tracer = get_tracer(f"omnibrand.{agent}")
 
+    _scrub_messages_pii(messages, agent=agent, task=task)
+
     trace = start_langfuse_trace(
         name=task,
         session_id=campaign_id,
@@ -419,6 +480,7 @@ async def traced_llm_call(
 
     latency_ms = int((time.perf_counter() - start) * 1000)
     content = payload["choices"][0]["message"]["content"]
+    content = _scrub_output_pii(content, agent=agent, task=task)
     usage = payload.get("usage", {})
 
     return content, await _finalize_llm_call(
@@ -456,6 +518,8 @@ async def traced_llm_call_stream(
     request_id = state.get("request_id", "")
     agent = kwargs.pop("agent", task)
     tracer = get_tracer(f"omnibrand.{agent}")
+
+    _scrub_messages_pii(messages, agent=agent, task=task)
 
     trace = start_langfuse_trace(
         name=task,
@@ -514,7 +578,7 @@ async def traced_llm_call_stream(
 
             # Successful stream — account for it exactly once.
             latency_ms = int((time.perf_counter() - start) * 1000)
-            content = "".join(content_parts)
+            content = _scrub_output_pii("".join(content_parts), agent=agent, task=task)
             payload = {"model": resolved_model or model, "usage": usage}
             # Inject the response-cost header (same as the non-streaming path).
             if _stream_cost_hdr:
@@ -556,7 +620,7 @@ async def traced_llm_call_stream(
         finally:
             if not accounted:
                 latency_ms = int((time.perf_counter() - start) * 1000)
-                content = "".join(content_parts)
+                content = _scrub_output_pii("".join(content_parts), agent=agent, task=task)
                 payload = {
                     "model": resolved_model or f"fallback/{model}",
                     "usage": usage or {"prompt_tokens": 0, "completion_tokens": 0},
