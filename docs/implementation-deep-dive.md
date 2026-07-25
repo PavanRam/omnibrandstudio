@@ -1,4 +1,6 @@
-# OmniBrand Studio — Phase 0 Implementation Deep Dive
+> ⚠️ **Historical document — Phase 0 (stub) architecture only.** This document describes the initial stub-based foundation. The codebase has since evolved significantly: all agents are real implementations, Qdrant has been removed in favour of ChromaDB/Pinecone, all API routers are implemented, and the pipeline includes `judge_gate` and `reflexion` nodes not described here. For current state, see [`README.md`](../README.md) and [`docs/setup.md`](setup.md).
+
+# OmniBrand Studio — Phase 0 Architecture Deep Dive (Historical)
 
 This document is a granular technical record of the Phase 0 foundation as it exists on disk today. Every code excerpt below is copied verbatim from the live repository — nothing is paraphrased or reconstructed from memory. RSA/JWT RS256 auth is documented exactly as implemented; it is intentionally retained and is **not** a candidate for removal.
 
