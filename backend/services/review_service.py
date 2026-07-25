@@ -22,7 +22,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pipeline.graph import build_graph
 from sqlalchemy import text
 
-from services import airtable_service
+from services import airtable_service, rejection_service
 from services.audit_service import write_audit
 
 log = structlog.get_logger()
@@ -310,6 +310,21 @@ async def apply_decision(
         if str(row["status"]) != "pending":
             raise ValueError(f"review already decided (status={row['status']})")
 
+        # Requester email (recipient) + objective for a possible rejection notice.
+        campaign_meta = (
+            await conn.execute(
+                text(
+                    """
+                    SELECT u.email AS requester_email, c.brief->>'objective' AS objective
+                    FROM campaigns c
+                    LEFT JOIN users u ON u.id = c.created_by
+                    WHERE c.id = CAST(:cid AS UUID)
+                    """
+                ),
+                {"cid": str(row["campaign_id"])},
+            )
+        ).mappings().first()
+
         await conn.execute(
             text(
                 """
@@ -379,6 +394,28 @@ async def apply_decision(
             "Sync Status": "Synced",
         }
     )
+
+    # On rejection, notify the campaign requester by email with the reviewer's
+    # reason. Best-effort (never blocks the decision). Recipient falls back to a
+    # configured address when the campaign has no resolvable requester email
+    # (e.g. API-key-created campaigns with no linked user).
+    if decision == "rejected":
+        requester_email = campaign_meta["requester_email"] if campaign_meta else None
+        objective = (campaign_meta["objective"] if campaign_meta else "") or ""
+        recipient = (
+            requester_email
+            or next(
+                (e.strip() for e in (settings.PUBLISH_RECIPIENT_EMAILS or "").split(",") if e.strip()),
+                "",
+            )
+            or settings.DEV_ADMIN_EMAIL
+        )
+        await rejection_service.send_rejection_email(
+            recipient,
+            reviewer_note or "",
+            campaign_id=str(row["campaign_id"]),
+            objective=objective,
+        )
 
     return {
         "campaign_id": str(row["campaign_id"]),
