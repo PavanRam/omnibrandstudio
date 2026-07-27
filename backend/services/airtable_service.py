@@ -60,6 +60,16 @@ async def sync_review(fields: dict) -> bool:
                 json={
                     "performUpsert": {"fieldsToMergeOn": ["review_request_id"]},
                     "records": [{"fields": fields}],
+                    # Required: campaign_id/variant_id/Requester Email are
+                    # singleSelect fields in the real base (verified
+                    # 2026-07-27) — every review has a genuinely new UUID/
+                    # email value, and Airtable rejects any value that isn't
+                    # already a predefined option unless typecast is set.
+                    # Without this, every sync_review call for a real
+                    # campaign 422s (INVALID_MULTIPLE_CHOICE_OPTIONS),
+                    # silently swallowed by the except below — confirmed via
+                    # a live write test against the actual configured base.
+                    "typecast": True,
                 },
             )
             resp.raise_for_status()
@@ -84,7 +94,7 @@ async def mark_synced(record_id: str, *, status: str, error: str | None = None) 
             resp = await client.patch(
                 _record_url(record_id),
                 headers=_headers(),
-                json={"fields": {"Sync Status": status, "Sync Error": error or ""}},
+                json={"fields": {"Sync Status": status, "Sync Error": error or ""}, "typecast": True},
             )
             resp.raise_for_status()
         return True

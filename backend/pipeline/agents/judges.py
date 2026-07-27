@@ -25,7 +25,7 @@ from typing import Any, cast
 import structlog
 
 from core.metrics import judge_latency
-from pipeline.agents.base import safe_agent_run, traced_llm_call
+from pipeline.agents.base import publish_campaign_event, safe_agent_run, traced_llm_call
 from pipeline.agents.prompts.judge_prompts import CRITERIA, build_judge_messages
 from pipeline.schemas import BrandScoreOutput
 from pipeline.state import BrandScore, OmniBrandState
@@ -167,8 +167,53 @@ async def _run_judge(
         parsed = _parse_brand_score(raw)
         if parsed is None:
             continue
-        produced.append(_to_brand_score(variant_id, model, parsed, latency_ms, round_))
+        score = _to_brand_score(variant_id, model, parsed, latency_ms, round_)
+        produced.append(score)
 
+        # 2026-07-27: judges previously never logged anything on a normal
+        # score — routing_decision/critical_violations/per-criterion
+        # reasoning only ever reached the frontend via a Redis pub/sub event
+        # (aggregator.py's aggregation_complete), never Docker logs or the
+        # DB, so a failed campaign's judge reasoning was unrecoverable after
+        # the fact (see next_tasks.md — campaign 019fa496 investigation).
+        log.info(
+            "judge_scored",
+            campaign_id=state.get("campaign_id"),
+            judge=judge_label,
+            variant_id=variant_id,
+            round=round_,
+            composite_score=score["composite_score"],
+            routing_decision=score["routing_decision"],
+            critical_violations=score["critical_violations"],
+            criterion_scores={
+                criterion: data["score"] for criterion, data in score["scores"].items()
+            },
+        )
+        if score["critical_violations"] or score["routing_decision"] == "auto_reject":
+            # Reasoning text is verbose (one paragraph per criterion) — only
+            # logged in full when there's actually something to explain, kept
+            # out of the always-on line above to avoid drowning normal runs.
+            log.warning(
+                "judge_rejected",
+                campaign_id=state.get("campaign_id"),
+                judge=judge_label,
+                variant_id=variant_id,
+                round=round_,
+                routing_decision=score["routing_decision"],
+                critical_violations=score["critical_violations"],
+                reasoning={
+                    criterion: data["reasoning"]
+                    for criterion, data in score["scores"].items()
+                    if data["violations"] or data["score"] < 7
+                },
+            )
+
+    await publish_campaign_event(
+        campaign_id=state.get("campaign_id"),
+        agent=agent_name,
+        phase="judge_complete",
+        payload={"judge": judge_label, "scored": len(produced)},
+    )
     return {"brand_scores": produced}
 
 

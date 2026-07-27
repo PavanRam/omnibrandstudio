@@ -8,10 +8,10 @@ import { cn } from '@/lib/cn.js';
 import { withBase } from '@/lib/paths.js';
 
 const MENU_LINKS = [
-  { label: 'Profile', icon: User, href: '/gallery' },
-  { label: 'Billing & credits', icon: CreditCard, href: '/gallery' },
-  { label: 'Admin panel', icon: ShieldCheck, href: '/admin' },
-  { label: 'Settings', icon: Settings, href: '/gallery' },
+  { label: 'Profile', icon: User, href: '/campaigns' },
+  { label: 'Billing & credits', icon: CreditCard, href: '/campaigns' },
+  { label: 'Admin', icon: ShieldCheck, href: '/admin' },
+  { label: 'Settings', icon: Settings, href: '/campaigns' },
 ];
 
 export function UserMenu() {

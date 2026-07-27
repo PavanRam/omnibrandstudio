@@ -5,12 +5,16 @@ import re
 from typing import Any
 
 from pipeline.agents.base import traced_llm_call
+from pipeline.agents.prompts.channel_prompts import DEFAULT_CHANNEL_CONSTRAINTS
 from pipeline.conversation_models import ExtractionMeta, PartialBrief
+from pipeline.locale_utils import is_locale_supported, normalize_locale
 
 _EXTRACTION_PROMPT = (
     "Extract structured campaign brief updates from the user message. "
     "Return strict JSON with keys: objective, target_audience, key_messages, tone_override, "
-    "channels, locales, audience_segments, token_budget, raw_text, field_confidence. "
+    "channels, locales, audience_segments, token_budget, end_date, raw_text, field_confidence. "
+    "end_date is an OPTIONAL campaign validity/expiry date (e.g. 'runs through March 31') — "
+    "never required, never blocks anything. "
     "field_confidence must be an object with numeric 0..1 confidence for extracted fields. "
     "Use null for unknown scalars and [] for unknown arrays."
 )
@@ -26,7 +30,7 @@ class BriefCollector:
         state: dict[str, Any],
     ) -> tuple[PartialBrief, ExtractionMeta]:
         if self._is_non_brief_turn(user_message):
-            merged = self._merge(current, {}, user_message)
+            merged, _ = self._merge(current, {}, user_message)
             return merged, ExtractionMeta(field_confidence={}, source="non_brief")
 
         fallback_patch = self._fallback_patch_from_text(user_message)
@@ -52,7 +56,8 @@ class BriefCollector:
             for key, value in fallback_confidence.items():
                 meta.field_confidence.setdefault(key, value)
 
-        merged = self._merge(current, patch, user_message)
+        merged, rejected = self._merge(current, patch, user_message)
+        meta.rejected = rejected
         return merged, meta
 
     async def update_partial_brief(
@@ -91,6 +96,12 @@ class BriefCollector:
         if not missing:
             return "Great, your brief is complete. Say 'run campaign' to start execution."
 
+        slot = missing[0]
+        if slot == "token_budget":
+            shortfall = brief.budget_shortfall()
+            if shortfall:
+                return f"{shortfall}. What token budget should we use instead?"
+
         question_by_slot = {
             "objective": "What is the primary campaign objective?",
             "channels": "Which channels should we target?",
@@ -98,7 +109,6 @@ class BriefCollector:
             "audience_segments": "Which audience segments should we target?",
             "token_budget": "What token budget should we use for this campaign?",
         }
-        slot = missing[0]
         return question_by_slot.get(slot, "Please provide the missing campaign details.")
 
     def _parse_patch(self, content: str) -> dict[str, Any]:
@@ -183,6 +193,7 @@ class BriefCollector:
                 "locales",
                 "audience_segments",
                 "token_budget",
+                "end_date",
             }
         }
 
@@ -193,7 +204,7 @@ class BriefCollector:
     ) -> dict[str, Any]:
         merged = dict(primary_patch)
 
-        for key in ("objective", "target_audience", "tone_override", "token_budget"):
+        for key in ("objective", "target_audience", "tone_override", "token_budget", "end_date"):
             if merged.get(key) is None and fallback_patch.get(key) is not None:
                 merged[key] = fallback_patch[key]
 
@@ -223,6 +234,10 @@ class BriefCollector:
         token_budget = self._extract_token_budget(normalized)
         if token_budget is not None:
             patch["token_budget"] = token_budget
+
+        end_date = self._extract_end_date(normalized)
+        if end_date:
+            patch["end_date"] = end_date
 
         patch.update(self._extract_explicit_list_fields(normalized))
 
@@ -290,6 +305,25 @@ class BriefCollector:
             return None
         return int(token_budget_match.group(1))
 
+    def _extract_end_date(self, normalized: str) -> str | None:
+        """Optional campaign validity/expiry date — 'runs through March 31',
+        'valid until 2026-08-15', 'ends on Friday'. Extracted verbatim in
+        whatever form the user stated it, never required."""
+        patterns = (
+            r"(?:^|\b)(?:end date\s*:\s*)([^\.!?\n]+)",
+            r"(?:^|\b)(?:runs?|valid|good)\s+(?:through|until|till)\s+([^\.!?\n]+)",
+            r"(?:^|\b)ends?\s+(?:on|by)\s+([^\.!?\n]+)",
+            r"(?:^|\b)expires?\s+(?:on|by)?\s*([^\.!?\n]+)",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, normalized, re.IGNORECASE)
+            if not match:
+                continue
+            value = match.group(1).strip(_STRIP_CHARS)
+            if value:
+                return value
+        return None
+
     def _extract_explicit_list_fields(self, normalized: str) -> dict[str, list[str]]:
         extracted: dict[str, list[str]] = {}
         list_patterns = {
@@ -325,22 +359,76 @@ class BriefCollector:
                 inferred_segments.append(segment)
         return inferred_segments
 
-    def _merge(self, current: PartialBrief, patch: dict[str, Any], raw_text: str) -> PartialBrief:
+    def _merge(
+        self, current: PartialBrief, patch: dict[str, Any], raw_text: str
+    ) -> tuple[PartialBrief, dict[str, list[str]]]:
+        """Merge an extraction patch into the current brief.
+
+        Returns (merged_brief, rejected) — `rejected` maps field name to the
+        values from THIS patch that were dropped rather than written into the
+        brief: unsupported channels/locales, or any audience_segments value at
+        all (see below). Callers surface this to the user instead of silently
+        ignoring what they said (next_tasks.md item 23d, 2026-07-27).
+        """
+        rejected: dict[str, list[str]] = {}
+
         data = current.model_dump()
         for key in (
             "objective",
             "target_audience",
             "tone_override",
             "token_budget",
+            "end_date",
         ):
             value = patch.get(key)
             if value is not None:
                 data[key] = value
 
-        for key in ("key_messages", "channels", "locales", "audience_segments"):
-            value = patch.get(key)
-            if isinstance(value, list) and value:
-                data[key] = [str(v) for v in value]
+        value = patch.get("key_messages")
+        if isinstance(value, list) and value:
+            data["key_messages"] = [str(v) for v in value]
+
+        channels_patch = patch.get("channels")
+        if isinstance(channels_patch, list) and channels_patch:
+            normalized = [str(v).strip().lower() for v in channels_patch]
+            valid = [c for c in normalized if c in DEFAULT_CHANNEL_CONSTRAINTS]
+            invalid = [c for c in normalized if c not in DEFAULT_CHANNEL_CONSTRAINTS]
+            if valid:
+                data["channels"] = valid
+            if invalid:
+                rejected["channels"] = invalid
+
+        locales_patch = patch.get("locales")
+        if isinstance(locales_patch, list) and locales_patch:
+            # Normalize once here — the single choke point every locales value
+            # funnels through (LLM extraction and the regex fallback both end
+            # up in this same merge), so RAG retrieval, translation's
+            # SUPPORTED_LOCALES gate, and channel prompts all see the same
+            # canonical form regardless of how the brief was phrased. See
+            # pipeline/locale_utils.py.
+            normalized = [normalize_locale(str(v)) for v in locales_patch]
+            valid = [loc for loc in normalized if is_locale_supported(loc)]
+            invalid = [
+                str(orig)
+                for orig, norm in zip(locales_patch, normalized)
+                if not is_locale_supported(norm)
+            ]
+            if valid:
+                data["locales"] = valid
+            if invalid:
+                rejected["locales"] = invalid
+
+        # audience_segments is picker-only (2026-07-27) — real segments must
+        # match the brand's actual seeded persona data (surfaced via the
+        # structured picker / set_brief_field), never a free-text guess. The
+        # previous backstop here treated any raw reply as a segment label to
+        # avoid an infinite re-ask loop; that's no longer needed since the
+        # picker now handles this slot directly. If the user names one in
+        # free text anyway, note it as rejected (so the assistant can point
+        # them at the picker) but never write it into the brief.
+        segments_patch = patch.get("audience_segments")
+        if isinstance(segments_patch, list) and segments_patch:
+            rejected["audience_segments"] = [str(v) for v in segments_patch]
 
         existing_raw = str(data.get("raw_text", "")).strip()
         if existing_raw:
@@ -348,7 +436,7 @@ class BriefCollector:
         else:
             data["raw_text"] = raw_text[-4000:]
 
-        return PartialBrief.model_validate(data)
+        return PartialBrief.model_validate(data), rejected
 
 
 brief_collector = BriefCollector()

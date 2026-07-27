@@ -24,12 +24,72 @@ from core.tracing import setup_observability
 from pipeline.graph import build_graph
 from pipeline.initial_state import build_initial_state
 from pipeline.schemas import CreateCampaignRequest
-from services import review_service
+from services import notification_service, review_service
 
 log = structlog.get_logger()
 
 QUEUE = "campaigns:queue"
 DLQ = "campaigns:dead_letter"
+
+# Variant statuses that carry no publishable content — same set judges.py
+# treats as non-scoreable.
+_VARIANT_FAILURE_STATUSES = {
+    "failed",
+    "translation_failed",
+    "translation_unsupported_locale",
+    "translation_blocked_no_source",
+}
+
+
+def _latest_routing_decisions(final_state: dict) -> dict[str, str]:
+    """Each variant's routing_decision from its MOST RECENT evaluation round
+    only — aggregated_scores accumulates every round (operator.add fan-in
+    can't delete stale entries, see reflexion.py), so round 0's near-universal
+    auto_reject on a just-generated variant must never be read as the final
+    verdict once a later round exists."""
+    latest_round: dict[str, int] = {}
+    latest_decision: dict[str, str] = {}
+    for a in final_state.get("aggregated_scores") or []:
+        variant_id = a.get("variant_id")
+        round_ = int(a.get("evaluation_round", 0) or 0)
+        if variant_id is None:
+            continue
+        if variant_id not in latest_round or round_ >= latest_round[variant_id]:
+            latest_round[variant_id] = round_
+            latest_decision[variant_id] = a.get("routing_decision", "")
+    return latest_decision
+
+
+def determine_final_status(final_state: dict | None) -> tuple[str, bool, bool]:
+    """Decide a completed graph run's outcome. Returns
+    ``(final_status, mark_completed, needs_draft_persist)``.
+
+    Strict all-or-nothing (2026-07-27, reversing the earlier partial-success
+    design): this is a marketing campaign tool — a creator asking for N
+    channel x locale variants cannot ship with some missing or judge-rejected.
+    ANY failure anywhere in the run — budget/brief invalid, a variant that
+    hard-failed generation/translation, an `errors` entry from any agent, or
+    a variant still judge-rejected (auto_reject, unresolved even after
+    reflexion's one retry round) — fails the WHOLE campaign. Nothing gets
+    persisted; there is no half-cooked draft.
+    """
+    if not isinstance(final_state, dict):
+        return "running", False, False
+
+    current_phase = str(final_state.get("current_phase") or "").lower()
+    has_errors = bool(final_state.get("errors"))
+    budget_failed = final_state.get("budget_check_passed") is False
+    brief_invalid = final_state.get("brief_valid") is False
+    variants = final_state.get("variants") or []
+    any_variant_failed = any(v.get("status") in _VARIANT_FAILURE_STATUSES for v in variants)
+    latest_decisions = _latest_routing_decisions(final_state)
+    any_still_rejected = any(d == "auto_reject" for d in latest_decisions.values())
+
+    if current_phase == "published":
+        return "published", True, False
+    if budget_failed or brief_invalid or has_errors or any_variant_failed or any_still_rejected:
+        return "failed", True, False
+    return "draft", False, True
 
 
 def _to_psycopg_dsn(raw_dsn: str) -> str:
@@ -138,31 +198,32 @@ async def process_campaign(task_payload: dict) -> None:
                 config = {"configurable": {"thread_id": campaign_id}}
                 final_state = await graph.ainvoke(initial_state, config=config)
 
-        final_status = "running"
-        mark_completed = False
-        paused_for_review = False
-        if isinstance(final_state, dict):
-            current_phase = str(final_state.get("current_phase") or "").lower()
-            has_errors = bool(final_state.get("errors"))
-            budget_failed = final_state.get("budget_check_passed") is False
-            brief_invalid = final_state.get("brief_valid") is False
+        final_status, mark_completed, needs_draft_persist = determine_final_status(final_state)
 
-            if current_phase == "published":
-                final_status = "published"
-                mark_completed = True
-            elif has_errors or budget_failed or brief_invalid:
-                final_status = "failed"
-                mark_completed = True
-            else:
-                # Successful non-terminal runs are paused for human review.
-                final_status = "awaiting_review"
-                paused_for_review = True
-
-        if paused_for_review:
-            # Persists variants/aggregated_scores/review_requests and sets
-            # campaigns.status='awaiting_review' itself — skip the generic
-            # status UPDATE below for this case.
-            await review_service.persist_review_batch(final_state)
+        if needs_draft_persist:
+            # Persists variants/aggregated_scores and sets campaigns.status='draft'
+            # itself — skip the generic status UPDATE below for this case.
+            await review_service.persist_draft_batch(final_state)
+            async with get_db() as conn:
+                campaign_row = (
+                    await conn.execute(
+                        text(
+                            """
+                            SELECT org_id, brand_id, created_by, brief->>'objective' AS objective
+                            FROM campaigns WHERE id = CAST(:campaign_id AS UUID)
+                            """
+                        ),
+                        {"campaign_id": campaign_id},
+                    )
+                ).mappings().first()
+            if campaign_row is not None:
+                await notification_service.notify_draft_ready(
+                    org_id=str(campaign_row["org_id"]),
+                    brand_id=str(campaign_row["brand_id"]),
+                    campaign_id=campaign_id,
+                    created_by=str(campaign_row["created_by"]) if campaign_row["created_by"] else None,
+                    title=campaign_row["objective"] or "Your campaign",
+                )
         else:
             async with get_db() as conn:
                 await conn.execute(
@@ -181,6 +242,28 @@ async def process_campaign(task_payload: dict) -> None:
                     },
                 )
                 await conn.commit()
+
+            if final_status == "failed":
+                async with get_db() as conn:
+                    campaign_row = (
+                        await conn.execute(
+                            text(
+                                """
+                                SELECT org_id, brand_id, created_by, brief->>'objective' AS objective
+                                FROM campaigns WHERE id = CAST(:campaign_id AS UUID)
+                                """
+                            ),
+                            {"campaign_id": campaign_id},
+                        )
+                    ).mappings().first()
+                if campaign_row is not None:
+                    await notification_service.notify_campaign_failed(
+                        org_id=str(campaign_row["org_id"]),
+                        brand_id=str(campaign_row["brand_id"]),
+                        campaign_id=campaign_id,
+                        created_by=str(campaign_row["created_by"]) if campaign_row["created_by"] else None,
+                        title=campaign_row["objective"] or "Your campaign",
+                    )
 
         elapsed = (datetime.now(UTC) - start).total_seconds()
         campaign_duration.labels(org_id=org_id, status="completed").observe(elapsed)

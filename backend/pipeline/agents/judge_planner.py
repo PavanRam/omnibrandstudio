@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import structlog
 
-from pipeline.agents.base import safe_agent_run
+from pipeline.agents.base import publish_campaign_event, safe_agent_run
 from pipeline.state import OmniBrandState
 
 log = structlog.get_logger()
@@ -103,7 +103,13 @@ async def judge_gate(state: OmniBrandState) -> dict:
             judge_mode=mode,
             reason=reason,
         )
-        return {"judge_mode": mode}
+        await publish_campaign_event(
+            campaign_id=state.get("campaign_id"),
+            agent="judge_gate",
+            phase="judge_gate_complete",
+            payload={"judge_mode": mode, "reason": reason},
+        )
+        return {"judge_mode": mode, "current_phase": "judge_gate_complete"}
 
     return await safe_agent_run(_impl, state)
 

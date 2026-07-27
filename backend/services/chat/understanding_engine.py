@@ -43,8 +43,18 @@ _UNDERSTANDING_PROMPT = (
     "- tone_override (string): explicit tone/voice instruction\n"
     "- channels (string array): e.g. linkedin, email, instagram, landing page\n"
     "- locales (string array): e.g. en-US, en-GB, de-DE\n"
-    "- audience_segments (string array): e.g. enterprise, sme, consumer\n"
+    "- audience_segments (string array): named categories like enterprise, sme, consumer "
+    "WHEN one clearly applies. If the user describes their audience in their own words and "
+    "it doesn't fit a standard category (e.g. 'regular weekday customers'), use their own "
+    "phrase as a custom segment label instead of leaving this empty — do NOT require the "
+    "user to restate a fixed category just because target_audience already captured similar "
+    "wording.\n"
     "- token_budget (integer): numeric generation budget\n"
+    "- end_date (string, OPTIONAL): a campaign validity/expiry date the user "
+    "mentions, e.g. 'runs through March 31', 'valid until 2026-08-15', 'ends "
+    "next Friday'. Extract it in whatever form the user stated it (don't "
+    "invent a specific calendar date if they were vague). This field is "
+    "optional and never blocks the brief from being considered complete.\n"
     "\n"
     "EXTRACTION RULES:\n"
     "- Understand natural language; do NOT require the user to use 'field: value' syntax. "
@@ -61,7 +71,7 @@ _UNDERSTANDING_PROMPT = (
     '"requires_action": false, "mutation_intent": false},\n'
     '  "brief": {"objective": null, "target_audience": null, "key_messages": [], '
     '"tone_override": null, "channels": [], "locales": [], "audience_segments": [], '
-    '"token_budget": null},\n'
+    '"token_budget": null, "end_date": null},\n'
     '  "field_confidence": {}\n'
     "}\n"
     "\n"
@@ -87,6 +97,7 @@ _BRIEF_FIELDS = (
     "locales",
     "audience_segments",
     "token_budget",
+    "end_date",
 )
 
 
@@ -124,7 +135,8 @@ class UnderstandingEngine:
             for key, value in fallback_confidence.items():
                 meta.field_confidence.setdefault(key, value)
 
-        merged_brief = brief_collector._merge(current, patch, user_message)
+        merged_brief, rejected = brief_collector._merge(current, patch, user_message)
+        meta.rejected = rejected
         return UnderstandingResult(intent=intent, brief=merged_brief, extraction_meta=meta)
 
     def _deterministic_shortcut(
@@ -156,7 +168,7 @@ class UnderstandingEngine:
                 requires_action=False,
                 mutation_intent=False,
             )
-            merged = brief_collector._merge(current, {}, user_message)
+            merged, _ = brief_collector._merge(current, {}, user_message)
             return UnderstandingResult(
                 intent=intent,
                 brief=merged,
@@ -171,7 +183,7 @@ class UnderstandingEngine:
                 requires_action=False,
                 mutation_intent=False,
             )
-            merged = brief_collector._merge(current, {}, user_message)
+            merged, _ = brief_collector._merge(current, {}, user_message)
             return UnderstandingResult(
                 intent=intent,
                 brief=merged,

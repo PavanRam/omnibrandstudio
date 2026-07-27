@@ -17,6 +17,14 @@ export function useWebSocket(createSocket, { onMessage, enabled = true } = {}) {
 
     socket.onclose = () => {
       setConnected(false);
+      // socket.onclose fires asynchronously, so a boolean "was this closed on
+      // purpose" flag set at cleanup time and read here is unreliable — by
+      // the time this fires, a newer connect() may have already reset it,
+      // silently defeating the check. Comparing against socketRef.current
+      // instead is race-proof: once cleanup/reconnect replaces the ref with
+      // a new socket, this (now-stale) socket's close can never schedule a
+      // reconnect back to its own (possibly wrong) target again.
+      if (socketRef.current !== socket) return;
       const retryDelayMs = Math.min(1000 * 2 ** retriesRef.current, 8000);
       retriesRef.current += 1;
       reconnectRef.current = setTimeout(connect, retryDelayMs);

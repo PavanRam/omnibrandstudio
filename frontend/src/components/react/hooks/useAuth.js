@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { readSession, writeSession, removeSession } from '@/lib/storage.js';
 import { clearStoredAuth, getCurrentAuthClaims, loginWithPassword, logoutSession } from '@/lib/api.js';
+import { withBase } from '@/lib/paths.js';
 
 const KEY = 'obs-user';
 
@@ -78,7 +79,22 @@ export function useAuth() {
       setUser(next ? JSON.parse(next) : null);
     };
     window.addEventListener('obs:authchange', sync);
-    return () => window.removeEventListener('obs:authchange', sync);
+
+    // Fired by api.js when a request comes back 401 and the refresh attempt
+    // also fails — an expired session that can't recover on its own. Without
+    // this the UI just sat wherever it was (/app, /gallery, ...) with the
+    // stale logged-in header still showing, silently failing every request.
+    const onExpired = () => {
+      removeSession(KEY);
+      setUser(null);
+      window.location.href = withBase('/');
+    };
+    window.addEventListener('obs:session-expired', onExpired);
+
+    return () => {
+      window.removeEventListener('obs:authchange', sync);
+      window.removeEventListener('obs:session-expired', onExpired);
+    };
   }, []);
 
   const login = useCallback(async ({ email, password }) => {

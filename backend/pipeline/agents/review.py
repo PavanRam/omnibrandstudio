@@ -17,7 +17,7 @@ from __future__ import annotations
 import structlog
 from core.config import settings
 
-from pipeline.agents.base import safe_agent_run
+from pipeline.agents.base import publish_campaign_event, safe_agent_run
 from pipeline.state import OmniBrandState
 
 log = structlog.get_logger()
@@ -70,6 +70,12 @@ async def review_gate(state: OmniBrandState) -> dict:
             decided=len(decisions),
             any_rejected=any_rejected,
             review_round=review_round,
+        )
+        await publish_campaign_event(
+            campaign_id=state.get("campaign_id"),
+            agent="review_gate",
+            phase="review_complete",
+            payload={"decided": len(decisions), "any_rejected": any_rejected},
         )
         return {"current_phase": "review_complete", "review_round": review_round}
 

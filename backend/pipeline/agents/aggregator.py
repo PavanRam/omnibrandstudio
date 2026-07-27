@@ -18,7 +18,7 @@ import uuid
 import structlog
 
 from core.metrics import routing_decisions_total
-from pipeline.agents.base import safe_agent_run
+from pipeline.agents.base import publish_campaign_event, safe_agent_run
 from pipeline.agents.prompts.judge_prompts import CRITERION_WEIGHTS
 from pipeline.state import AggregatedScore, BrandScore, OmniBrandState, ReviewRequest
 
@@ -115,10 +115,32 @@ async def confidence_aggregator(state: OmniBrandState) -> dict:
                 new_reviews.append(review)
                 human_review = True
 
+        await publish_campaign_event(
+            campaign_id=campaign_id,
+            agent="confidence_aggregator",
+            phase="aggregation_complete",
+            payload={
+                "aggregated_count": len(new_aggregates),
+                "review_requested": human_review,
+                # Per-task routing outcome so the frontend plan can flag exactly
+                # which row needs attention (any_critical_violation / "flag" /
+                # "auto_reject") instead of just an aggregate count — see
+                # next_tasks.md "inline campaign plan" (2026-07-26).
+                "tasks": [
+                    {
+                        "task_id": a["variant_id"],
+                        "routing_decision": a["routing_decision"],
+                        "any_critical_violation": a["any_critical_violation"],
+                    }
+                    for a in new_aggregates
+                ],
+            },
+        )
         return {
             "aggregated_scores": new_aggregates,
             "review_requests": new_reviews,
             "human_review_requested": human_review,
+            "current_phase": "aggregation_complete",
         }
 
     return await safe_agent_run(_impl, state)
@@ -199,5 +221,28 @@ def _aggregate_variant(
             "scores_snapshot": scores,
             "status": "pending",
         }
+
+    # 2026-07-27: the aggregator's routing decision is the single point that
+    # combines every judge's score for a variant — logging it here (not just
+    # publish_campaign_event's Redis-only, non-persisted broadcast) is what
+    # makes "why did this get rejected" answerable after a failed campaign
+    # without re-running the paid pipeline (see next_tasks.md — campaign
+    # 019fa496 investigation, where this exact question had no answer).
+    log_fn = log.warning if decision in ("flag", "auto_reject") else log.info
+    log_fn(
+        "aggregator_routing_decision",
+        campaign_id=campaign_id,
+        variant_id=variant_id,
+        round=round_,
+        routing_decision=decision,
+        routing_reason=reason,
+        judge_scores_10=aggregate["judge_scores"],
+        weighted_mean_01=aggregate["weighted_mean"],
+        consensus_level=consensus,
+        any_critical_violation=any_critical,
+        critical_violations=critical_union,
+        degraded_mode=aggregate["degraded_mode"],
+        n_judges=n,
+    )
 
     return aggregate, review

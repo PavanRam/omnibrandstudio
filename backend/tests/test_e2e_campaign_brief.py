@@ -134,6 +134,10 @@ def _patch_mocks(
     enqueue_mock = AsyncMock(return_value=enqueue_return)
     monkeypatch.setattr(conversations, "_enqueue_campaign", enqueue_mock)
 
+    # DB-backed, mocked per this repo's convention (see test_review_service.py
+    # docstring) — no similar campaign for these e2e brief-flow tests.
+    monkeypatch.setattr(conversations, "find_similar_campaign", AsyncMock(return_value=None))
+
     monkeypatch.setattr(
         conversations.conversation_responder,
         "respond",

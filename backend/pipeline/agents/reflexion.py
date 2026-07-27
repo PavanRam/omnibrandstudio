@@ -15,9 +15,9 @@ from typing import cast
 
 import structlog
 
-from pipeline.agents.base import safe_agent_run, traced_llm_call
+from pipeline.agents.base import publish_campaign_event, safe_agent_run, traced_llm_call
 from pipeline.agents.prompts.judge_prompts import build_reflexion_messages
-from pipeline.state import AggregatedScore, OmniBrandState
+from pipeline.state import AggregatedScore, ContentVariant, OmniBrandState
 
 log = structlog.get_logger()
 
@@ -78,9 +78,43 @@ async def reflexion(state: OmniBrandState) -> dict:
         aliases = state.get("model_aliases") or {}
         model = aliases.get("generation", "gen-free")
 
+        retried_variants: list[ContentVariant] = []
+        retry_reasons: dict[str, str] = {}
         for variant in state.get("variants") or []:
-            await _maybe_reflex_variant(state, variant, aggregates, brand_scores, model)
-        return {}
+            reason = await _maybe_reflex_variant(state, variant, aggregates, brand_scores, model)
+            if reason is not None:
+                retried_variants.append(variant)
+                retry_reasons[variant["task_id"]] = reason
+
+        await publish_campaign_event(
+            campaign_id=state.get("campaign_id"),
+            agent="reflexion",
+            phase="reflexion_complete",
+            payload={
+                "retried": len(retried_variants),
+                # Per-task retry reason so the frontend pipeline tracker can
+                # show exactly which variant got retried and why, not just an
+                # aggregate count — see next_tasks.md item 33 (2026-07-27).
+                "tasks": [
+                    {"task_id": v["task_id"], "reason": retry_reasons.get(v["task_id"], "")}
+                    for v in retried_variants
+                ],
+            },
+        )
+        # Returning the touched variant(s) (not just mutating in place) is what
+        # actually makes the retry durable across a checkpoint resume — see
+        # merge_variants in state.py. current_phase is always set here (even
+        # with zero retries) so campaign-reload/replay can see reflexion ran
+        # at all — previously this agent had no permission to write
+        # current_phase, so replay reconstruction (which reads state's
+        # current_phase per checkpoint step, not the live event stream) froze
+        # at content_generator's last value for the entire rest of the
+        # pipeline, misattributing failures to whichever stage replay had no
+        # phase evidence for (see next_tasks.md item 41, 2026-07-27).
+        result: dict = {"current_phase": "reflexion_complete"}
+        if retried_variants:
+            result["variants"] = retried_variants
+        return result
 
     return await safe_agent_run(_impl, state)
 
@@ -91,26 +125,29 @@ async def _maybe_reflex_variant(
     aggregates: list,
     brand_scores: list,
     model: str,
-) -> None:
+) -> str | None:
     """Regenerate one variant in place if the panel rejected/low-flagged it.
 
     No-op when the variant has already been retried (hard cap), has no aggregate
-    for its round, or its routing does not trigger reflexion.
+    for its round, or its routing does not trigger reflexion. Returns the
+    one-line trigger reason (for the campaign event's per-task detail — not
+    stored on the variant itself) when a retry was actually performed, else
+    ``None``.
     """
     round_ = int(variant.get("retry_count", 0))
     if round_ > 0:
-        return  # hard cap: at most one reflexion retry per variant
+        return None  # hard cap: at most one reflexion retry per variant
 
     aggregate = _latest_aggregate(aggregates, variant["task_id"], round_)
     if aggregate is None:
-        return
+        return None
 
     decision = aggregate["routing_decision"]
     trigger = decision == "auto_reject" or (
         decision == "flag" and aggregate["weighted_mean"] < _FLAG_RETRY_MEAN
     )
     if not trigger:
-        return
+        return None
 
     reasons = _collect_reasons(brand_scores, variant["task_id"], round_)
     messages = build_reflexion_messages(
@@ -128,9 +165,9 @@ async def _maybe_reflex_variant(
         agent="reflexion",
     )
 
-    # Enrich the variant in place (variants is an operator.add fan-in field —
-    # returning it would append a duplicate). Reset downstream content and bump
-    # the round so the judges re-score at round+1.
+    # Enrich the variant in place — the caller (reflexion()) also returns it
+    # via the "variants" key so merge_variants persists the change durably.
+    # Reset downstream content and bump the round so judges re-score at round+1.
     variant["generated_content"] = new_content
     variant["personalized_content"] = None
     variant["translated_content"] = None
@@ -145,6 +182,9 @@ async def _maybe_reflex_variant(
         variant_id=variant["task_id"],
         trigger=decision,
     )
+    critical = aggregate.get("critical_violations") or []
+    reason = f"{decision}" + (f": {critical[0]}" if critical else (f": {reasons[0]}" if reasons else ""))
+    return reason
 
 
 def reflexion_router(state: OmniBrandState) -> list[str] | str:

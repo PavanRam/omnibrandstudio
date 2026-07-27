@@ -14,7 +14,7 @@ export function HomeLoginLauncher({
 
   const handleClick = () => {
     if (user) {
-      window.location.assign('/app');
+      window.location.assign('/studio');
       return;
     }
 
@@ -23,13 +23,13 @@ export function HomeLoginLauncher({
       return;
     }
 
-    window.location.assign('/app');
+    window.location.assign('/studio');
   };
 
   const handleLogin = async ({ email, password }) => {
     await login({ email, password });
     setOpen(false);
-    window.location.assign('/app');
+    window.location.assign('/studio');
   };
 
   return (

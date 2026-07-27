@@ -19,6 +19,8 @@ from core.ids import new_campaign_id
 from core.redis import get_redis
 from pipeline.graph import build_graph
 from pipeline.schemas import CreateCampaignRequest, ReviewDecision
+from services import review_service
+from services.campaign import archive_service
 from services.campaign.rerun_service import rerun_service
 
 router = APIRouter()
@@ -75,9 +77,18 @@ async def _load_cost_attribution(campaign_id: str) -> dict[str, list[dict[str, A
     cost_data: dict[str, list[dict[str, Any]]] = {}
     try:
         async with get_db() as conn:
+            # 2026-07-27: this previously selected a `langfuse_trace_id` column
+            # that was never actually created in any migration (001_core_schema
+            # only has agent_name/model_alias/model_resolved/provider/
+            # input_tokens/output_tokens/cached_tokens/total_cost_usd/
+            # was_cached/latency_ms/created_at) — confirmed live via a real
+            # UndefinedColumnError, meaning this function has been silently
+            # failing (caught below, returning {}) on every real invocation.
+            # Dropped the nonexistent column rather than adding a migration
+            # for a field nothing else needs yet.
             query = text(
                 """
-                SELECT agent_name, model_alias, input_tokens, output_tokens, total_cost_usd, latency_ms, langfuse_trace_id
+                SELECT agent_name, model_alias, input_tokens, output_tokens, total_cost_usd, latency_ms
                 FROM campaign_cost_attribution
                 WHERE campaign_id = CAST(:campaign_id AS UUID)
                 ORDER BY created_at ASC
@@ -95,7 +106,6 @@ async def _load_cost_attribution(campaign_id: str) -> dict[str, list[dict[str, A
                         "output_tokens": row[3],
                         "cost_usd": float(row[4]) if row[4] is not None else None,
                         "latency_ms": row[5],
-                        "langfuse_trace_id": row[6],
                     }
                 )
     except Exception as exc:  # noqa: BLE001
@@ -464,6 +474,7 @@ def _normalize_campaign_id(value: object) -> str:
 async def create_campaign(
     body: CreateCampaignRequest,
     request: Request,
+    user: Annotated[UserContext, Depends(get_current_user)],
 ) -> dict:
     """Create and immediately enqueue a campaign for processing.
 
@@ -472,9 +483,14 @@ async def create_campaign(
     """
     campaign_id = new_campaign_id()
     request_id = getattr(request.state, "request_id", "")
-    org_id = _normalize_org_id(getattr(request.state, "org_id", None))
+    # org_id/user_id must come from the authenticated caller, not an
+    # unpopulated request.state (nothing in this app's middleware sets those
+    # attributes — reading them silently fell back to '' / DEFAULT_ORG_ID,
+    # which meant every campaign was recorded with created_by=NULL regardless
+    # of who actually created it).
+    org_id = _normalize_org_id(user.org_id)
     brand_id = _normalize_brand_id(body.brand_id)
-    user_id = getattr(request.state, "user_id", "")
+    user_id = user.user_id
 
     brief_payload = body.model_dump()
 
@@ -603,6 +619,168 @@ async def approve_campaign(campaign_id: str, body: ReviewDecision) -> dict:
     }
 
 
+@router.post("/{campaign_id}/send-to-review")
+async def send_campaign_to_review(
+    campaign_id: str,
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    """Move a campaign from 'draft' to 'awaiting_review'.
+
+    Called by the campaign's creator once they've previewed the generated
+    content — not automatically by the pipeline. Also allowed for admin/editor,
+    e.g. if the creator is unavailable and someone else needs to move it along.
+    """
+    normalized_campaign_id = _normalize_campaign_id(campaign_id)
+
+    async with get_db() as conn:
+        campaign_row = (
+            await conn.execute(
+                text("SELECT status, created_by FROM campaigns WHERE id = :campaign_id"),
+                {"campaign_id": normalized_campaign_id},
+            )
+        ).mappings().first()
+
+    if campaign_row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, CAMPAIGN_NOT_FOUND)
+
+    is_creator = campaign_row["created_by"] is not None and str(campaign_row["created_by"]) == user.user_id
+    is_manager = bool({"admin", "editor"} & set(user.roles))
+    if not (is_creator or is_manager):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the campaign's creator or an admin/editor can send it to review")
+
+    current_status = str(campaign_row["status"])
+    if current_status != "draft":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"campaign status '{current_status}' is not awaiting a send-to-review action",
+        )
+
+    try:
+        review_count = await review_service.send_campaign_to_review(normalized_campaign_id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+
+    return {
+        "campaign_id": normalized_campaign_id,
+        "status": "awaiting_review",
+        "review_requests_created": review_count,
+    }
+
+
+@router.post("/{campaign_id}/archive")
+async def archive_campaign_route(
+    campaign_id: str,
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    """Soft-archives a campaign (status='archived'), never a delete.
+
+    Permission split (2026-07-26): admins can archive any campaign
+    regardless of status. Regular users can only archive campaigns that
+    are genuinely stuck or failed — never one that's `awaiting_review` or
+    `published`. See services/campaign/archive_service.py for the exact
+    "stuck" thresholds.
+    """
+    normalized_campaign_id = _normalize_campaign_id(campaign_id)
+    is_admin = "admin" in user.roles
+
+    try:
+        await archive_service.archive_campaign(normalized_campaign_id, is_admin=is_admin)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+
+    return {"campaign_id": normalized_campaign_id, "status": "archived"}
+
+
+def _summarise_judge_reasoning(scores: dict[str, Any] | None) -> str:
+    """One line for the Run summary panel's Judge gate row — the
+    lowest-scoring criterion's own reasoning text is the most useful single
+    line for understanding why a judge scored a variant the way it did,
+    rather than concatenating every criterion (too long for a chip row)."""
+    if not scores:
+        return ""
+    worst_key, worst = min(
+        scores.items(), key=lambda kv: kv[1].get("score", 10) if isinstance(kv[1], dict) else 10
+    )
+    if not isinstance(worst, dict):
+        return ""
+    reasoning = str(worst.get("reasoning") or "").strip()
+    return reasoning[:160]
+def _optional_uuid(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        return None
+
+
+@router.get("/stats")
+async def get_campaign_stats(
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict[str, int]:
+    """Get campaign count statistics by status.
+
+    Returns the totals for active campaign statuses (draft, pending, published, failed, total).
+    """
+    is_admin = "admin" in user.roles
+    # Scoped identically to get_recent_campaigns:
+    created_by = None if is_admin else _optional_uuid(user.user_id)
+    brand_ids = user.brand_ids
+
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM campaigns
+                WHERE org_id = CAST(:org_id AS UUID)
+                  AND (:brand_filter_disabled OR brand_id = ANY(CAST(:brand_ids AS UUID[])))
+                  AND (CAST(:created_by AS UUID) IS NULL OR created_by = CAST(:created_by AS UUID))
+                  AND status != 'archived'
+                GROUP BY status
+                """
+            ),
+            {
+                "org_id": user.org_id,
+                "brand_filter_disabled": len(brand_ids) == 0,
+                "brand_ids": brand_ids,
+                "created_by": created_by,
+            },
+        )
+        rows = result.mappings().all()
+
+    # Default/initial count values
+    counts = {
+        "total": 0,
+        "draft": 0,
+        "pending": 0,
+        "published": 0,
+        "failed": 0,
+    }
+
+    # Map database statuses to stats buckets
+    # allowed statuses in DB: 'draft', 'queued', 'running', 'awaiting_review', 'published', 'failed', 'cancelled'
+    for row in rows:
+        status_val = str(row["status"])
+        count_val = int(row["count"] or 0)
+        
+        # Increment total for any non-archived status
+        counts["total"] += count_val
+        
+        if status_val == "draft":
+            counts["draft"] += count_val
+        elif status_val == "awaiting_review":
+            counts["pending"] += count_val
+        elif status_val == "published":
+            counts["published"] += count_val
+        elif status_val == "failed":
+            counts["failed"] += count_val
+
+    return counts
+
+
 @router.get("/{campaign_id}")
 async def get_campaign(campaign_id: str) -> dict:
     normalized_campaign_id = _normalize_campaign_id(campaign_id)
@@ -612,9 +790,11 @@ async def get_campaign(campaign_id: str) -> dict:
         campaign_result = await conn.execute(
             text(
                 """
-                SELECT id, org_id, brand_id, status, token_cost_usd, created_at, started_at, completed_at, brief
-                FROM campaigns
-                WHERE id = :campaign_id
+                SELECT c.id, c.org_id, c.brand_id, c.status, c.token_cost_usd, c.created_at,
+                       c.started_at, c.completed_at, c.brief, c.created_by, u.email AS creator_email
+                FROM campaigns c
+                LEFT JOIN users u ON u.id = c.created_by
+                WHERE c.id = :campaign_id
                 """
             ),
             {"campaign_id": normalized_campaign_id},
@@ -624,26 +804,90 @@ async def get_campaign(campaign_id: str) -> dict:
         if campaign_row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=CAMPAIGN_NOT_FOUND)
 
+        # Used by the read-only similar-campaign popup: if the current user
+        # created this campaign, it links back to the conversation that
+        # produced it instead of just showing an email address.
+        conversation_result = await conn.execute(
+            text(
+                """
+                SELECT id
+                FROM conversations
+                WHERE CAST(:campaign_id AS UUID) = ANY(campaign_ids)
+                   OR active_campaign_id = CAST(:campaign_id AS UUID)
+                LIMIT 1
+                """
+            ),
+            {"campaign_id": normalized_campaign_id},
+        )
+        conversation_row = conversation_result.mappings().first()
+
         variants_result = await conn.execute(
             text(
                 """
+                WITH latest_variants AS (
+                    -- Edits (whole-campaign or single-channel) INSERT a fresh
+                    -- content_variants row per re-run rather than updating in
+                    -- place, so pick only the newest row per task_id here.
+                    SELECT DISTINCT ON (task_id) *
+                    FROM content_variants
+                    WHERE campaign_id = :campaign_id
+                    ORDER BY task_id, created_at DESC
+                )
                 SELECT
+                    v.id,
                     v.task_id,
                     v.locale,
                     v.channel,
                     v.segment,
                     v.status,
                     v.final_content,
+                    v.translation_engine,
+                    v.back_translation_score,
+                    v.failure_reason,
+                    v.translation_checks,
                     a.weighted_mean AS composite_score
-                FROM content_variants v
+                FROM latest_variants v
                 LEFT JOIN aggregated_scores a ON a.variant_id = v.id
-                WHERE v.campaign_id = :campaign_id
-                ORDER BY v.created_at ASC
+                ORDER BY v.channel ASC, v.locale ASC
                 """
             ),
             {"campaign_id": normalized_campaign_id},
         )
         variant_rows = variants_result.mappings().all()
+
+        # Per-judge score/reasoning for the "Run summary" panel's Judge gate
+        # section (2026-07-27) — LATEST evaluation_round only per
+        # (variant, judge_model), since reflexion re-scores a retried variant
+        # and both rounds' rows persist (see migration 010).
+        judge_scores_result = await conn.execute(
+            text(
+                """
+                WITH latest_variants AS (
+                    SELECT DISTINCT ON (task_id) id, task_id
+                    FROM content_variants
+                    WHERE campaign_id = :campaign_id
+                    ORDER BY task_id, created_at DESC
+                ),
+                ranked AS (
+                    SELECT
+                        bs.*,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY bs.variant_id, bs.judge_model
+                            ORDER BY bs.evaluation_round DESC
+                        ) AS rn
+                    FROM brand_scores bs
+                    JOIN latest_variants lv ON lv.id = bs.variant_id
+                )
+                SELECT variant_id, judge_model, composite_score, scores, critical_violations
+                FROM ranked
+                WHERE rn = 1
+                """
+            ),
+            {"campaign_id": normalized_campaign_id},
+        )
+        judge_score_rows = judge_scores_result.mappings().all()
+
+        cost_by_agent = await _load_cost_attribution(normalized_campaign_id)
 
     return {
         "id": str(campaign_row["id"]),
@@ -655,7 +899,11 @@ async def get_campaign(campaign_id: str) -> dict:
         "started_at": campaign_row["started_at"],
         "completed_at": campaign_row["completed_at"],
         "brief": campaign_row["brief"] or {},
+        "created_by": str(campaign_row["created_by"]) if campaign_row["created_by"] else None,
+        "creator_email": campaign_row["creator_email"],
+        "conversation_id": str(conversation_row["id"]) if conversation_row else None,
         "in_memory_trace": in_memory_trace,
+        "cost_by_agent": cost_by_agent,
         "variants": [
             {
                 "task_id": str(row["task_id"]),
@@ -667,6 +915,26 @@ async def get_campaign(campaign_id: str) -> dict:
                 "composite_score": (
                     float(row["composite_score"]) if row["composite_score"] is not None else None
                 ),
+                "translation_engine": row["translation_engine"],
+                "back_translation_score": (
+                    float(row["back_translation_score"])
+                    if row["back_translation_score"] is not None
+                    else None
+                ),
+                "failure_reason": row["failure_reason"],
+                "translation_checks": row["translation_checks"],
+                # Per-judge score/reasoning for this variant — Run summary
+                # panel's Judge gate section (2026-07-27).
+                "judge_scores": [
+                    {
+                        "judge_model": jr["judge_model"],
+                        "composite_score": float(jr["composite_score"]),
+                        "reasoning": _summarise_judge_reasoning(jr["scores"]),
+                        "critical_violations": list(jr["critical_violations"] or []),
+                    }
+                    for jr in judge_score_rows
+                    if jr["variant_id"] == row["id"]
+                ],
             }
             for row in variant_rows
         ],

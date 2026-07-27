@@ -47,7 +47,7 @@ export function AppShell({ currentRoute, title, children }) {
         className={cn(
           'sticky top-0 hidden h-dvh shrink-0 flex-col border-r border-border bg-surface',
           'transition-[width] duration-200 ease-out lg:flex',
-          collapsed ? 'w-[4.75rem]' : 'w-64',
+          collapsed ? 'w-[4.75rem]' : 'w-80',
         )}
       >
         <div
@@ -75,7 +75,7 @@ export function AppShell({ currentRoute, title, children }) {
 
       {/* Main column */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <TopNav title={title} onOpenDrawer={() => setDrawerOpen(true)} />
+        <TopNav title={title} currentRoute={currentRoute} onOpenDrawer={() => setDrawerOpen(true)} />
         <main id="main-content" tabIndex={-1} className="flex-1 outline-none">
           {children}
         </main>
@@ -93,7 +93,7 @@ export function AppShell({ currentRoute, title, children }) {
             role="dialog"
             aria-modal="true"
             aria-label="Navigation"
-            className="absolute left-0 top-0 flex h-full w-[17rem] flex-col border-r border-border bg-surface shadow-2xl animate-fade-up"
+            className="absolute left-0 top-0 flex h-full w-[20rem] flex-col border-r border-border bg-surface shadow-2xl animate-fade-up"
           >
             <div className="flex h-16 items-center justify-between border-b border-border px-4">
               <Logo />

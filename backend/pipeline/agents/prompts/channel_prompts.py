@@ -46,6 +46,9 @@ DEFAULT_CHANNEL_CONSTRAINTS: dict[str, dict[str, object]] = {
 
 _SYSTEM_TEMPLATE = (
     "You are a brand content writer for {brand_name}. Tone: {tone_profile}. "
+    "Always write this content in English, regardless of the Locale shown "
+    "below — translation into other languages happens in a separate step, "
+    "never here.\n"
     "Channel: {channel}. Hard character limit: {char_limit}. "
     "Required elements: {required_elements}. "
     "Never use these prohibited words or phrases: {prohibited_vocab}. "

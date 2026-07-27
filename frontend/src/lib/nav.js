@@ -10,12 +10,12 @@ import {
 } from 'lucide-react';
 
 export const PRIMARY_NAV = [
-  { key: 'app', label: 'Workspace', href: '/app', icon: Home },
-  { key: 'gallery', label: 'Campaigns', href: '/gallery', icon: LayoutGrid },
+  { key: 'studio', label: 'Studio', href: '/studio', icon: Home },
+  { key: 'campaigns', label: 'Campaigns', href: '/campaigns', icon: LayoutGrid },
 ];
 
 export const SECONDARY_NAV = [
-  { key: 'admin', label: 'Admin Panel', href: '/admin', icon: ShieldCheck },
+  { key: 'admin', label: 'Admin', href: '/admin', icon: ShieldCheck },
 ];
 
 export const BRAND = {

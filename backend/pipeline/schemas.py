@@ -18,6 +18,7 @@ class CreateCampaignRequest(BaseModel):
     locales: list[str] = Field(min_length=1)
     audience_segments: list[str] = Field(min_length=1)
     token_budget: int = Field(gt=0)
+    end_date: str | None = None
     raw_text: str = ""
 
 

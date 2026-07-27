@@ -19,23 +19,33 @@ import {
   Award,
   UploadCloud,
   KeyRound,
+  X,
+  Plus,
+  Eye,
 } from 'lucide-react';
 import { Page } from '../Page.jsx';
+import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
 import { Badge } from '../ui/Badge.jsx';
 import { cn } from '@/lib/cn.js';
 import { useAuth } from '../hooks/useAuth.js';
 import {
   activateGoldenSet,
+  createBrand,
   createUser,
   deleteGoldenExample,
+  getBrandConfig,
   listBrandGuides,
+  listBrands,
   listCustomerSegments,
   listGoldenExamples,
   listGoldenSets,
   listUsers,
   openGoldenSet,
   promoteGoldenExample,
+  updateBrandConfig,
+  updateUser,
+  updateUserBrands,
   uploadBrandGuide,
   uploadCustomerSegments,
 } from '@/lib/api.js';
@@ -119,6 +129,7 @@ function StatCard({ icon: Icon, label, value, accent = 'text-brand' }) {
 const TABS = [
   { key: 'overview', label: 'Overview', icon: LayoutDashboard },
   { key: 'users', label: 'Users', icon: Users },
+  { key: 'brand', label: 'Brand Profile', icon: Building2 },
   { key: 'knowledge', label: 'Knowledge', icon: BookOpen },
   { key: 'golden', label: 'Golden Dataset', icon: Award },
 ];
@@ -130,6 +141,52 @@ export function AdminView({ onLock }) {
   const [brandId, setBrandId] = useState(DEFAULT_BRAND_ID);
   const [locale, setLocale] = useState('en-US');
   const [version, setVersion] = useState('v1');
+
+  // Multi-brand support (2026-07-27) — the org's full brand list, for the
+  // Brand Profile/Knowledge/Golden Dataset context selector and the "Add
+  // brand" flow, replacing what used to be a free-text brand-ID field.
+  const [orgBrands, setOrgBrands] = useState([]);
+  const [brandsLoading, setBrandsLoading] = useState(false);
+  const [newBrandName, setNewBrandName] = useState('');
+  const [creatingBrand, setCreatingBrand] = useState(false);
+  const [brandError, setBrandError] = useState('');
+
+  const refreshBrands = async () => {
+    setBrandsLoading(true);
+    try {
+      const res = await listBrands();
+      const list = res.brands || [];
+      setOrgBrands(list);
+      // Default the selector to the first known brand once the list loads,
+      // instead of leaving it pointed at the env-var fallback forever.
+      setBrandId((prev) => (list.some((b) => b.id === prev) ? prev : list[0]?.id || prev));
+    } catch (err) {
+      setBrandError(err instanceof Error ? err.message : 'Failed to load brands');
+    } finally {
+      setBrandsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshBrands();
+  }, []);
+
+  const submitNewBrand = async () => {
+    const name = newBrandName.trim();
+    if (!name) return;
+    setCreatingBrand(true);
+    setBrandError('');
+    try {
+      const created = await createBrand(name);
+      setNewBrandName('');
+      await refreshBrands();
+      setBrandId(created.id);
+    } catch (err) {
+      setBrandError(err instanceof Error ? err.message : 'Failed to create brand');
+    } finally {
+      setCreatingBrand(false);
+    }
+  };
 
   const [file, setFile] = useState(null);
   const [guides, setGuides] = useState([]);
@@ -148,9 +205,13 @@ export function AdminView({ onLock }) {
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserRole, setNewUserRole] = useState('viewer');
   const [newUserPassword, setNewUserPassword] = useState('');
+  const [newUserBrandIds, setNewUserBrandIds] = useState(new Set());
+  const [newUserStatus, setNewUserStatus] = useState('active');
   const [userStatus, setUserStatus] = useState('');
   const [userError, setUserError] = useState('');
   const [userCreating, setUserCreating] = useState(false);
+  const [editingBrandsUserId, setEditingBrandsUserId] = useState('');
+  const [activeBrandLocales, setActiveBrandLocales] = useState(['en-US']);
 
   const isAdmin = Boolean(user?.roles?.includes('admin'));
 
@@ -163,8 +224,8 @@ export function AdminView({ onLock }) {
     [brandId, locale, version, segmentFile],
   );
   const canCreateUser = useMemo(
-    () => Boolean(newUserName.trim() && newUserEmail.trim() && newUserRole.trim()),
-    [newUserName, newUserEmail, newUserRole],
+    () => Boolean(newUserEmail.trim() && newUserRole.trim()),
+    [newUserEmail, newUserRole],
   );
 
   const refreshUsers = async ({ showStatus = true } = {}) => {
@@ -193,29 +254,87 @@ export function AdminView({ onLock }) {
     setUserError('');
     setUserStatus('');
     try {
-      const payload = await createUser({
-        name: newUserName.trim(),
-        email: newUserEmail.trim(),
-        role: newUserRole.trim(),
-        password: newUserPassword.trim() || null,
-      });
-      const passwordNotice = payload.temporary_password
-        ? ` Temporary password: ${payload.temporary_password}`
-        : '';
-      const totalUsers = await refreshUsers({ showStatus: false });
-      setUserStatus(
-        `Created ${payload.user?.email || newUserEmail.trim()}.${passwordNotice} Total users: ${totalUsers}.`,
-      );
-      setNewUserName('');
-      setNewUserEmail('');
-      setNewUserRole('viewer');
-      setNewUserPassword('');
+      if (editingBrandsUserId) {
+        // Edit mode
+        const payload = {
+          roles: [newUserRole],
+          brand_ids: Array.from(newUserBrandIds),
+          status: newUserStatus,
+        };
+        if (newUserPassword.trim()) {
+          payload.password = newUserPassword.trim();
+        }
+        await updateUser(editingBrandsUserId, payload);
+        await refreshUsers({ showStatus: false });
+        cancelEditingUser();
+        setUserStatus('User details updated successfully.');
+      } else {
+        // Create mode
+        const payload = await createUser({
+          name: newUserName.trim(),
+          email: newUserEmail.trim(),
+          role: newUserRole.trim(),
+          password: newUserPassword.trim() || null,
+          brandIds: newUserBrandIds.size > 0 ? Array.from(newUserBrandIds) : null,
+        });
+        const passwordNotice = payload.temporary_password
+          ? ` Temporary password: ${payload.temporary_password}`
+          : '';
+        const totalUsers = await refreshUsers({ showStatus: false });
+        setUserStatus(
+          `Created ${payload.user?.email || newUserEmail.trim()}.${passwordNotice} Total users: ${totalUsers}.`,
+        );
+        cancelEditingUser();
+      }
     } catch (err) {
-      setUserError(err instanceof Error ? err.message : 'Failed to create user');
+      setUserError(err instanceof Error ? err.message : 'Failed to save user');
     } finally {
       setUserCreating(false);
     }
   };
+
+  const toggleNewUserBrand = (id) => {
+    setNewUserBrandIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const startEditingUser = (managedUser) => {
+    setEditingBrandsUserId(managedUser.user_id);
+    setNewUserEmail(managedUser.email);
+    setNewUserRole(managedUser.roles?.[0] || 'viewer');
+    setNewUserStatus(managedUser.status || 'active');
+    setNewUserBrandIds(new Set(managedUser.brand_ids || []));
+    setNewUserPassword('');
+  };
+
+  const cancelEditingUser = () => {
+    setEditingBrandsUserId('');
+    setNewUserEmail('');
+    setNewUserRole('viewer');
+    setNewUserStatus('active');
+    setNewUserBrandIds(new Set());
+    setNewUserPassword('');
+    setNewUserName('');
+  };
+
+  useEffect(() => {
+    if (!brandId) return;
+    getBrandConfig(brandId)
+      .then((res) => {
+        const locs = res.locales && res.locales.length ? res.locales : (res.available_locales || ['en-US']);
+        setActiveBrandLocales(locs);
+        if (locs.length > 0 && !locs.includes(locale)) {
+          setLocale(locs[0]);
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load brand locales for context bar', err);
+      });
+  }, [brandId]);
 
   const refreshGuides = async () => {
     setLoadingGuides(true);
@@ -304,6 +423,15 @@ export function AdminView({ onLock }) {
     refreshGuides();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin]);
+
+  // Auto-refresh brand guides and customer segments when context or tab changes (2026-07-27)
+  useEffect(() => {
+    if (!isAdmin) return;
+    if (tab === 'knowledge' || tab === 'brand') {
+      refreshGuides();
+      refreshSegments();
+    }
+  }, [tab, brandId, locale, version, isAdmin]);
 
   if (!isAdmin) {
     return (
@@ -394,10 +522,16 @@ export function AdminView({ onLock }) {
               setRole: setNewUserRole,
               password: newUserPassword,
               setPassword: setNewUserPassword,
+              brandIds: newUserBrandIds,
+              toggleBrand: toggleNewUserBrand,
             }}
             canCreate={canCreateUser}
             creating={userCreating}
             onSubmit={submitUser}
+            orgBrands={orgBrands}
+            editingBrandsUserId={editingBrandsUserId}
+            onStartEditingBrands={startEditingUser}
+            onCancelEditingBrands={cancelEditingUser}
           />
         )}
 
@@ -409,7 +543,41 @@ export function AdminView({ onLock }) {
             setLocale={setLocale}
             version={version}
             setVersion={setVersion}
+            brands={orgBrands}
+            brandsLoading={brandsLoading}
+            activeBrandLocales={activeBrandLocales}
           />
+        )}
+
+        {tab === 'brand' && (
+          <>
+            <BrandPillRow
+              brands={orgBrands}
+              brandId={brandId}
+              setBrandId={setBrandId}
+              newBrandName={newBrandName}
+              setNewBrandName={setNewBrandName}
+              onCreateBrand={submitNewBrand}
+              creatingBrand={creatingBrand}
+              brandError={brandError}
+            />
+            <BrandProfilePanel
+              brandId={brandId}
+              locale={locale}
+              setLocale={setLocale}
+              version={version}
+              setVersion={setVersion}
+              guides={guides}
+              file={file}
+              setFile={setFile}
+              canUpload={canUpload}
+              uploading={uploading}
+              loadingGuides={loadingGuides}
+              onSubmitGuide={submitGuide}
+              onRefreshGuides={refreshGuides}
+              onSaved={refreshBrands}
+            />
+          </>
         )}
 
         {tab === 'knowledge' && (
@@ -508,33 +676,55 @@ function initials(nameOrEmail = '') {
   return (parts.map((p) => p[0]).join('') || 'U').toUpperCase();
 }
 
-function UsersPanel({ users, loading, error, status, onRefresh, form, canCreate, creating, onSubmit }) {
+function UsersPanel({
+  users,
+  loading,
+  error,
+  status,
+  onRefresh,
+  form,
+  canCreate,
+  creating,
+  onSubmit,
+  orgBrands,
+  editingBrandsUserId,
+  onStartEditingBrands,
+  onCancelEditingBrands,
+}) {
+  const brandName = (id) => orgBrands.find((b) => b.id === id)?.name || id;
+
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)] lg:items-start">
-      {/* Create user */}
+    <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
+      {/* Create / Edit user form */}
       <section className="rounded-2xl border border-border bg-surface p-5 card-shadow">
         <div className="mb-4 flex items-center gap-2">
           <span className="grid h-9 w-9 place-items-center rounded-xl brand-gradient text-white">
             <UserPlus size={18} aria-hidden="true" />
           </span>
           <div>
-            <h2 className="text-base font-semibold text-fg">Add a user</h2>
-            <p className="text-xs text-muted">Provision an account in this tenant.</p>
+            <h2 className="text-base font-semibold text-fg">
+              {editingBrandsUserId ? 'Edit user' : 'Add a user'}
+            </h2>
+            <p className="text-xs text-muted">
+              {editingBrandsUserId ? 'Update account details and brand associations.' : 'Provision an account in this tenant.'}
+            </p>
           </div>
         </div>
 
         <StatusBanner error={error} status={status} />
 
         <form className="space-y-3" onSubmit={onSubmit} autoComplete="off">
-          <Labeled label="Full name">
-            <input
-              className={inputCls}
-              value={form.name}
-              onChange={(e) => form.setName(e.target.value)}
-              placeholder="Jane Doe"
-              autoComplete="off"
-            />
-          </Labeled>
+          {!editingBrandsUserId && (
+            <Labeled label="Full name">
+              <input
+                className={inputCls}
+                value={form.name}
+                onChange={(e) => form.setName(e.target.value)}
+                placeholder="Jane Doe"
+                autoComplete="off"
+              />
+            </Labeled>
+          )}
           <Labeled label="Email">
             <input
               className={inputCls}
@@ -543,8 +733,10 @@ function UsersPanel({ users, loading, error, status, onRefresh, form, canCreate,
               onChange={(e) => form.setEmail(e.target.value)}
               placeholder="jane@company.com"
               autoComplete="off"
+              disabled={Boolean(editingBrandsUserId)}
             />
           </Labeled>
+          
           <div className="grid grid-cols-2 gap-3">
             <Labeled label="Role">
               <select
@@ -554,9 +746,39 @@ function UsersPanel({ users, loading, error, status, onRefresh, form, canCreate,
               >
                 <option value="viewer">Viewer</option>
                 <option value="editor">Editor</option>
+                <option value="reviewer">Reviewer</option>
                 <option value="admin">Admin</option>
               </select>
             </Labeled>
+            
+            {editingBrandsUserId ? (
+              <Labeled label="Status">
+                <select
+                  className={inputCls}
+                  value={form.status}
+                  onChange={(e) => form.setStatus(e.target.value)}
+                >
+                  <option value="active">Active</option>
+                  <option value="deactivated">Deactivated</option>
+                  <option value="pending">Pending</option>
+                </select>
+              </Labeled>
+            ) : (
+              <Labeled label="Password" hint="optional">
+                <input
+                  className={inputCls}
+                  type="password"
+                  minLength={8}
+                  value={form.password}
+                  onChange={(e) => form.setPassword(e.target.value)}
+                  placeholder="Auto-generated"
+                  autoComplete="new-password"
+                />
+              </Labeled>
+            )}
+          </div>
+
+          {editingBrandsUserId && (
             <Labeled label="Password" hint="optional">
               <input
                 className={inputCls}
@@ -564,18 +786,49 @@ function UsersPanel({ users, loading, error, status, onRefresh, form, canCreate,
                 minLength={8}
                 value={form.password}
                 onChange={(e) => form.setPassword(e.target.value)}
-                placeholder="Auto-generated"
+                placeholder="Leave blank to keep current password"
                 autoComplete="new-password"
               />
             </Labeled>
-          </div>
+          )}
+
+          <Labeled label="Brands" hint="none selected = inherit your own brands">
+            <div className="flex flex-wrap gap-1.5">
+              {orgBrands.map((b) => (
+                <button
+                  key={b.id}
+                  type="button"
+                  onClick={() => form.toggleBrand(b.id)}
+                  className={cn(
+                    'rounded-full border px-2.5 py-1 text-xs font-medium transition-colors',
+                    form.brandIds.has(b.id)
+                      ? 'border-brand bg-brand text-brand-fg'
+                      : 'border-border bg-surface text-muted hover:border-border-strong hover:text-fg',
+                  )}
+                >
+                  {b.name}
+                </button>
+              ))}
+            </div>
+          </Labeled>
+          
           <p className="flex items-start gap-1.5 text-xs text-faint">
             <KeyRound size={13} aria-hidden="true" className="mt-0.5 shrink-0" />
-            Leave the password blank to auto-generate a temporary one, shown after creation.
+            {editingBrandsUserId 
+              ? 'Update the password field only if you want to set a new password for this user.'
+              : 'Leave the password blank to auto-generate a temporary one, shown after creation.'}
           </p>
-          <Button type="submit" variant="primary" size="md" className="w-full" disabled={!canCreate || creating}>
-            {creating ? 'Creating…' : 'Add user'}
-          </Button>
+
+          <div className="flex gap-2">
+            <Button type="submit" variant="primary" size="md" className="flex-1" disabled={!canCreate || creating}>
+              {creating ? 'Saving…' : (editingBrandsUserId ? 'Save changes' : 'Add user')}
+            </Button>
+            {editingBrandsUserId && (
+              <Button type="button" variant="secondary" size="md" onClick={onCancelEditingBrands}>
+                Cancel
+              </Button>
+            )}
+          </div>
         </form>
       </section>
 
@@ -602,24 +855,45 @@ function UsersPanel({ users, loading, error, status, onRefresh, form, canCreate,
           </div>
         ) : (
           <ul className="divide-y divide-border">
-            {users.map((u) => (
-              <li key={u.user_id} className="flex items-center gap-3 px-5 py-3">
-                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-brand-soft text-xs font-semibold text-brand">
-                  {initials(u.email)}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium text-fg">{u.email}</p>
-                  <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                    {(u.roles || []).map((r) => (
-                      <Badge key={r} tone={ROLE_TONE[r] || 'neutral'}>
-                        {r}
-                      </Badge>
-                    ))}
+            {users.map((u) => {
+              const isSelected = editingBrandsUserId === u.user_id;
+              return (
+                <li 
+                  key={u.user_id} 
+                  className={cn(
+                    "px-5 py-3 cursor-pointer hover:bg-surface-2 transition-colors",
+                    isSelected && "bg-brand-soft/20 border-l-4 border-l-brand"
+                  )}
+                  onClick={() => onStartEditingBrands(u)}
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-brand-soft text-xs font-semibold text-brand">
+                      {initials(u.email)}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-fg">{u.email}</p>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                        {(u.roles || []).map((r) => (
+                          <Badge key={r} tone={ROLE_TONE[r] || 'neutral'}>
+                            {r}
+                          </Badge>
+                        ))}
+                        {(u.brand_ids || []).length === 0 ? (
+                          <span className="text-[11px] text-faint">org-wide</span>
+                        ) : (
+                          (u.brand_ids || []).map((id) => (
+                            <span key={id} className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-muted">
+                              {brandName(id)}
+                            </span>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                    <Badge tone={USER_STATUS_TONE[u.status] || 'neutral'}>{u.status}</Badge>
                   </div>
-                </div>
-                <Badge tone={USER_STATUS_TONE[u.status] || 'neutral'}>{u.status}</Badge>
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>
@@ -629,23 +903,457 @@ function UsersPanel({ users, loading, error, status, onRefresh, form, canCreate,
 
 /* --------------------------------------------------------------- Context bar */
 
-function ContextBar({ brandId, setBrandId, locale, setLocale, version, setVersion }) {
+function ContextBar({
+  brandId,
+  setBrandId,
+  locale,
+  setLocale,
+  version,
+  setVersion,
+  brands,
+  brandsLoading,
+  activeBrandLocales = ['en-US'],
+}) {
   return (
     <div className="mb-4 rounded-2xl border border-border bg-surface-2/60 p-3">
       <div className="mb-2 flex items-center gap-1.5 px-1 text-xs font-semibold uppercase tracking-wide text-faint">
         <Building2 size={12} aria-hidden="true" /> Working context
       </div>
       <div className="grid gap-2 sm:grid-cols-[2fr_1fr_1fr]">
-        <input
-          className={cn(inputCls, 'font-mono text-xs')}
+        <select
+          className={inputCls}
           value={brandId}
           onChange={(e) => setBrandId(e.target.value)}
-          placeholder="Brand ID"
-          aria-label="Brand ID"
-        />
-        <input className={inputCls} value={locale} onChange={(e) => setLocale(e.target.value)} aria-label="Locale" placeholder="Locale" />
+          aria-label="Brand"
+        >
+          {brands.length === 0 ? (
+            <option value="">{brandsLoading ? 'Loading brands…' : 'No brands yet'}</option>
+          ) : (
+            brands.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+              </option>
+            ))
+          )}
+        </select>
+        
+        <select
+          className={inputCls}
+          value={locale}
+          onChange={(e) => setLocale(e.target.value)}
+          aria-label="Locale"
+        >
+          {activeBrandLocales.map((loc) => (
+            <option key={loc} value={loc}>
+              {loc}
+            </option>
+          ))}
+        </select>
+
         <input className={inputCls} value={version} onChange={(e) => setVersion(e.target.value)} aria-label="Version" placeholder="Version" />
       </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------- Brand Profile */
+
+// Admin-editable brand entitlement + truthfulness profile (next_tasks.md
+// items 14/22/42, 2026-07-27) — this is the actual UI surface for what
+// pipeline/agents/intake.py reads from brands.config to enforce channel/
+// locale entitlement and check brief-vs-brand plausibility, and what the
+// chat's channel/locale pickers (item 23/23a) narrow down to. Real form
+// fields only — no raw JSON entry, per explicit direction.
+// Brand switcher pills, one per org brand, plus "Add brand" as one of the
+// pills (2026-07-27 layout revamp — replaces the free-text/dropdown brand
+// field for this tab specifically with the pill-row style shown in the
+// user's mockup). Controls the SAME top-level `brandId` state the
+// Knowledge/Golden Dataset tabs' ContextBar also controls, so switching
+// brands here is reflected there too, and vice versa.
+function BrandPillRow({
+  brands,
+  brandId,
+  setBrandId,
+  newBrandName,
+  setNewBrandName,
+  onCreateBrand,
+  creatingBrand,
+  brandError,
+}) {
+  const [addingBrand, setAddingBrand] = useState(false);
+  // Project-defined tone tokens only (see global.css's `@theme`) — raw
+  // Tailwind palette classes like bg-blue-500 aren't guaranteed to exist here.
+  const swatchColors = ['bg-brand', 'bg-success', 'bg-warning', 'bg-danger', 'bg-muted'];
+
+  const confirmAdd = async () => {
+    await onCreateBrand();
+    setAddingBrand(false);
+  };
+
+  return (
+    <div className="mb-5">
+      <div className="flex flex-wrap items-center gap-2">
+        {brands.map((b, idx) => (
+          <button
+            key={b.id}
+            type="button"
+            onClick={() => setBrandId(b.id)}
+            className={cn(
+              'flex items-center gap-2 rounded-full border px-3 py-2 text-sm font-medium transition-colors',
+              b.id === brandId
+                ? 'border-brand bg-brand-soft text-fg'
+                : 'border-border bg-surface text-muted hover:border-border-strong hover:text-fg',
+            )}
+          >
+            <span className={cn('h-5 w-5 shrink-0 rounded-md', swatchColors[idx % swatchColors.length])} />
+            {b.name}
+            {b.source_locale && <span className="text-xs text-faint">{b.source_locale}</span>}
+          </button>
+        ))}
+
+        {addingBrand ? (
+          <div className="flex items-center gap-1.5 rounded-full border border-border bg-surface px-2 py-1">
+            <input
+              autoFocus
+              className="h-7 w-36 border-none bg-transparent text-sm text-fg outline-none placeholder:text-faint"
+              value={newBrandName}
+              onChange={(e) => setNewBrandName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  confirmAdd();
+                }
+                if (e.key === 'Escape') setAddingBrand(false);
+              }}
+              placeholder="Brand name"
+            />
+            <Button variant="secondary" size="sm" onClick={confirmAdd} disabled={creatingBrand || !newBrandName.trim()}>
+              {creatingBrand ? '…' : 'Add'}
+            </Button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setAddingBrand(true)}
+            className="flex items-center gap-1.5 rounded-full border border-dashed border-border-strong px-3 py-2 text-sm font-medium text-muted transition-colors hover:border-brand hover:text-brand"
+          >
+            <Plus size={15} aria-hidden="true" /> Add brand
+          </button>
+        )}
+      </div>
+      {brandError ? <p className="mt-1.5 text-xs text-danger">{brandError}</p> : null}
+    </div>
+  );
+}
+
+function BrandProfilePanel({
+  brandId,
+  locale,
+  setLocale,
+  version,
+  setVersion,
+  guides,
+  file,
+  setFile,
+  canUpload,
+  uploading,
+  loadingGuides,
+  onSubmitGuide,
+  onRefreshGuides,
+  onSaved,
+}) {
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [status, setStatus] = useState('');
+  const [name, setName] = useState('');
+  const [industry, setIndustry] = useState('');
+  const [keyClaims, setKeyClaims] = useState([]);
+  const [claimDraft, setClaimDraft] = useState('');
+  const [availableChannels, setAvailableChannels] = useState([]);
+  const [availableLocales, setAvailableLocales] = useState([]);
+  const [selectedChannels, setSelectedChannels] = useState(new Set());
+  const [selectedLocales, setSelectedLocales] = useState(new Set());
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    getBrandConfig(brandId)
+      .then((res) => {
+        if (cancelled) return;
+        setName(res.brand_name || '');
+        setIndustry(res.industry || '');
+        setKeyClaims(res.key_claims || []);
+        setAvailableChannels(res.available_channels || []);
+        setAvailableLocales(res.available_locales || []);
+        // null/unset from the API means "no allow-list configured yet" —
+        // default the checkboxes to everything selected (i.e. today's
+        // effective behavior: allow all), not an empty, confusing set.
+        setSelectedChannels(new Set(res.channels && res.channels.length ? res.channels : res.available_channels || []));
+        setSelectedLocales(new Set(res.locales && res.locales.length ? res.locales : res.available_locales || []));
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load brand profile');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [brandId]);
+
+  const toggleChannel = (channel) => {
+    setSelectedChannels((prev) => {
+      const next = new Set(prev);
+      if (next.has(channel)) next.delete(channel);
+      else next.add(channel);
+      return next;
+    });
+  };
+
+  const toggleLocale = (locale) => {
+    setSelectedLocales((prev) => {
+      const next = new Set(prev);
+      if (next.has(locale)) next.delete(locale);
+      else next.add(locale);
+      return next;
+    });
+  };
+
+  const addClaim = () => {
+    const trimmed = claimDraft.trim();
+    if (!trimmed) return;
+    setKeyClaims((prev) => [...prev, trimmed]);
+    setClaimDraft('');
+  };
+
+  const removeClaim = (idx) => {
+    setKeyClaims((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setError('');
+    setStatus('');
+    try {
+      // Selecting every available option is treated the same as "no
+      // restriction configured" (empty allow-list) so a brand that starts
+      // fully-open and stays fully-open doesn't silently start narrowing
+      // itself the moment new channels/locales are added to the platform.
+      const channelsPayload =
+        selectedChannels.size === availableChannels.length ? [] : Array.from(selectedChannels);
+      const localesPayload =
+        selectedLocales.size === availableLocales.length ? [] : Array.from(selectedLocales);
+      await updateBrandConfig(brandId, {
+        name,
+        industry,
+        keyClaims,
+        channels: channelsPayload,
+        locales: localesPayload,
+      });
+      setStatus('Brand profile saved.');
+      if (onSaved) await onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save brand profile');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-5">
+      <StatusBanner error={error} status={status} />
+      {loading ? (
+        <p className="text-sm text-muted">Loading brand profile…</p>
+      ) : (
+        <>
+          <div>
+            <p className="text-base font-semibold text-fg">Brand profile</p>
+            <p className="text-xs text-faint">
+              Used by intake to reject briefs that don't plausibly match this brand, before any
+              generation cost is spent. Leave blank to skip this check entirely.
+            </p>
+          </div>
+
+          <div className="grid gap-8 lg:grid-cols-2 lg:items-start">
+            {/* Column 1 — Identity & Guidelines */}
+            <div className="space-y-5">
+              {/* Brand details */}
+              <div className="rounded-2xl border border-border bg-surface p-4 card-shadow">
+                <p className="mb-3 text-sm font-semibold text-fg">Brand details</p>
+                <div className="space-y-4">
+                  <Labeled label="Brand name">
+                    <input
+                      className={inputCls}
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="Brand name"
+                    />
+                  </Labeled>
+                  <Labeled label="Industry" hint="e.g. telecom, artisanal bakery">
+                    <input
+                      className={inputCls}
+                      value={industry}
+                      onChange={(e) => setIndustry(e.target.value)}
+                      placeholder="Industry"
+                    />
+                  </Labeled>
+                  <Labeled label="Key claims / offerings" hint="what this brand actually says about itself">
+                    <div className="flex flex-wrap gap-1.5">
+                      {keyClaims.map((claim, idx) => (
+                        <span
+                          key={`${claim}-${idx}`}
+                          className="inline-flex items-center gap-1.5 rounded-full bg-surface-2 px-2.5 py-1 text-xs text-muted"
+                        >
+                          {claim}
+                          <button
+                            type="button"
+                            onClick={() => removeClaim(idx)}
+                            aria-label={`Remove ${claim}`}
+                            className="text-faint hover:text-danger"
+                          >
+                            <X size={12} aria-hidden="true" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                    <div className="mt-2 flex gap-2">
+                      <input
+                        className={inputCls}
+                        value={claimDraft}
+                        onChange={(e) => setClaimDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            addClaim();
+                          }
+                        }}
+                        placeholder="Add a claim and press Enter"
+                      />
+                      <Button variant="secondary" size="sm" onClick={addClaim} disabled={!claimDraft.trim()}>
+                        <Plus size={14} aria-hidden="true" /> Add
+                      </Button>
+                    </div>
+                  </Labeled>
+                </div>
+                <Button variant="primary" className="mt-5 w-full" onClick={save} disabled={saving || !name.trim()}>
+                  {saving ? 'Saving…' : 'Save brand profile'}
+                </Button>
+              </div>
+
+              {/* Guideline upload */}
+              <div className="rounded-2xl border border-border bg-surface p-4 card-shadow">
+                <p className="mb-1 text-sm font-semibold text-fg">Guideline</p>
+                <p className="mb-3 text-xs text-faint">
+                  Uploaded here, this brand's guideline — changes appear in the Knowledge tab too,
+                  since it's the same data.
+                </p>
+
+                <div className="mb-4 grid grid-cols-2 gap-2">
+                  <input
+                    className={cn(inputCls, 'text-xs')}
+                    value={locale}
+                    onChange={(e) => setLocale(e.target.value)}
+                    placeholder="Locale"
+                    aria-label="Guideline locale"
+                  />
+                  <input
+                    className={cn(inputCls, 'text-xs')}
+                    value={version}
+                    onChange={(e) => setVersion(e.target.value)}
+                    placeholder="Version"
+                    aria-label="Guideline version"
+                  />
+                </div>
+                <FileDrop file={file} onFile={setFile} hint="PDF, DOCX, or TXT" />
+                <div className="mt-2 flex items-center gap-2">
+                  <Button variant="secondary" size="sm" onClick={onSubmitGuide} disabled={!canUpload || uploading}>
+                    <Upload size={14} aria-hidden="true" />
+                    {uploading ? 'Uploading…' : 'Upload guideline'}
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={onRefreshGuides} disabled={loadingGuides}>
+                    <RefreshCw size={13} aria-hidden="true" className={loadingGuides ? 'animate-spin' : ''} />
+                  </Button>
+                </div>
+                {guides.length > 0 && (
+                  <ul className="mt-3 space-y-1.5">
+                    {guides.map((g) => (
+                      <li
+                        key={g.id || `${g.locale}-${g.version}`}
+                        className="flex items-center justify-between gap-2 rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs"
+                      >
+                        <span className="flex items-center gap-1.5 text-fg">
+                          <FileText size={13} aria-hidden="true" className="text-faint" />
+                          {g.filename || `${g.locale} · ${g.version}`}
+                        </span>
+                        <span className="text-faint">{g.locale}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+
+            {/* Column 2 — Entitlements & Golden Dataset */}
+            <div className="space-y-5">
+              <div className="rounded-2xl border border-border bg-surface p-4 card-shadow">
+                <p className="mb-1 text-sm font-semibold text-fg">Entitled channels</p>
+                <p className="mb-3 text-xs text-faint">Only these channels are offered for this brand.</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {availableChannels.map((channel) => (
+                    <button
+                      key={channel}
+                      type="button"
+                      onClick={() => toggleChannel(channel)}
+                      className={cn(
+                        'rounded-full border px-2.5 py-1 text-xs font-medium capitalize transition-colors',
+                        selectedChannels.has(channel)
+                          ? 'border-brand bg-brand text-brand-fg'
+                          : 'border-border bg-surface text-muted hover:border-border-strong hover:text-fg',
+                      )}
+                    >
+                      {channel}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-border bg-surface p-4 card-shadow">
+                <p className="mb-1 text-sm font-semibold text-fg">Entitled locales</p>
+                <p className="mb-3 text-xs text-faint">en-US is always entitled as the source locale.</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {availableLocales.map((loc) => (
+                    <button
+                      key={loc}
+                      type="button"
+                      onClick={() => toggleLocale(loc)}
+                      className={cn(
+                        'rounded-full border px-2.5 py-1 text-xs font-medium transition-colors',
+                        selectedLocales.has(loc)
+                          ? 'border-brand bg-brand text-brand-fg'
+                          : 'border-border bg-surface text-muted hover:border-border-strong hover:text-fg',
+                      )}
+                    >
+                      {loc}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-border bg-surface p-4 card-shadow">
+                <p className="mb-1 text-sm font-semibold text-fg">Golden Dataset</p>
+                <p className="mb-3 text-xs text-faint">
+                  Managed here, this brand's golden dataset — changes appear in the Golden Dataset
+                  tab too, since it's the same data.
+                </p>
+                <GoldenDatasetPanel brandId={brandId} locale={locale} version={version} hideExamples={true} />
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -770,13 +1478,22 @@ function KnowledgePanel({
 
 /* ----------------------------------------------------------- Golden dataset */
 
-function GoldenDatasetPanel({ brandId, locale, version }) {
+function GoldenDatasetPanel({ brandId, locale, version, hideExamples = false }) {
   const [sets, setSets] = useState([]);
   const [examples, setExamples] = useState([]);
   const [loading, setLoading] = useState(false);
   const [opening, setOpening] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
+  
+  // Modal state variables
+  const [viewingExample, setViewingExample] = useState(null);
+  const [previewingSet, setPreviewingSet] = useState(null);
+  const [previewExamples, setPreviewExamples] = useState([]);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  
+  // Lazy loading examples
+  const [visibleCount, setVisibleCount] = useState(3);
 
   const refresh = async () => {
     setLoading(true);
@@ -848,6 +1565,24 @@ function GoldenDatasetPanel({ brandId, locale, version }) {
       `Deleted example ${exampleId.slice(0, 8)}….`,
     );
 
+  const handlePreviewSet = async (set) => {
+    setPreviewingSet(set);
+    setLoadingPreview(true);
+    try {
+      const res = await listGoldenExamples(brandId.trim(), { setId: set.id });
+      setPreviewExamples(res.items || []);
+    } catch (err) {
+      console.error("Failed to load set examples for preview", err);
+    } finally {
+      setLoadingPreview(false);
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    setVisibleCount(3);
+  }, [brandId, locale, version]);
+
   return (
     <section className="rounded-2xl border border-border bg-surface p-5 card-shadow">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -874,7 +1609,7 @@ function GoldenDatasetPanel({ brandId, locale, version }) {
 
       <StatusBanner error={error} status={status} />
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className={cn("grid gap-4", hideExamples ? "grid-cols-1" : "lg:grid-cols-2")}>
         <div className="rounded-xl border border-border bg-surface-2 p-3.5">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Dataset sets</h3>
           {sets.length === 0 ? (
@@ -882,76 +1617,212 @@ function GoldenDatasetPanel({ brandId, locale, version }) {
               No dataset sets yet.
             </p>
           ) : (
-            <ul className="space-y-2">
-              {sets.map((set) => (
-                <li
-                  key={set.id}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2.5"
-                >
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-fg">
-                      {set.locale} · {set.guide_version || 'no version'}
-                    </p>
-                    <div className="mt-1 flex items-center gap-1.5">
-                      <Badge tone={set.status === 'active' ? 'success' : 'neutral'}>{set.status}</Badge>
-                      <span className="text-xs text-faint">{set.source}</span>
+            <div className="max-h-[350px] overflow-y-auto pr-1">
+              <ul className="space-y-2">
+                {sets.map((set) => (
+                  <li
+                    key={set.id}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2.5"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-fg">
+                        {set.locale} · {set.guide_version || 'no version'}
+                      </p>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                        <Badge tone={set.status === 'active' ? 'success' : 'neutral'}>{set.status}</Badge>
+                        <span className="text-xs text-faint">{set.source}</span>
+                      </div>
                     </div>
-                  </div>
-                  {set.status !== 'active' ? (
-                    <Button variant="secondary" size="sm" onClick={() => activate(set.id)}>
-                      Activate
-                    </Button>
-                  ) : (
-                    <CheckCircle2 size={16} aria-hidden="true" className="shrink-0 text-success" />
-                  )}
-                </li>
-              ))}
-            </ul>
+                    <div className="flex items-center gap-2">
+                      <Button variant="ghost" size="sm" onClick={() => handlePreviewSet(set)} title="Preview set examples">
+                        Preview
+                      </Button>
+                      {set.status !== 'active' ? (
+                        <Button variant="secondary" size="sm" onClick={() => activate(set.id)}>
+                          Activate
+                        </Button>
+                      ) : (
+                        <CheckCircle2 size={16} aria-hidden="true" className="shrink-0 text-success" />
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </div>
 
-        <div className="rounded-xl border border-border bg-surface-2 p-3.5">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Examples</h3>
-          {examples.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-border bg-surface px-3 py-6 text-center text-sm text-muted">
-              No examples yet.
-            </p>
-          ) : (
-            <ul className="space-y-2">
-              {examples.map((example) => (
-                <li
-                  key={example.id}
-                  className="flex items-start justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2.5"
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <Badge tone={example.status === 'golden' ? 'brand' : 'neutral'}>
-                        {example.status}
-                      </Badge>
-                      <span className="truncate text-xs font-medium text-fg">
-                        {example.channel || 'any'} · {example.locale}
-                      </span>
-                    </div>
-                    <p className="mt-1 line-clamp-2 text-xs text-muted">
-                      {(example.expected_content || '').slice(0, 140)}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 gap-1">
-                    {example.status !== 'golden' ? (
-                      <Button variant="ghost" size="sm" onClick={() => promote(example.id)} title="Promote to golden">
-                        <Star size={14} aria-hidden="true" />
-                      </Button>
-                    ) : null}
-                    <Button variant="ghost" size="sm" onClick={() => remove(example.id)} title="Delete example">
-                      <Trash2 size={14} aria-hidden="true" />
-                    </Button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+        {!hideExamples && (
+          <div className="rounded-xl border border-border bg-surface-2 p-3.5">
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Examples</h3>
+            {examples.length === 0 ? (
+              <p className="rounded-lg border border-dashed border-border bg-surface px-3 py-6 text-center text-sm text-muted">
+                No examples yet.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                <div className="max-h-[350px] overflow-y-auto pr-1">
+                  <ul className="space-y-2">
+                    {examples.slice(0, visibleCount).map((example) => (
+                      <li
+                        key={example.id}
+                        className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2.5"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-fg">
+                            {example.description || 'On-brand copy example'}
+                          </p>
+                          <div className="mt-1 flex items-center gap-1.5">
+                            <Badge tone={example.status === 'golden' ? 'brand' : 'neutral'}>
+                              {example.status}
+                            </Badge>
+                            <span className="truncate text-xs text-muted">
+                              {example.channel || 'any'} · {example.locale}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 gap-1">
+                          <Button variant="ghost" size="sm" onClick={() => setViewingExample(example)} title="View content details">
+                            <Eye size={14} aria-hidden="true" />
+                          </Button>
+                          {example.status !== 'golden' ? (
+                            <Button variant="ghost" size="sm" onClick={() => promote(example.id)} title="Promote to golden">
+                              <Star size={14} aria-hidden="true" />
+                            </Button>
+                          ) : null}
+                          <Button variant="ghost" size="sm" onClick={() => remove(example.id)} title="Delete example">
+                            <Trash2 size={14} aria-hidden="true" />
+                          </Button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                
+                {examples.length > visibleCount && (
+                  <button
+                    type="button"
+                    onClick={() => setVisibleCount((prev) => prev + 3)}
+                    className="w-full text-center py-1.5 text-xs font-semibold text-brand hover:text-brand-hover hover:underline transition-colors bg-surface border border-border rounded-lg"
+                  >
+                    Load more ({examples.length - visibleCount} remaining)
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
+
+      {/* Set Preview Modal */}
+      <Modal
+        open={Boolean(previewingSet)}
+        onClose={() => setPreviewingSet(null)}
+        title={`Preview Set: ${previewingSet?.locale} · ${previewingSet?.guide_version || 'no version'}`}
+        description={`Showing examples in this ${previewingSet?.status} set.`}
+        size="lg"
+      >
+        {loadingPreview ? (
+          <p className="text-sm text-muted">Loading set examples…</p>
+        ) : previewExamples.length === 0 ? (
+          <p className="text-sm text-muted">No examples in this set.</p>
+        ) : (
+          <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
+            {previewExamples.map((ex) => (
+              <div key={ex.id} className="rounded-xl border border-border bg-surface-2 p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <Badge tone={ex.status === 'golden' ? 'brand' : 'neutral'}>
+                      {ex.status}
+                    </Badge>
+                    <span className="text-xs font-semibold text-fg">
+                      {ex.channel || 'any'} · {ex.locale}
+                    </span>
+                  </div>
+                  {ex.expected_brand_score !== undefined && (
+                    <span className="text-xs font-medium text-brand">
+                      Brand Score: {ex.expected_brand_score}/100
+                    </span>
+                  )}
+                </div>
+                {ex.description && (
+                  <p className="text-xs font-medium text-fg">{ex.description}</p>
+                )}
+                <div className="rounded-lg bg-surface p-2.5 border border-border">
+                  <p className="text-xs whitespace-pre-wrap font-mono text-muted">{ex.expected_content}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Modal>
+
+      {/* View Single Example Details Modal */}
+      <Modal
+        open={Boolean(viewingExample)}
+        onClose={() => setViewingExample(null)}
+        title={`Example Details (${viewingExample?.channel || 'any'} · ${viewingExample?.locale})`}
+        size="md"
+      >
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5">
+              <Badge tone={viewingExample?.status === 'golden' ? 'brand' : 'neutral'}>
+                {viewingExample?.status}
+              </Badge>
+              <span className="text-xs text-muted">Source: {viewingExample?.source}</span>
+            </div>
+            {viewingExample?.expected_brand_score !== undefined && (
+              <span className="text-xs font-medium text-brand">
+                Target Score: {viewingExample?.expected_brand_score}/100
+              </span>
+            )}
+          </div>
+
+          {viewingExample?.description && (
+            <div>
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-faint">Description</span>
+              <p className="mt-1 text-sm text-fg">{viewingExample.description}</p>
+            </div>
+          )}
+
+          <div>
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-faint">Expected Copy Content</span>
+            <div className="mt-1 rounded-xl border border-border bg-surface-2 p-3.5 max-h-[30vh] overflow-y-auto">
+              <p className="text-sm whitespace-pre-wrap font-mono text-muted">{viewingExample?.expected_content}</p>
+            </div>
+          </div>
+
+          {viewingExample?.known_hallucination_traps && (
+            <div>
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-faint">Known Hallucination Traps</span>
+              <p className="mt-1 text-xs text-muted">
+                {typeof viewingExample.known_hallucination_traps === 'string'
+                  ? viewingExample.known_hallucination_traps
+                  : JSON.stringify(viewingExample.known_hallucination_traps)}
+              </p>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-3 border-t border-border">
+            {viewingExample?.status !== 'golden' && (
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => {
+                  promote(viewingExample.id);
+                  setViewingExample(null);
+                }}
+              >
+                Promote to golden
+              </Button>
+            )}
+            <Button variant="ghost" size="sm" onClick={() => setViewingExample(null)}>
+              Close
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </section>
   );
 }

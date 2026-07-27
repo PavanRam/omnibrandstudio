@@ -13,11 +13,11 @@ Subtasks (per the capstone task sheet):
 Write permissions (AGENT_WRITE_PERMISSIONS["personalization_agent"]):
     {"variants", "token_cost_usd", "errors"}
 
-Enrichment model: ``variants`` is an ``operator.add`` fan-in field, so a node
-cannot *replace* the list without duplicating it. Following the CP2 contract
-(the same variant accumulates generated_content → personalized_content →
-translated_content), this agent enriches the existing variant dicts **in place**
-and returns only ``token_cost_usd`` — it appends nothing new to ``variants``.
+Enrichment model: following the CP2 contract (the same variant accumulates
+generated_content → personalized_content → translated_content), this agent
+enriches existing variant dicts **in place** and also returns each touched
+variant via the "variants" key — merge_variants (state.py) upserts by
+task_id, so this replaces the matching entry rather than duplicating it.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from pathlib import Path
 import structlog
 
 from pipeline.agents.base import publish_campaign_event, safe_agent_run, traced_llm_call
-from pipeline.state import OmniBrandState
+from pipeline.state import ContentVariant, OmniBrandState
 
 try:
     # Same channel constraints the content generator (T3) uses — so a persona
@@ -192,9 +192,19 @@ async def personalization_agent(state: OmniBrandState) -> dict:
 
         total_cost = 0.0
         personalized = 0
+        touched: list[ContentVariant] = []
         for variant in state.get("variants", []):
             source = variant.get("generated_content")
-            if not source or variant.get("status") == "personalized":
+            # Only a freshly-generated variant needs personalizing. Checking
+            # for status == "personalized" alone isn't enough on a checkpoint
+            # resume: a variant that's already fully progressed to
+            # "translated" would fail that check too and get needlessly
+            # reprocessed (cost + content drift on channels nobody edited).
+            # reflexion_applied variants are a special case: reflexion resets
+            # status back to "generated" by design but is routed straight to
+            # the judges (see reflexion.py), never back through this agent —
+            # so they must be excluded even though status == "generated".
+            if not source or variant.get("status") != "generated" or variant.get("reflexion_applied"):
                 continue
 
             # T4.2 — redact PII from content before it enters the prompt.
@@ -221,11 +231,14 @@ async def personalization_agent(state: OmniBrandState) -> dict:
                 agent="personalization_agent",
             )
 
-            # T4.4 — enrich the variant in place (append-only reducer contract).
+            # T4.4 — enrich the variant in place, and also return it via the
+            # "variants" key below so merge_variants (state.py) persists the
+            # change durably across a checkpoint resume.
             variant["personalized_content"] = content
             variant["status"] = "personalized"
             total_cost += usage.get("cost", 0.0)
             personalized += 1
+            touched.append(variant)
 
         log.info(
             "agent_complete",
@@ -239,8 +252,19 @@ async def personalization_agent(state: OmniBrandState) -> dict:
             phase="personalization_complete",
             payload={
                 "personalized": personalized,
+                # Per-task status so the frontend pipeline tracker can show
+                # exactly which channel/segment got personalized, matching
+                # the pattern content_generator/translation_agent/
+                # confidence_aggregator already use — see next_tasks.md item
+                # 33 (2026-07-27).
+                "tasks": [
+                    {"task_id": v["task_id"], "status": v.get("status")} for v in touched
+                ],
             },
         )
-        return {"token_cost_usd": total_cost}
+        result: dict = {"token_cost_usd": total_cost, "current_phase": "personalization_complete"}
+        if touched:
+            result["variants"] = touched
+        return result
 
     return await safe_agent_run(_impl, state)

@@ -22,13 +22,17 @@ router = APIRouter()
 log = structlog.get_logger()
 
 # Module-level dependency singletons (avoids B008 — calls in argument defaults).
-# Roles today are "admin" | "editor" | "viewer" (see api/routers/users.py
-# ALLOWED_ROLES) plus whatever scopes an API key carries; there is no
-# separate "reviews:*"/"campaigns:*" permission system yet, so review access
-# is granted directly to the roles that already act on campaigns, with the
-# scope strings kept as an extension point for future API-key-based access.
-_reviews_read = require("admin", "editor", "viewer", "reviews:read", "campaigns:read")
-_reviews_decide = require("admin", "editor", "reviews:decide", "campaigns:write")
+# Roles today are "admin" | "editor" | "viewer" | "reviewer" (see
+# api/routers/users.py ALLOWED_ROLES) plus whatever scopes an API key carries;
+# there is no separate "reviews:*"/"campaigns:*" permission system yet, so
+# review access is granted directly to the roles that act on campaigns/reviews,
+# with the scope strings kept as an extension point for future API-key-based
+# access. "reviewer" is deliberately narrower than admin/editor: it can read
+# and decide reviews, but (unlike admin/editor) is not treated as a campaign
+# manager for send-to-review purposes — see campaigns.py's
+# send_campaign_to_review endpoint.
+_reviews_read = require("admin", "editor", "viewer", "reviewer", "reviews:read", "campaigns:read")
+_reviews_decide = require("admin", "editor", "reviewer", "reviews:decide", "campaigns:write")
 # Deliberately narrower than _reviews_decide: only a credential minted specifically
 # for the Airtable integration (scope "airtable:sync") may call the webhook route,
 # since that route is allowed to attribute a decision to a *different* user via

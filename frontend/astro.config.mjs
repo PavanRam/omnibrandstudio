@@ -12,6 +12,9 @@ export default defineConfig({
   site: process.env.SITE || undefined,
   base: process.env.BASE_PATH || '/',
   integrations: [react()],
+  devToolbar: {
+    enabled: false,
+  },
   build: {
     inlineStylesheets: 'never',
   },

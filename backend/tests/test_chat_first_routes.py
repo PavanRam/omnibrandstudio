@@ -81,6 +81,7 @@ async def test_recent_campaigns_returns_serialized_list(monkeypatch: pytest.Monk
         org_id="00000000-0000-0000-0000-000000000001",
         brand_ids=["00000000-0000-0000-0000-000000000002"],
         created_by=None,
+        include_archived=False,
         limit=12,
     )
 
@@ -103,6 +104,7 @@ async def test_recent_campaigns_scopes_to_jwt_user_id(monkeypatch: pytest.Monkey
         org_id="00000000-0000-0000-0000-000000000001",
         brand_ids=["00000000-0000-0000-0000-000000000002"],
         created_by="019f76e9-c299-7756-a483-761aa106ba11",
+        include_archived=False,
         limit=12,
     )
 
@@ -606,7 +608,8 @@ async def test_replay_campaign_events_unknown_cursor_returns_empty_window(monkey
     assert result["has_more"] is False
 
 
-def test_campaign_agent_output_reply_uses_trace_data() -> None:
+@pytest.mark.asyncio
+async def test_campaign_agent_output_reply_uses_trace_data() -> None:
     trace = [
         {
             "agents": ["content_generator"],
@@ -621,15 +624,68 @@ def test_campaign_agent_output_reply_uses_trace_data() -> None:
         "variants_breakdown": "generated: 2",
     }
 
-    message = conversations._campaign_agent_output_reply(
+    message = await conversations._campaign_agent_output_reply(
         "019f76e9-c299-7756-a483-761aa106ba33",
         "show outputs from content generator",
         summary,
         trace,
+        {},
     )
 
-    assert "latest content_generator output" in message
+    assert "content_generator" in message
     assert "variants delta 2" in message
+
+
+@pytest.mark.asyncio
+async def test_campaign_agent_output_reply_resolves_all_via_llm(monkeypatch) -> None:
+    """Regression: 'all of them' used to repeat the same canned clarifying
+    question forever (see next_tasks.md item 8). The LLM-resolution fallback
+    must recognize it and enumerate every known agent."""
+    trace = [
+        {
+            "agents": ["content_generator"],
+            "agent_output": {"content_generator": {"variants": [{"task_id": "t-1"}]}},
+            "state": {"current_phase": "content_generated", "variant_count": 1},
+        }
+    ]
+    summary = {"status": "running", "total_variants": 1, "variants_breakdown": "generated: 1"}
+
+    monkeypatch.setattr(
+        conversations,
+        "traced_llm_call",
+        AsyncMock(return_value=(json.dumps({"agents": list(conversations._KNOWN_AGENTS)}), {})),
+    )
+
+    message = await conversations._campaign_agent_output_reply(
+        "019f76e9-c299-7756-a483-761aa106ba33",
+        "All of them",
+        summary,
+        trace,
+        {},
+    )
+
+    assert "content_generator" in message
+    assert "publishing_agent" in message
+    assert "Tell me which agent" not in message
+
+
+@pytest.mark.asyncio
+async def test_campaign_agent_output_reply_falls_back_when_llm_gives_no_signal(monkeypatch) -> None:
+    monkeypatch.setattr(
+        conversations,
+        "traced_llm_call",
+        AsyncMock(return_value=(json.dumps({"agents": []}), {})),
+    )
+
+    message = await conversations._campaign_agent_output_reply(
+        "019f76e9-c299-7756-a483-761aa106ba33",
+        "what's happening",
+        {"status": "running", "total_variants": 0, "variants_breakdown": "none yet"},
+        [],
+        {},
+    )
+
+    assert "Tell me which agent" in message
 
 
 def test_campaign_progress_reply_includes_trace_phase() -> None:
@@ -814,6 +870,8 @@ def test_conversation_websocket_turn_returns_campaign_id(monkeypatch: pytest.Mon
         ) as websocket:
             websocket.send_json({"message": "run campaign now"})
             payload = websocket.receive_json()
+            while payload.get("type") == "status":
+                payload = websocket.receive_json()
 
     assert payload["campaign_id"] == "019f7669-1111-7000-8000-000000000001"
     assert payload["brief_complete"] is True
@@ -876,6 +934,9 @@ async def test_process_turn_submit_intent_enqueues_without_run_phrase(monkeypatc
     )
     enqueue_mock = AsyncMock(return_value="019f7669-1111-7000-8000-000000000001")
     monkeypatch.setattr(conversations, "_enqueue_campaign", enqueue_mock)
+    # DB-backed, mocked per this repo's convention (see test_review_service.py
+    # docstring) — harmless no-op for tests that never reach this branch.
+    monkeypatch.setattr(conversations, "find_similar_campaign", AsyncMock(return_value=None))
     monkeypatch.setattr(conversations.conversation_responder, "respond", AsyncMock(return_value="ignored"))
 
     result = await conversations._process_turn(
@@ -934,6 +995,9 @@ async def test_process_turn_complete_brief_plays_back_before_running(
     )
     enqueue_mock = AsyncMock(return_value="019f7669-1111-7000-8000-000000000001")
     monkeypatch.setattr(conversations, "_enqueue_campaign", enqueue_mock)
+    # DB-backed, mocked per this repo's convention (see test_review_service.py
+    # docstring) — harmless no-op for tests that never reach this branch.
+    monkeypatch.setattr(conversations, "find_similar_campaign", AsyncMock(return_value=None))
     monkeypatch.setattr(
         conversations.conversation_responder,
         "respond",
@@ -996,6 +1060,9 @@ async def test_process_turn_submit_intent_does_not_enqueue_when_brief_incomplete
     )
     enqueue_mock = AsyncMock(return_value="019f7669-1111-7000-8000-000000000001")
     monkeypatch.setattr(conversations, "_enqueue_campaign", enqueue_mock)
+    # DB-backed, mocked per this repo's convention (see test_review_service.py
+    # docstring) — harmless no-op for tests that never reach this branch.
+    monkeypatch.setattr(conversations, "find_similar_campaign", AsyncMock(return_value=None))
     monkeypatch.setattr(
         conversations.conversation_responder,
         "respond",
@@ -1015,3 +1082,61 @@ async def test_process_turn_submit_intent_does_not_enqueue_when_brief_incomplete
     assert result["campaign_id"] is None
     assert result["brief_complete"] is False
     enqueue_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recent_campaigns_admin_sees_all_and_can_include_archived(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (2026-07-26, next_tasks.md item 15): admins can archive any
+    campaign, which only means something if they can actually find it —
+    admins see every campaign in their brand scope (not filtered to their
+    own), and can opt into seeing archived ones."""
+    recent_campaigns_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(conversations, "get_recent_campaigns", recent_campaigns_mock)
+
+    user = UserContext(
+        user_id="019f76e9-c299-7756-a483-761aa106ba11",
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_ids=["00000000-0000-0000-0000-000000000002"],
+        roles=["admin"],
+        auth_method="jwt",
+    )
+
+    await conversations.recent_campaigns(user, include_archived=True)
+
+    recent_campaigns_mock.assert_awaited_once_with(
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_ids=["00000000-0000-0000-0000-000000000002"],
+        created_by=None,
+        include_archived=True,
+        limit=12,
+    )
+
+
+@pytest.mark.asyncio
+async def test_recent_campaigns_regular_user_include_archived_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-admin passing include_archived=true must be ignored server-side
+    — this is a permission boundary, not just a UI default."""
+    recent_campaigns_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(conversations, "get_recent_campaigns", recent_campaigns_mock)
+
+    user = UserContext(
+        user_id="019f76e9-c299-7756-a483-761aa106ba11",
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_ids=["00000000-0000-0000-0000-000000000002"],
+        roles=["editor"],
+        auth_method="jwt",
+    )
+
+    await conversations.recent_campaigns(user, include_archived=True)
+
+    recent_campaigns_mock.assert_awaited_once_with(
+        org_id="00000000-0000-0000-0000-000000000001",
+        brand_ids=["00000000-0000-0000-0000-000000000002"],
+        created_by="019f76e9-c299-7756-a483-761aa106ba11",
+        include_archived=False,
+        limit=12,
+    )

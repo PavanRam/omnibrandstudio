@@ -1,8 +1,9 @@
 """Translation agent tests.
 
 Runs fully offline: traced_llm_call and every HF/RAG-boundary function
-(mBART, Helsinki-NLP back-translation, embeddings, content-safety, brand-rule
-retrieval) are monkeypatched, so we can assert on locale routing, the
+(Helsinki-NLP reference translation and back-translation, embeddings,
+content-safety, brand-rule retrieval) are monkeypatched, so we can assert
+on locale routing, the
 retry/gate loop, terminal-failure handling, and the in-place write contract
 without any live API or infra.
 
@@ -146,8 +147,8 @@ async def test_get_brand_rules_degrades_to_empty_on_retriever_failure(monkeypatc
 def stub_calls(monkeypatch):
     """Mocks every API-boundary function. Records calls for assertions."""
     calls: dict[str, list] = {
-        "claude": [], "mbart": [], "backtranslate": [], "embed": [], "safety": [],
-        "brand_rules": [],
+        "claude": [], "mbart": [], "reference": [], "backtranslate": [], "embed": [],
+        "safety": [], "brand_rules": [],
     }
 
     async def fake_traced_llm_call(model, messages, task, state, **kwargs):
@@ -155,10 +156,20 @@ def stub_calls(monkeypatch):
         return "TRANSLATED", {"cost": 0.01}
 
     async def fake_mbart_translate(text, src_locale, tgt_locale):
+        # Fallback tier only now (2026-07-27, swapped from primary) — this
+        # fixture's fake_hf_translate_call succeeds for the reference tier,
+        # so mBART is never reached in the default happy-path fixture.
         calls["mbart"].append((text, src_locale, tgt_locale))
         return "REFERENCE"
 
     async def fake_hf_translate_call(text, model):
+        # Helsinki-NLP is now primary for the reference translation
+        # (en->locale, _REFERENCE_MODEL) AND still handles back-translation
+        # (target->en, _BACKTRANSLATION_MODEL) — same underlying call,
+        # routed by which model dict the caller passes.
+        if model in trans._REFERENCE_MODEL.values():
+            calls["reference"].append((text, model))
+            return "REFERENCE"
         calls["backtranslate"].append((text, model))
         return "BACKTRANSLATED"
 
@@ -184,62 +195,54 @@ def stub_calls(monkeypatch):
 
 
 async def test_english_locale_is_passthrough_with_zero_cost(stub_calls):
-    variants = [_variant("t-en", "en-US", "Buy now.")]
-    result = await translation_agent(_state(variants))
+    variant = _variant("t-en", "en-US", "Buy now.")
+    cost, error_msg = await trans._translate_variant(variant, _state([variant]))
 
-    assert variants[0]["status"] == "translated"
-    assert variants[0]["translation_gate_status"] == "skipped_source_locale"
-    assert variants[0]["translated_content"] == "Buy now."
-    assert variants[0]["final_content"] == "Buy now."
-    assert result["token_cost_usd"] == 0.0
+    assert variant["status"] == "translated"
+    assert variant["translation_gate_status"] == "skipped_source_locale"
+    assert variant["translated_content"] == "Buy now."
+    assert variant["final_content"] == "Buy now."
+    assert cost == 0.0
+    assert error_msg is None
     # No API calls at all for an English-locale variant.
     assert all(len(v) == 0 for v in stub_calls.values())
 
 
 async def test_unsupported_locale_fails_closed(stub_calls):
-    variants = [_variant("t-jp", "ja-JP", "Buy now.")]
-    result = await translation_agent(_state(variants))
+    variant = _variant("t-jp", "ja-JP", "Buy now.")
+    cost, error_msg = await trans._translate_variant(variant, _state([variant]))
 
-    assert variants[0]["status"] == "translation_unsupported_locale"
-    assert "not in supported set" in variants[0]["failure_reason"]
-    assert result["token_cost_usd"] == 0.0
-    assert "errors" in result and "t-jp" in result["errors"][0]
+    assert variant["status"] == "translation_unsupported_locale"
+    assert "not in supported set" in variant["failure_reason"]
+    assert cost == 0.0
+    assert error_msg and "t-jp" in error_msg
     assert all(len(v) == 0 for v in stub_calls.values())
 
 
 async def test_variant_without_source_content_is_blocked(stub_calls):
-    variants = [_variant("t-empty", "es-MX", None)]
-    result = await translation_agent(_state(variants))
+    variant = _variant("t-empty", "es-MX", None)
+    cost, error_msg = await trans._translate_variant(variant, _state([variant]))
 
-    assert variants[0]["status"] == "translation_blocked_no_source"
-    assert result["token_cost_usd"] == 0.0
-    assert "errors" in result
+    assert variant["status"] == "translation_blocked_no_source"
+    assert cost == 0.0
+    assert error_msg is not None
     assert all(len(v) == 0 for v in stub_calls.values())
 
 
 async def test_terminal_status_variant_is_skipped_on_resume(stub_calls):
     """Checkpoint-resume idempotency: a variant already finished must not be
     re-translated (and re-billed / re-audited) if the node re-runs."""
-    variants = [_variant("t-done", "es-MX", "Buy now.", status="translated")]
-    result = await translation_agent(_state(variants))
+    variant = _variant("t-done", "es-MX", "Buy now.", status="translated")
+    cost, error_msg = await trans._translate_variant(variant, _state([variant]))
 
-    assert result["token_cost_usd"] == 0.0
-    assert "errors" not in result
+    assert cost == 0.0
+    assert error_msg is None
     assert all(len(v) == 0 for v in stub_calls.values())
 
 
-async def test_target_locale_is_the_variants_own_locale_never_the_brief(stub_calls):
-    """Guards the n^2 explosion: only variant['locale'] is translated into,
-    never every locale in campaign_brief['locales']."""
-    variants = [_variant("t-fr", "fr-FR", "Buy now.")]
-    state = _state(variants, brief={"locales": ["es", "fr", "de", "hi"]})
-    await translation_agent(state)
-
-    assert len(stub_calls["mbart"]) == 1
-    assert stub_calls["mbart"][0][2] == "fr"  # only translated into fr, not es/de/hi too
-
-
-# ── Gate orchestration ───────────────────────────────────────────────────────
+# ── Gate orchestration (via _translate_variant directly — fan-out is tested
+# separately below, this section only exercises the per-variant gate logic,
+# unchanged by the channel x segment fan-out redesign) ──────────────────────
 
 
 async def test_gate_passes_on_first_attempt(stub_calls, monkeypatch):
@@ -254,31 +257,66 @@ async def test_gate_passes_on_first_attempt(stub_calls, monkeypatch):
 
     monkeypatch.setattr(trans, "_run_checks", fake_run_checks)
 
-    variants = [_variant("t-es", "es-MX", "Buy now.")]
-    result = await translation_agent(_state(variants))
+    variant = _variant("t-es", "es-MX", "Buy now.")
+    cost, error_msg = await trans._translate_variant(variant, _state([variant]))
 
-    v = variants[0]
-    assert v["status"] == "translated"
-    assert v["translation_gate_status"] == "pass"
-    assert v["final_content"] == "TRANSLATED"
-    assert v["translation_retry_count"] == 0
-    assert v["back_translation_score"] == pytest.approx(0.95)
-    assert "errors" not in result
+    assert variant["status"] == "translated"
+    assert variant["translation_gate_status"] == "pass"
+    assert variant["final_content"] == "TRANSLATED"
+    assert variant["translation_retry_count"] == 0
+    assert variant["back_translation_score"] == pytest.approx(0.95)
+    assert error_msg is None
     assert len(stub_calls["claude"]) == 1  # no retries needed
     assert stub_calls["claude"][0]["task"] == "translation_agent"
     assert stub_calls["claude"][0]["agent"] == "translation_agent"
-    # mBART reference computed exactly once, not once per retry attempt.
-    assert len(stub_calls["mbart"]) == 1
+    # Reference translation (Helsinki-NLP, primary tier as of 2026-07-27)
+    # computed exactly once, not once per retry attempt. mBART never reached.
+    assert len(stub_calls["reference"]) == 1
+    assert len(stub_calls["mbart"]) == 0
 
-    # Write-permission compliance.
-    assert set(result) <= AGENT_WRITE_PERMISSIONS["translation_agent"]
+
+async def test_helsinki_reference_failure_falls_back_to_mbart(stub_calls, monkeypatch):
+    """Helsinki-NLP is primary for the reference translation (swapped
+    2026-07-27 — see translation.py's _run_translation_gate docstring: BLEU
+    was failing live campaigns while semantic/cosine checks both passed,
+    traced to mBART's reference translations diverging in phrasing from an
+    equally-valid LLM translation). If the Helsinki-NLP call fails, it must
+    degrade to mBART (tier 2) rather than jumping straight to the LLM
+    validator."""
+    passing_checks = [
+        {"name": "bleu", "value": 30.0, "threshold": 25.0, "passed": True},
+        {"name": "semantic_similarity", "value": 0.9, "threshold": 0.84, "passed": True},
+        {"name": "back_translation_cosine", "value": 0.95, "threshold": 0.85, "passed": True},
+    ]
+
+    async def failing_hf_reference(text, model):
+        raise RuntimeError("Helsinki-NLP/opus-mt-en-es unavailable on hf-inference free tier")
+
+    async def fake_run_checks(candidate, reference, back_translation, source):
+        assert reference == "MBART_REFERENCE"  # came from the tier-2 mBART fallback
+        return passing_checks
+
+    async def fake_mbart_reference(text, src_locale, tgt_locale):
+        return "MBART_REFERENCE"
+
+    monkeypatch.setattr(trans, "_hf_translate_call", failing_hf_reference)
+    monkeypatch.setattr(trans, "_mbart_translate", fake_mbart_reference)
+    monkeypatch.setattr(trans, "_run_checks", fake_run_checks)
+
+    variant = _variant("t-helsinki-down", "es-MX", "Buy now.")
+    cost, error_msg = await trans._translate_variant(variant, _state([variant]))
+
+    assert variant["status"] == "translated"
+    assert error_msg is None
+    # No LLM fallback needed — mBART tier absorbed the failure.
+    tasks = [c["task"] for c in stub_calls["claude"]]
+    assert "translation_agent_reference_fallback" not in tasks
 
 
-async def test_mbart_reference_failure_falls_back_to_primary_model(stub_calls, monkeypatch):
-    """mBART is currently unavailable on HF's free hf-inference tier
-    (status="error", not a transient cold-start). The reference-translation
-    call must degrade to the primary model instead of hard-failing the
-    variant, mirroring _back_translate's existing HF-failure fallback."""
+async def test_reference_translation_exhausts_to_validator_model(stub_calls, monkeypatch):
+    """Both Helsinki-NLP and mBART fail for the reference translation — must
+    degrade to the pooled translation-validator alias as the last resort,
+    mirroring _back_translate's existing HF-failure fallback."""
     passing_checks = [
         {"name": "bleu", "value": 30.0, "threshold": 25.0, "passed": True},
         {"name": "semantic_similarity", "value": 0.9, "threshold": 0.84, "passed": True},
@@ -286,20 +324,27 @@ async def test_mbart_reference_failure_falls_back_to_primary_model(stub_calls, m
     ]
 
     async def failing_mbart_translate(text, src_locale, tgt_locale):
-        raise RuntimeError("mbart-large-50 status=error on hf-inference free tier")
+        raise RuntimeError("mbart-large-50 unavailable")
+
+    async def failing_hf_translate_call(text, model):
+        if model in trans._REFERENCE_MODEL.values():
+            raise RuntimeError("Helsinki-NLP/opus-mt-en-es unavailable on hf-inference free tier")
+        return "BACKTRANSLATED"
 
     async def fake_run_checks(candidate, reference, back_translation, source):
-        assert reference == "TRANSLATED"  # came from the fallback traced_llm_call
+        assert reference == "TRANSLATED"  # came from the tier-3 LLM fallback
+        assert back_translation == "BACKTRANSLATED"  # unaffected, still the real HF call
         return passing_checks
 
     monkeypatch.setattr(trans, "_mbart_translate", failing_mbart_translate)
+    monkeypatch.setattr(trans, "_hf_translate_call", failing_hf_translate_call)
     monkeypatch.setattr(trans, "_run_checks", fake_run_checks)
 
-    variants = [_variant("t-mbart-down", "es-MX", "Buy now.")]
-    result = await translation_agent(_state(variants))
+    variant = _variant("t-reference-down", "es-MX", "Buy now.")
+    cost, error_msg = await trans._translate_variant(variant, _state([variant]))
 
-    assert variants[0]["status"] == "translated"
-    assert "errors" not in result
+    assert variant["status"] == "translated"
+    assert error_msg is None
     # Both the fallback reference call and the real translation call hit the
     # primary model — same fake_traced_llm_call, so both are recorded here.
     tasks = [c["task"] for c in stub_calls["claude"]]
@@ -311,7 +356,7 @@ async def test_mbart_reference_failure_falls_back_to_primary_model(stub_calls, m
 async def test_backtranslate_failure_falls_back_to_primary_model(stub_calls, monkeypatch):
     """Helsinki-NLP back-translation is unavailable. The back-translation call
     must degrade to the primary model instead of hard-failing the variant,
-    mirroring the mBART-reference fallback above."""
+    mirroring the reference-translation fallback above."""
     passing_checks = [
         {"name": "bleu", "value": 30.0, "threshold": 25.0, "passed": True},
         {"name": "semantic_similarity", "value": 0.9, "threshold": 0.84, "passed": True},
@@ -319,20 +364,23 @@ async def test_backtranslate_failure_falls_back_to_primary_model(stub_calls, mon
     ]
 
     async def failing_hf_translate_call(text, model):
-        raise RuntimeError("Helsinki-NLP/opus-mt-es-en unavailable on hf-inference free tier")
+        if model in trans._BACKTRANSLATION_MODEL.values():
+            raise RuntimeError("Helsinki-NLP/opus-mt-es-en unavailable on hf-inference free tier")
+        return "REFERENCE"
 
     async def fake_run_checks(candidate, reference, back_translation, source):
+        assert reference == "REFERENCE"  # unaffected, still the real HF call
         assert back_translation == "TRANSLATED"  # came from the fallback traced_llm_call
         return passing_checks
 
     monkeypatch.setattr(trans, "_hf_translate_call", failing_hf_translate_call)
     monkeypatch.setattr(trans, "_run_checks", fake_run_checks)
 
-    variants = [_variant("t-backtranslate-down", "es-MX", "Buy now.")]
-    result = await translation_agent(_state(variants))
+    variant = _variant("t-backtranslate-down", "es-MX", "Buy now.")
+    cost, error_msg = await trans._translate_variant(variant, _state([variant]))
 
-    assert variants[0]["status"] == "translated"
-    assert "errors" not in result
+    assert variant["status"] == "translated"
+    assert error_msg is None
     tasks = [c["task"] for c in stub_calls["claude"]]
     assert "translation_agent_backtranslate_fallback" in tasks
     assert "translation_agent" in tasks
@@ -358,14 +406,15 @@ async def test_gate_retries_then_passes(stub_calls, monkeypatch):
 
     monkeypatch.setattr(trans, "_run_checks", fake_run_checks)
 
-    variants = [_variant("t-fr", "fr-FR", "Buy now.")]
-    await translation_agent(_state(variants))
+    variant = _variant("t-fr", "fr-FR", "Buy now.")
+    await trans._translate_variant(variant, _state([variant]))
 
-    assert variants[0]["status"] == "translated"
-    assert variants[0]["translation_retry_count"] == 1
+    assert variant["status"] == "translated"
+    assert variant["translation_retry_count"] == 1
     assert len(stub_calls["claude"]) == 2  # one retry
     # Reference still computed only once, even though the model call was retried.
-    assert len(stub_calls["mbart"]) == 1
+    assert len(stub_calls["reference"]) == 1
+    assert len(stub_calls["mbart"]) == 0
 
 
 async def test_gate_exhausts_retries_and_fails_closed(stub_calls, monkeypatch):
@@ -380,20 +429,18 @@ async def test_gate_exhausts_retries_and_fails_closed(stub_calls, monkeypatch):
 
     monkeypatch.setattr(trans, "_run_checks", fake_run_checks)
 
-    variants = [_variant("t-de", "de-DE", "Buy now.")]
-    result = await translation_agent(_state(variants))
+    variant = _variant("t-de", "de-DE", "Buy now.")
+    cost, error_msg = await trans._translate_variant(variant, _state([variant]))
 
-    v = variants[0]
-    assert v["status"] == "translation_failed"
-    assert v["translation_gate_status"] == "fail"
-    assert v["translation_retry_count"] == trans.MAX_RETRIES
-    assert "checks failed" in v["failure_reason"]
-    assert v["final_content"] is None  # never promoted on failure
+    assert variant["status"] == "translation_failed"
+    assert variant["translation_gate_status"] == "fail"
+    assert variant["translation_retry_count"] == trans.MAX_RETRIES
+    assert "checks failed" in variant["failure_reason"]
+    assert variant["final_content"] is None  # never promoted on failure
 
     # Mandatory (best-effort) error surfacing — no human-review path exists,
-    # so this errors entry is the only campaign-level signal of the failure.
-    assert "errors" in result
-    assert "t-de" in result["errors"][0]
+    # so this is the only campaign-level signal of the failure.
+    assert error_msg is not None and "t-de" in error_msg
 
     # MAX_RETRIES + 1 total attempts.
     assert len(stub_calls["claude"]) == trans.MAX_RETRIES + 1
@@ -415,11 +462,11 @@ async def test_content_safety_violation_blocks_gate_even_if_metrics_pass(stub_ca
     monkeypatch.setattr(trans, "_run_checks", fake_run_checks)
     monkeypatch.setattr(trans, "_check_content_safety", fake_safety_violation)
 
-    variants = [_variant("t-safety", "es-MX", "Buy now.")]
-    await translation_agent(_state(variants))
+    variant = _variant("t-safety", "es-MX", "Buy now.")
+    await trans._translate_variant(variant, _state([variant]))
 
-    assert variants[0]["status"] == "translation_failed"
-    assert "content safety violations" in variants[0]["failure_reason"]
+    assert variant["status"] == "translation_failed"
+    assert "content safety violations" in variant["failure_reason"]
 
 
 async def test_personalized_content_preferred_over_generated_content(stub_calls, monkeypatch):
@@ -436,19 +483,138 @@ async def test_personalized_content_preferred_over_generated_content(stub_calls,
 
     monkeypatch.setattr(trans, "_run_checks", fake_run_checks)
 
-    variants = [
-        _variant(
-            "t-both",
-            "es-MX",
-            personalized="Persona-tailored copy.",
-            generated_content="Generic copy.",
-        )
-    ]
-    await translation_agent(_state(variants))
-    assert variants[0]["status"] == "translated"
+    variant = _variant(
+        "t-both",
+        "es-MX",
+        personalized="Persona-tailored copy.",
+        generated_content="Generic copy.",
+    )
+    await trans._translate_variant(variant, _state([variant]))
+    assert variant["status"] == "translated"
 
 
 async def test_empty_variants_is_noop(stub_calls):
     result = await translation_agent(_state([]))
-    assert result == {"token_cost_usd": 0.0}
+    assert result == {"token_cost_usd": 0.0, "current_phase": "translation_complete"}
     assert all(len(v) == 0 for v in stub_calls.values())
+
+
+# ── Locale fan-out — translation_agent itself, driven by state["tasks"] +
+# campaign_brief["locales"] (2026-07-27 redesign: content_generator no longer
+# produces a variant per locale; this agent is the only fan-out point) ──────
+
+
+def _task(task_id: str, channel: str = "email", segment: str = "consumer") -> dict:
+    return {"task_id": task_id, "channel": channel, "segment": segment, "channel_constraints": {}}
+
+
+async def test_fan_out_creates_one_variant_per_requested_locale(stub_calls, monkeypatch):
+    passing_checks = [
+        {"name": "bleu", "value": 30.0, "threshold": 25.0, "passed": True},
+        {"name": "semantic_similarity", "value": 0.9, "threshold": 0.84, "passed": True},
+        {"name": "back_translation_cosine", "value": 0.95, "threshold": 0.85, "passed": True},
+    ]
+    async def fake_run_checks(*a, **k):
+        return passing_checks
+
+    monkeypatch.setattr(trans, "_run_checks", fake_run_checks)
+
+    master = _variant("email_consumer", "en-US", "Buy now.")
+    state = _state(
+        [master],
+        tasks=[_task("email_consumer")],
+        brief={"locales": ["en-US", "es-MX"]},
+    )
+    result = await translation_agent(state)
+
+    by_task_id = {v["task_id"]: v for v in result["variants"]}
+    assert set(by_task_id) == {"email_consumer", "email_consumer_es"}
+    # Source locale: the master itself becomes the deliverable, no real
+    # translation call.
+    assert by_task_id["email_consumer"]["status"] == "translated"
+    assert by_task_id["email_consumer"]["translation_gate_status"] == "skipped_source_locale"
+    # Non-source locale: a NEW variant, forked from the master, actually
+    # translated.
+    assert by_task_id["email_consumer_es"]["locale"] == "es-MX"
+    assert by_task_id["email_consumer_es"]["status"] == "translated"
+    assert by_task_id["email_consumer_es"]["final_content"] == "TRANSLATED"
+
+
+async def test_fan_out_always_includes_source_locale_even_if_not_requested(stub_calls, monkeypatch):
+    """An English-only campaign still runs through this agent unconditionally
+    — no graph-level skip — it just has nothing to translate."""
+    master = _variant("sms_consumer", "en-US", "Buy now.")
+    state = _state([master], tasks=[_task("sms_consumer", channel="sms")], brief={"locales": []})
+    result = await translation_agent(state)
+
+    assert len(result["variants"]) == 1
+    assert result["variants"][0]["task_id"] == "sms_consumer"
+    assert result["variants"][0]["translation_gate_status"] == "skipped_source_locale"
+    assert all(len(v) == 0 for v in stub_calls.values())  # no API calls at all
+
+
+async def test_fan_out_skips_unsupported_locale(stub_calls, monkeypatch):
+    master = _variant("email_consumer", "en-US", "Buy now.")
+    state = _state(
+        [master], tasks=[_task("email_consumer")], brief={"locales": ["en-US", "ja-JP"]}
+    )
+    result = await translation_agent(state)
+
+    # Silently dropped — intake_agent already reported this as an error
+    # before generation ever started.
+    assert {v["task_id"] for v in result["variants"]} == {"email_consumer"}
+
+
+async def test_fan_out_is_idempotent_on_checkpoint_resume(stub_calls, monkeypatch):
+    """A locale variant already marked terminal must not be re-translated
+    (and re-billed) if the node re-runs."""
+    master = _variant("email_consumer", "en-US", "Buy now.", status="translated")
+    already_translated = _variant(
+        "email_consumer_es", "es-MX", "Buy now.", status="translated", final_content="Ya hecho."
+    )
+    state = _state(
+        [master, already_translated],
+        tasks=[_task("email_consumer")],
+        brief={"locales": ["en-US", "es-MX"]},
+    )
+    result = await translation_agent(state)
+
+    assert result.get("variants", []) == []
+    assert result["token_cost_usd"] == 0.0
+    assert all(len(v) == 0 for v in stub_calls.values())
+
+
+async def test_fan_out_respects_reflexion_exclusion_per_locale(stub_calls, monkeypatch):
+    """reflexion resets a flagged variant back to status='generated' and
+    routes it straight to judges — this must be checked per forked locale
+    variant, not just on the master, or a reflexion-touched child would get
+    silently re-translated."""
+    master = _variant("email_consumer", "en-US", "Buy now.", status="translated")
+    reflexion_touched = _variant(
+        "email_consumer_es", "es-MX", "Buy now.", status="generated", reflexion_applied=True
+    )
+    state = _state(
+        [master, reflexion_touched],
+        tasks=[_task("email_consumer")],
+        brief={"locales": ["en-US", "es-MX"]},
+    )
+    result = await translation_agent(state)
+
+    assert result.get("variants", []) == []
+    assert all(len(v) == 0 for v in stub_calls.values())
+
+
+async def test_write_permission_compliance(stub_calls, monkeypatch):
+    async def fake_run_checks(*a, **k):
+        return [
+            {"name": "bleu", "value": 30.0, "threshold": 25.0, "passed": True},
+            {"name": "semantic_similarity", "value": 0.9, "threshold": 0.84, "passed": True},
+            {"name": "back_translation_cosine", "value": 0.95, "threshold": 0.85, "passed": True},
+        ]
+
+    monkeypatch.setattr(trans, "_run_checks", fake_run_checks)
+    master = _variant("email_consumer", "en-US", "Buy now.")
+    state = _state([master], tasks=[_task("email_consumer")], brief={"locales": ["en-US", "es-MX"]})
+    result = await translation_agent(state)
+    assert result["variants"][1]["status"] == "translated"  # sanity: real gate path, not exception
+    assert set(result) <= AGENT_WRITE_PERMISSIONS["translation_agent"]

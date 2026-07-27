@@ -1,14 +1,42 @@
-import { useId } from 'react';
-import { Menu, Search, Sparkles } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Menu, Search, Sparkles, Radio } from 'lucide-react';
 import { Logo } from './Logo.jsx';
 import { ThemeToggle } from './ThemeToggle.jsx';
 import { NotificationsMenu } from './NotificationsMenu.jsx';
 import { UserMenu } from './UserMenu.jsx';
 import { Button } from './ui/Button.jsx';
 import { IconButton } from './ui/IconButton.jsx';
+import { useId } from 'react';
+import { cn } from '@/lib/cn.js';
 
-export function TopNav({ onOpenDrawer, title }) {
+export function TopNav({ onOpenDrawer, title, currentRoute }) {
   const searchId = useId();
+  const [chatLive, setChatLive] = useState(false);
+
+  // Listen to SSE/socket status events dispatched by ConversationView
+  useEffect(() => {
+    const handler = (e) => setChatLive(Boolean(e.detail?.connected));
+    window.addEventListener('obs:sse-status', handler);
+    return () => window.removeEventListener('obs:sse-status', handler);
+  }, []);
+
+  // Wire the Create button to start a new conversation when already in studio
+  const handleCreate = (e) => {
+    if (currentRoute === 'studio') {
+      e.preventDefault();
+      window.dispatchEvent(new CustomEvent('obs:start-new-conversation'));
+    }
+    // Otherwise let the href navigate normally
+  };
+
+  const handleSearchSubmit = (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    const qVal = fd.get('q')?.toString().trim();
+    if (qVal) {
+      window.location.href = `/campaigns?search=${encodeURIComponent(qVal)}`;
+    }
+  };
 
   return (
     <header
@@ -22,9 +50,9 @@ export function TopNav({ onOpenDrawer, title }) {
         <Logo compact />
       </div>
 
-      {/* Page title (desktop) */}
+      {/* Page title (desktop) — bolder and larger */}
       {title && (
-        <h1 className="hidden text-base font-semibold text-fg lg:block">
+        <h1 className="hidden text-xl font-bold tracking-tight text-fg lg:block">
           {title}
         </h1>
       )}
@@ -35,7 +63,7 @@ export function TopNav({ onOpenDrawer, title }) {
         <form
           role="search"
           className="hidden md:block"
-          onSubmit={(e) => e.preventDefault()}
+          onSubmit={handleSearchSubmit}
         >
           <label htmlFor={searchId} className="sr-only">
             Search your creations and the community
@@ -48,6 +76,7 @@ export function TopNav({ onOpenDrawer, title }) {
             />
             <input
               id={searchId}
+              name="q"
               type="search"
               placeholder="Search creations, styles, community…"
               className="h-10 w-56 rounded-xl border border-border bg-surface-2 pl-9 pr-3 text-sm text-fg transition-colors focus:border-brand focus:bg-surface lg:w-72"
@@ -59,11 +88,16 @@ export function TopNav({ onOpenDrawer, title }) {
           href="/text-to-image"
           variant="primary"
           size="sm"
+
           className="hidden sm:inline-flex"
+          onClick={handleCreate}
         >
           <Sparkles size={15} aria-hidden="true" />
           Create
         </Button>
+
+
+
         <ThemeToggle />
         <NotificationsMenu />
         <div className="mx-0.5 hidden h-6 w-px bg-border sm:block" aria-hidden="true" />

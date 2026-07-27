@@ -148,6 +148,27 @@ def _fast_retriever(store: _FakeStore) -> RAGRetriever:
 
 
 @pytest.mark.asyncio
+async def test_retrieve_normalizes_bare_locale_code_to_seeded_bcp47_tag() -> None:
+    """Regression (2026-07-26): callers pass whatever locale format the brief
+    was captured in (e.g. bare "en"), but seeded guideline data is tagged
+    "en-US". Chroma's `where` filter is an exact match, so a bare short code
+    silently found zero chunks and every judge call fell back to "no brand
+    guide" — a critical violation that auto-rejected every English variant."""
+    store = _FakeStore()
+    retriever = _fast_retriever(store)
+
+    chunks = await retriever.retrieve(
+        query="brand voice",
+        brand_id="brand-a",
+        locale="en",
+        n_results=3,
+    )
+
+    assert store.last_filters["locale"] == "en-US"
+    assert len(chunks) == 1
+
+
+@pytest.mark.asyncio
 async def test_retrieve_scopes_collection_and_filters_by_brand() -> None:
     store = _FakeStore()
     retriever = _fast_retriever(store)

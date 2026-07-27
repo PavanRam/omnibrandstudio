@@ -4,6 +4,32 @@ import operator
 from typing import Annotated, NotRequired, TypedDict
 
 
+def merge_variants(
+    existing: list["ContentVariant"], updates: list["ContentVariant"]
+) -> list["ContentVariant"]:
+    """Upsert-by-task_id reducer for the ``variants`` fan-in channel.
+
+    Plain ``operator.add`` concatenation duplicates an entry whenever a node
+    re-emits a variant it already produced — which is also the only way an
+    in-place mutation to a variant dict (reflexion, personalization,
+    translation, a selective content_generator regen) survives a checkpoint
+    resume, since LangGraph only persists a channel value that a node's
+    return dict actually includes. Mutating in place and returning ``{}``
+    looks correct within a single ``ainvoke()`` (everyone shares the same
+    Python objects) but is silently lost on resume — the checkpoint still has
+    the pre-mutation value. Nodes must therefore return the variant(s) they
+    touched via the "variants" key; this reducer replaces the matching
+    task_id entry instead of appending a duplicate.
+    """
+    by_task_id = {v["task_id"]: v for v in existing}
+    order = [v["task_id"] for v in existing]
+    for v in updates:
+        if v["task_id"] not in by_task_id:
+            order.append(v["task_id"])
+        by_task_id[v["task_id"]] = v
+    return [by_task_id[tid] for tid in order]
+
+
 class CampaignBrief(TypedDict):
     objective: str
     target_audience: str
@@ -13,12 +39,18 @@ class CampaignBrief(TypedDict):
     locales: list[str]
     audience_segments: list[str]
     token_budget: int
+    # Optional campaign validity end-date, threaded into generated content
+    # when present ("Offer valid until..."). See next_tasks.md 2026-07-26
+    # item 16.
+    end_date: str | None
     raw_text: str
 
 
 class GenerationTask(TypedDict):
-    task_id: str  # format: "{locale}_{channel}_{segment}"
-    locale: str
+    # 2026-07-27: locale removed — generation/personalization always target
+    # SOURCE_LOCALE (pipeline/locale_utils.py); translation_agent is the only
+    # place per-locale fan-out happens, from this one channel x segment task.
+    task_id: str  # format: "{channel}_{segment}"
     channel: str
     segment: str
     channel_constraints: dict
@@ -154,8 +186,13 @@ class OmniBrandState(TypedDict):
     tasks: list[GenerationTask]
     current_task: GenerationTask | None
 
-    # Accumulated results (operator.add fan-in)
-    variants: Annotated[list[ContentVariant], operator.add]
+    # Creator feedback for a rerun (set by rerun_service via aupdate_state,
+    # consumed and cleared by content_generator). Plain field, not fan-in.
+    user_edit_note: str | None
+
+    # Accumulated results (operator.add fan-in, except variants — see
+    # merge_variants above)
+    variants: Annotated[list[ContentVariant], merge_variants]
     brand_scores: Annotated[list[BrandScore], operator.add]
     aggregated_scores: Annotated[list[AggregatedScore], operator.add]
     review_requests: Annotated[list[ReviewRequest], operator.add]

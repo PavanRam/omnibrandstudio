@@ -97,9 +97,9 @@
   --color-warning: var(--warning);
   --color-danger: var(--danger);
 
-  --font-sans: 'Manrope', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
-    Helvetica, Arial, sans-serif;
-  --font-display: 'Space Grotesk', 'Manrope', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Google Sans Text', 'Google Sans', ui-sans-serif, system-ui, -apple-system,
+    'Segoe UI', Helvetica, Arial, sans-serif;
+  --font-display: 'Google Sans', 'Google Sans Text', ui-sans-serif, system-ui, sans-serif;
 
   --radius-4xl: 2rem;
 }

@@ -13,10 +13,23 @@ __pycache__/
 .env
 .env.*
 
+# Local-only Docker Compose overrides (e.g. port remaps for machine-specific conflicts)
+docker-compose.override.yml
+
 # Local vector DB/runtime artifacts
 data/chroma/
 backend/data/chroma/
 
 # Local NLP download cache
 backend/.nltk_data/
+.nltk_data/
 backend/data/bm25_cache/
+
+# Claude Code session config (local, not repo policy)
+.claude/
+
+# JWT signing keypair — private_key.pem is a real secret, never commit
+certs/
+
+# Scratch/throwaway debug scripts
+scratch/

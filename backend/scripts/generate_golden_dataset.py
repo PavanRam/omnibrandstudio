@@ -45,10 +45,9 @@ from services import golden_dataset_service  # noqa: E402
 from services.rag import get_retriever  # noqa: E402
 from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
-POSTGRES_DSN: str = os.getenv(
-    "POSTGRES_DSN",
-    "postgresql+asyncpg://omnibrand:changeme_local_32chars@localhost:5432/omnibrand",
-)
+from core.config import settings
+
+POSTGRES_DSN: str = settings.POSTGRES_DSN
 
 _GEN_SYSTEM = (
     "You are a brand-compliance evaluation author. Given a brand guide excerpt, "

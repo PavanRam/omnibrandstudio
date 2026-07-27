@@ -38,18 +38,25 @@ class ChromaVectorStore:
             return filters
         return {"$and": [{k: {"$eq": v}} for k, v in filters.items()]}
 
+    # Chroma rejects a single upsert call above its configured max batch size
+    # (observed default: 5461). Chunk conservatively below that so any future
+    # server-side limit change still has headroom.
+    _MAX_UPSERT_BATCH = 5000
+
     async def upsert(self, collection: str, points: list[VectorPoint]) -> None:
         if not points:
             return
 
         def _sync_upsert() -> None:
             col = self._get_collection(collection)
-            col.upsert(
-                ids=[p.id for p in points],
-                embeddings=[p.vector for p in points],
-                documents=[p.text for p in points],
-                metadatas=[p.metadata for p in points],
-            )
+            for start in range(0, len(points), self._MAX_UPSERT_BATCH):
+                batch = points[start : start + self._MAX_UPSERT_BATCH]
+                col.upsert(
+                    ids=[p.id for p in batch],
+                    embeddings=[p.vector for p in batch],
+                    documents=[p.text for p in batch],
+                    metadatas=[p.metadata for p in batch],
+                )
 
         await anyio.to_thread.run_sync(_sync_upsert)
 

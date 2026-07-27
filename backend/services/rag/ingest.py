@@ -4,9 +4,9 @@ from io import BytesIO
 import json
 from pathlib import Path
 import re
-from uuid import uuid4
 
 import pandas as pd
+from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncConnection
 import structlog
 
@@ -81,7 +81,7 @@ def _build_points(
         for cidx, chunk in enumerate(chunks):
             points.append(
                 VectorPoint(
-                    id=f"{brand_id}:{kind}:{locale}:{version}:{idx}:{cidx}:{uuid4().hex[:8]}",
+                    id=f"{brand_id}:{kind}:{locale}:{version}:{idx}:{cidx}",
                     text=chunk,
                     vector=[],
                     metadata={
@@ -127,7 +127,7 @@ async def ingest_brand_guide(
 
     points = [
         VectorPoint(
-            id=f"{brand_id}:guidelines:{locale}:{version}:{idx}:{uuid4().hex[:8]}",
+            id=f"{brand_id}:guidelines:{locale}:{version}:{idx}",
             text=chunk,
             vector=[],
             metadata={
@@ -145,13 +145,17 @@ async def ingest_brand_guide(
 
     await get_vector_store().upsert(collection=_collection_name(brand_id, "guidelines"), points=points)
 
-    await db.exec_driver_sql(
-        "UPDATE brand_guides SET active = FALSE WHERE brand_id = %(brand_id)s AND locale = %(locale)s AND active = TRUE",
+    await db.execute(
+        sql_text(
+            "UPDATE brand_guides SET active = FALSE WHERE brand_id = :brand_id AND locale = :locale AND active = TRUE"
+        ),
         {"brand_id": brand_id, "locale": locale},
     )
-    await db.exec_driver_sql(
-        "INSERT INTO brand_guides (brand_id, locale, version, source_filename, indexed_at, active, chunk_count) "
-        "VALUES (%(brand_id)s, %(locale)s, %(version)s, %(source_filename)s, NOW(), TRUE, %(chunk_count)s)",
+    await db.execute(
+        sql_text(
+            "INSERT INTO brand_guides (brand_id, locale, version, source_filename, indexed_at, active, chunk_count) "
+            "VALUES (:brand_id, :locale, :version, :source_filename, NOW(), TRUE, :chunk_count)"
+        ),
         {
             "brand_id": brand_id,
             "locale": locale,
@@ -303,7 +307,6 @@ async def list_customer_segments(
         "brand_id": brand_id,
         "locale": locale,
         "active": True,
-        "content_type": "segment_profile",
     }
     if version:
         filters["version"] = version
@@ -400,6 +403,26 @@ async def ingest_seed_datasets(
         points = await _embed_points(points)
         await get_vector_store().upsert(collection=_collection_name(brand_id, "guidelines"), points=points)
         counts["guidelines"] = len(points)
+
+        # Log seed guideline metadata in Postgres brand_guides table (2026-07-27)
+        await db.execute(
+            sql_text(
+                "UPDATE brand_guides SET active = FALSE WHERE brand_id = :brand_id AND locale = :locale AND active = TRUE"
+            ),
+            {"brand_id": brand_id, "locale": locale},
+        )
+        await db.execute(
+            sql_text(
+                "INSERT INTO brand_guides (brand_id, locale, version, source_filename, indexed_at, active, chunk_count) "
+                "VALUES (:brand_id, :locale, :version, 'seed_guidelines_folder', NOW(), TRUE, :chunk_count)"
+            ),
+            {
+                "brand_id": brand_id,
+                "locale": locale,
+                "version": version,
+                "chunk_count": len(points),
+            },
+        )
 
     segments_csv = seed_dir / "customer_segments.csv"
     if segments_csv.exists():

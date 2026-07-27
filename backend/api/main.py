@@ -80,11 +80,13 @@ async def metrics() -> Response:
 
 from api.routers import (  # noqa: E402
     auth,
+    brands,
     campaigns,
     conversations,
     golden_dataset,
     health,
     knowledge,
+    notifications,
     orgs,
     reviews,
     users,
@@ -96,9 +98,11 @@ app.include_router(campaigns.router, prefix="/campaigns", tags=["campaigns"])
 app.include_router(conversations.router, tags=["conversations"])
 app.include_router(orgs.router, prefix="/orgs", tags=["orgs"])
 app.include_router(users.router, prefix="/users", tags=["users"])
+app.include_router(brands.router, prefix="/brands", tags=["brands"])
 app.include_router(knowledge.router, prefix="/knowledge", tags=["knowledge"])
 app.include_router(golden_dataset.router, prefix="/knowledge", tags=["golden-dataset"])
 app.include_router(reviews.router, prefix="/reviews", tags=["reviews"])
+app.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
 
 if should_enable_local_eval():
     # TEMP_LOCAL_EVAL: Local eval endpoint is intentionally not registered by default.

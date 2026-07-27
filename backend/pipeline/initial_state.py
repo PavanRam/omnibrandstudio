@@ -56,6 +56,7 @@ def build_initial_state(
             locales=brief.locales,
             audience_segments=brief.audience_segments,
             token_budget=brief.token_budget,
+            end_date=brief.end_date,
             raw_text=brief.raw_text,
         )
 
@@ -77,6 +78,7 @@ def build_initial_state(
         budget_check_passed=None,
         tasks=[],
         current_task=None,
+        user_edit_note=None,
         variants=[],
         brand_scores=[],
         aggregated_scores=[],

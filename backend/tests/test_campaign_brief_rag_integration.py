@@ -231,6 +231,9 @@ async def test_get_campaign_returns_campaign_with_variants(monkeypatch: pytest.M
         def all(self):
             return self._row
 
+        def fetchall(self):
+            return self._row or []
+
     class _FakeConn:
         async def execute(self, stmt, *_args, **_kwargs):
             sql_text = str(getattr(stmt, "text", stmt))
@@ -246,11 +249,20 @@ async def test_get_campaign_returns_campaign_with_variants(monkeypatch: pytest.M
                         "started_at": now,
                         "completed_at": None,
                         "brief": {"objective": "Launch"},
+                        "created_by": None,
+                        "creator_email": None,
                     }
                 )
+            if "FROM conversations" in sql_text:
+                return _FakeResult(None)
+            if "FROM brand_scores" in sql_text:
+                return _FakeResult([])
+            if "FROM campaign_cost_attribution" in sql_text:
+                return _FakeResult([])
             return _FakeResult(
                 [
                     {
+                        "id": "019f9000-0000-7000-8000-000000000001",
                         "task_id": "en-US_email_enterprise",
                         "locale": "en-US",
                         "channel": "email",
@@ -258,6 +270,10 @@ async def test_get_campaign_returns_campaign_with_variants(monkeypatch: pytest.M
                         "status": "published",
                         "final_content": "Done",
                         "composite_score": 8.7,
+                        "translation_engine": None,
+                        "back_translation_score": None,
+                        "failure_reason": None,
+                        "translation_checks": None,
                     }
                 ]
             )

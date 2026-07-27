@@ -1,30 +1,55 @@
-"""Translation Agent — brand-aware translation quality gate.
+"""Translation Agent — brand-aware translation quality gate AND the pipeline's
+ONLY locale fan-out point.
 
-Runs after ``personalization_agent``, before the judge layer. Every variant
-already carries its own English source text (``content_generator`` always
-writes English regardless of the task's locale — see
-``prompts/channel_prompts.py``), so this agent's job per variant is: if
-``variant["locale"]`` is a supported non-English locale, translate that
-variant's own English content into that ONE locale and gate the result;
-otherwise pass it straight through (English) or fail closed (unsupported).
+Runs after ``personalization_agent``, before the judge layer. ``state["tasks"]``
+(built by intake_agent) is channel x segment ONLY — content_generator and
+personalization_agent always produce exactly one English "master" variant per
+task, never touching locale at all (2026-07-27: this used to be baked into
+the task from intake, which meant content_generator's own prompt received
+"Locale: fr-FR" with no instruction to write in English regardless, so it
+just wrote the content directly in French — silently defeating this agent
+entirely, since it then tried to "translate" already-French text as if it
+were English). This agent is unconditional in the graph (runs for every
+campaign, English-only or not) and is the ONLY place per-locale variants get
+created: for each channel x segment master it fans out into one variant per
+locale in ``campaign_brief["locales"]`` (``_target_locales`` — deduped,
+always includes the source locale even if not explicitly requested, drops
+anything unsupported since intake already reported those as errors). This is
+NOT the same n^2 blowup an earlier version of this docstring warned about —
+there are still only channels x segments masters; the multiplication into
+channels x segments x locales happens exactly once, here, which is the
+correct place for it, not per-generation-call.
+
+For each (master, locale) pair: if the locale is the source locale, the
+master's own entry becomes that locale's deliverable directly (no real
+translation, just marks the locale and passes the content through); for any
+other locale, a NEW variant is forked from the master (new task_id
+``"{base_task_id}_{locale_base}"``) and put through the real translation gate
+below.
 
 Design (confirmed over prior discussion, not left implicit):
   - Source text: ``personalized_content`` if present, else ``generated_content``
     ("two doors" — personalization output varies per persona/segment and must
     win when available).
-  - Target locale is ALWAYS ``variant["locale"]`` — never re-derived from
-    ``campaign_brief["locales"]``. This is a hard invariant: looping over all
-    campaign locales for every variant would turn n translations into n^2.
   - Primary translation: ``traced_llm_call`` via the "translation-primary"
     model alias (pinned single-provider — never the raw Anthropic/Groq SDK,
     per repo invariant #2).
   - Independent reference (for BLEU / BERTScore-or-semantic_similarity):
-    facebook/mbart-large-50-many-to-many-mmt via HF Inference Providers —
-    computed once per variant, since it doesn't depend on the primary
-    translation's output.
-  - Back-translation: locale-dedicated Helsinki-NLP model (es/fr/de), or
-    mBART reversed for hi; falls back to the primary model (traced_llm_call)
-    if the HF call fails outright.
+    THREE tiers — facebook/mbart-large-50-many-to-many-mmt (primary) ->
+    locale-dedicated Helsinki-NLP en->locale model (if mBART call fails) ->
+    the pooled "translation-validator" LLM alias (if that also fails).
+    Computed once per variant, since it doesn't depend on the primary
+    translation's output. (2026-07-26: an earlier pass here removed mBART
+    entirely based on HF's model-metadata endpoint reporting
+    status="error" for it — that field turned out NOT to reflect real
+    call behavior; an authenticated live call succeeds. Restored as
+    primary, Helsinki-NLP demoted to a fallback tier rather than removed.)
+  - Back-translation: locale-dedicated Helsinki-NLP model (es/fr/de/hi) —
+    unaffected by the above, never used mBART. Falls back to the pooled
+    "translation-validator" alias (traced_llm_call) if the HF call fails
+    outright — a separate alias from the primary translator, since this
+    fallback only fires on exception, not every retry, so it doesn't carry
+    the primary model's cross-retry consistency requirement.
   - Embeddings: sentence-transformers/paraphrase-multilingual-mpnet-base-v2
     via HF Inference Providers — used for the semantic/cosine checks AND for
     the brand-rule retrieval query embedding.
@@ -46,10 +71,10 @@ Design (confirmed over prior discussion, not left implicit):
 Write permissions (AGENT_WRITE_PERMISSIONS["translation_agent"]):
     {"variants", "token_cost_usd", "errors"}
 
-Enrichment model: ``variants`` is an ``operator.add`` fan-in field, so this
-agent enriches existing variant dicts **in place** (same contract
-``personalization_agent`` uses) and returns only ``token_cost_usd`` — it
-never appends new entries to ``variants``.
+Enrichment model: this agent enriches existing variant dicts **in place**
+(same contract ``personalization_agent`` uses) and also returns each touched
+variant via the "variants" key — merge_variants (state.py) upserts by
+task_id, so this replaces the matching entry rather than duplicating it.
 """
 from __future__ import annotations
 
@@ -61,29 +86,56 @@ import structlog
 from core.config import settings
 from core.database import get_db
 from huggingface_hub import AsyncInferenceClient
+from sqlalchemy import text as sql_text
+from services import notification_service
 from services.rag import get_retriever
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from pipeline.agents.base import safe_agent_run, traced_llm_call, write_audit
+from pipeline.agents.base import publish_campaign_event, safe_agent_run, traced_llm_call, write_audit
+from pipeline.locale_utils import (
+    SOURCE_LOCALE,
+    SOURCE_LOCALE_BASE,
+    SUPPORTED_LOCALES,
+    base_locale,
+    is_locale_supported,
+)
 from pipeline.state import ContentVariant, OmniBrandState, TranslationCheckResult
 
 log = structlog.get_logger()
 
 # ── Locale support ──────────────────────────────────────────────────────────
-# Base language derived from variant["locale"] (handles both "es" and
-# "es-MX"-style values already seen across this codebase's fixtures/brief).
-SUPPORTED_LOCALES = {"es", "fr", "de", "hi"}
+# SUPPORTED_LOCALES now lives in pipeline/locale_utils.py (imported above) so
+# intake_agent can validate locale support up front too, without an
+# agent-to-agent import coupling.
 
+# mBART (facebook/mbart-large-50-many-to-many-mmt) — primary for the
+# independent reference translation (2026-07-26: an earlier pass here removed
+# it entirely based on HF's model-metadata endpoint reporting
+# status="error" for it; that field turned out NOT to reflect real call
+# behavior — an authenticated live call succeeds. Restored as primary,
+# with Helsinki-NLP as the fallback if the live mBART call itself ever
+# fails, then the pooled LLM validator alias as the last resort).
+# Back-translation is UNCHANGED — Helsinki-NLP only, never involved mBART.
 _MBART_MODEL = "facebook/mbart-large-50-many-to-many-mmt"
 _MBART_LANG_CODE = {"en": "en_XX", "es": "es_XX", "fr": "fr_XX", "de": "de_DE", "hi": "hi_IN"}
 
-# Locale -> dedicated back-translation model. "hi" has no Helsinki-NLP entry;
-# it uses mBART reversed instead (handled specially in _back_translate).
-_BACKTRANSLATION_MODEL: dict[str, str | None] = {
+# Locale -> dedicated back-translation model (target locale -> en). Always
+# Helsinki-NLP — this path never used mBART and isn't affected by the
+# reference-translation model choice above.
+_BACKTRANSLATION_MODEL: dict[str, str] = {
     "es": "Helsinki-NLP/opus-mt-es-en",
     "fr": "Helsinki-NLP/opus-mt-fr-en",
     "de": "Helsinki-NLP/opus-mt-de-en",
-    "hi": None,
+    "hi": "Helsinki-NLP/opus-mt-hi-en",
+}
+
+# Locale -> dedicated reference-translation model (en -> target locale) —
+# the fallback tier if the primary mBART call fails.
+_REFERENCE_MODEL: dict[str, str] = {
+    "es": "Helsinki-NLP/opus-mt-en-es",
+    "fr": "Helsinki-NLP/opus-mt-en-fr",
+    "de": "Helsinki-NLP/opus-mt-en-de",
+    "hi": "Helsinki-NLP/opus-mt-en-hi",
 }
 
 _EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
@@ -97,8 +149,20 @@ _TOXICITY_MODEL = "unitary/multilingual-toxic-xlm-roberta"
 _TOXICITY_THRESHOLD = 0.5
 
 # ── Gate thresholds — config-driven constants, never inline magic numbers ───
-MAX_RETRIES = 3
-BLEU_THRESHOLD = 25.0
+# 3 -> 2 (2026-07-27, user request, alongside the translation-primary model
+# switch to Claude Sonnet) — 4 total attempts per variant was expensive and
+# wasn't fixing a genuinely bad translation anyway (a real repetition-
+# degeneration bug in the model itself, not something more retries resolve).
+MAX_RETRIES = 2
+# 25 -> 20 (2026-07-27, user request) — live campaign 019fa4b3's fr variant
+# failed the gate on BLEU alone across all 3 attempts (22.9/23.6/24.8, each
+# within 2 points of the old threshold) while semantic_similarity (0.86) and
+# back_translation_cosine (0.86-0.89) both passed comfortably every attempt
+# — a near-miss case, distinct from the earlier campaigns' genuinely broken
+# translations (BLEU 8-12). Consistent with the pattern seen across every
+# live campaign today: BLEU is the one metric that fails while the two
+# embedding-based checks agree the translation is fine.
+BLEU_THRESHOLD = 20.0
 SEMANTIC_THRESHOLD = 0.84
 COSINE_THRESHOLD = 0.85
 
@@ -129,8 +193,10 @@ def _hf_client() -> AsyncInferenceClient:
     return _hf_client_singleton
 
 
-def _base_locale(locale: str | None) -> str:
-    return (locale or "").split("-")[0].strip().lower()
+# _base_locale moved to pipeline/locale_utils.py as base_locale() — imported
+# above and aliased here so every existing call site in this file is
+# unchanged.
+_base_locale = base_locale
 
 
 # ── HF calls — outside traced_llm_call (not chat-completion shaped), each
@@ -219,18 +285,18 @@ async def _semantic_check(candidate: str, reference: str) -> TranslationCheckRes
 
 async def _back_translate(text: str, locale: str, state: OmniBrandState) -> tuple[str, float]:
     try:
-        if locale == "hi":
-            translated = await _mbart_translate(text, "hi", "en")
-        else:
-            model = _BACKTRANSLATION_MODEL[locale]
-            assert model is not None
-            translated = await _hf_translate_call(text, model)
+        translated = await _hf_translate_call(text, _BACKTRANSLATION_MODEL[locale])
         return translated, 0.0
     except Exception as exc:
         log.warning(
-            "hf_back_translation_failed_using_claude_fallback", locale=locale, error=str(exc)
+            "hf_back_translation_failed_using_validator_fallback", locale=locale, error=str(exc)
         )
-        model = state["model_aliases"].get("translation", "translation-primary")
+        # Validator/fallback path — deliberately a separate, pooled alias from
+        # the primary forward-translation model (see translation-validator in
+        # litellm_config.yaml): this only fires on HF back-translation failure,
+        # not on every retry attempt, so it doesn't carry the same
+        # cross-retry consistency requirement the primary alias has.
+        model = state["model_aliases"].get("translation_validator", "translation-validator")
         content, usage = await traced_llm_call(
             model=model,
             messages=[
@@ -407,11 +473,31 @@ async def _escalate(
         )
 
     if settings.TRANSLATION_HUMAN_ESCALATION_ENABLED:
-        # Placeholder: translation_agent has no AGENT_WRITE_PERMISSIONS entry
-        # for human_review_requested/review_requests, so this flag doesn't
-        # yet do anything beyond logging intent. Wired for real once
-        # confidence_aggregator reads ContentVariant.translation_gate_status.
-        log.info("human_escalation_flagged_but_not_wired", task_id=variant.get("task_id"))
+        campaign_id = state.get("campaign_id")
+        try:
+            async with get_db() as db:
+                campaign_row = (
+                    await db.execute(
+                        sql_text(
+                            "SELECT created_by, brief->>'objective' AS objective "
+                            "FROM campaigns WHERE id = CAST(:campaign_id AS UUID)"
+                        ),
+                        {"campaign_id": campaign_id},
+                    )
+                ).mappings().first()
+            if campaign_row is not None:
+                await notification_service.notify_translation_failed(
+                    org_id=state.get("org_id", ""),
+                    brand_id=state.get("brand_id", ""),
+                    campaign_id=campaign_id,
+                    created_by=str(campaign_row["created_by"]) if campaign_row["created_by"] else None,
+                    title=campaign_row["objective"] or "Your campaign",
+                    locale=variant.get("locale", "unknown"),
+                )
+        except Exception as exc:
+            log.error(
+                "translation_escalation_notify_failed", task_id=variant.get("task_id"), error=str(exc)
+            )
 
 
 # ── Per-variant orchestration ────────────────────────────────────────────────
@@ -421,44 +507,54 @@ async def _run_translation_gate(
     variant: ContentVariant, source: str, locale: str, state: OmniBrandState
 ) -> tuple[float, str | None]:
     model = state["model_aliases"].get("translation", "translation-primary")
+    # Reference/back-translation fallback paths use a separate pooled
+    # validator alias, not the pinned primary — see translation-validator
+    # in litellm_config.yaml.
+    validator_model = state["model_aliases"].get("translation_validator", "translation-validator")
     total_cost = 0.0
 
     # Independent reference — computed once, doesn't depend on the primary
-    # translation's output.
+    # translation's output. Three tiers: Helsinki-NLP en->locale primary ->
+    # mBART fallback if Helsinki-NLP fails -> pooled LLM validator alias as
+    # the last resort.
     #
-    # KNOWN ISSUE (tracked, not fixed): facebook/mbart-large-50-many-to-many-mmt
-    # reports status="error" on HF's free hf-inference tier (confirmed via
-    # https://huggingface.co/api/models/facebook/mbart-large-50-many-to-many-mmt
-    # ?expand[]=inferenceProviderMapping — not gating/license, not a transient
-    # cold-start, the model simply isn't served on the free tier). Without a
-    # fallback this call raised for every non-English locale and hard-failed
-    # the whole variant via _translate_variant's outer except. Falling back to
-    # the primary model here unblocks local/dev E2E runs; it means the BLEU/
-    # BERTScore reference is no longer an independent model family for as long
-    # as this fallback is active — re-evaluate once mBART is available via a
-    # paid Inference Endpoint, a local `transformers` deployment, or a
-    # different reference-translation model.
+    # Swapped 2026-07-27 (was mBART primary / Helsinki-NLP fallback, per the
+    # 2026-07-26 item-29 restoration): three live campaigns in a row failed
+    # the translation gate on BLEU alone (~10-13 vs threshold 25) while
+    # semantic_similarity and back_translation_cosine both passed
+    # comfortably (0.92-0.96) every time — meaning mBART's reference
+    # translations were diverging in phrasing/style from the LLM's
+    # (equally valid) translation, not that the LLM's translation was
+    # wrong. mBART's fr reference output was also observed injecting a
+    # stray '的' (Chinese) character into back-translation text on every
+    # attempt of a real campaign (019fa479...), a distinct quality defect.
+    # Helsinki-NLP's dedicated en->locale models are the established
+    # fallback tier already wired below — promoting them to primary here.
     try:
-        reference = await _mbart_translate(source, "en", locale)
+        reference = await _hf_translate_call(source, _REFERENCE_MODEL[locale])
     except Exception as exc:
-        log.warning("mbart_reference_translation_unavailable", locale=locale, error=str(exc))
-        reference, mbart_fallback_cost = await traced_llm_call(
-            model=model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        f"Translate the user's English text into {locale}. "
-                        "Return only the translation."
-                    ),
-                },
-                {"role": "user", "content": source},
-            ],
-            task="translation_agent_reference_fallback",
-            state=cast(dict[str, Any], state),
-            agent="translation_agent",
-        )
-        total_cost += mbart_fallback_cost.get("cost", 0.0)
+        log.warning("hf_reference_translation_unavailable", locale=locale, error=str(exc))
+        try:
+            reference = await _mbart_translate(source, "en", locale)
+        except Exception as exc2:
+            log.warning("mbart_reference_translation_unavailable", locale=locale, error=str(exc2))
+            reference, reference_fallback_cost = await traced_llm_call(
+                model=validator_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            f"Translate the user's English text into {locale}. "
+                            "Return only the translation."
+                        ),
+                    },
+                    {"role": "user", "content": source},
+                ],
+                task="translation_agent_reference_fallback",
+                state=cast(dict[str, Any], state),
+                agent="translation_agent",
+            )
+            total_cost += reference_fallback_cost.get("cost", 0.0)
 
     brand_rules = await _get_brand_rules(state, locale)
     messages = _build_translate_messages(source, locale, brand_rules)
@@ -486,6 +582,25 @@ async def _run_translation_gate(
         checks = await _run_checks(translated_text, reference, back_translation, source)
         safety_violations = await _check_content_safety(translated_text, locale, state)
         gate_passed = all(c["passed"] for c in checks) and not safety_violations
+
+        if not gate_passed:
+            # Log the actual text at every failed attempt, including the last
+            # one (previously only logged on non-final retries, so the exact
+            # translation that ends up persisted as translation_failed was
+            # never visible anywhere) — see next_tasks.md 2026-07-26
+            # ("print the translated text into the docker log").
+            log.warning(
+                "translation_gate_failed_attempt",
+                task_id=variant.get("task_id"),
+                attempt=attempt,
+                locale=locale,
+                source=source,
+                translated_text=translated_text,
+                reference=reference,
+                back_translation=back_translation,
+                checks=checks,
+                safety_violations=safety_violations,
+            )
 
         if gate_passed or attempt == MAX_RETRIES:
             break
@@ -573,18 +688,112 @@ async def _translate_variant(
         return 0.0, f"translation_agent (task_id={task_id}): unexpected error: {exc}"
 
 
+def _target_locales(state: OmniBrandState) -> list[str]:
+    """Every locale this campaign actually needs a variant for — deduped,
+    always includes the source locale even if not explicitly requested,
+    silently drops anything translation_agent can't produce (intake_agent
+    already reported those as errors before generation ever started)."""
+    brief = state.get("brief") or {}
+    requested = brief.get("locales") or []
+    seen: set[str] = set()
+    locales: list[str] = []
+    for loc in requested:
+        base = base_locale(loc)
+        if not is_locale_supported(loc) or base in seen:
+            continue
+        seen.add(base)
+        locales.append(loc)
+    if SOURCE_LOCALE_BASE not in seen:
+        locales.insert(0, SOURCE_LOCALE)
+    return locales
+
+
 async def translation_agent(state: OmniBrandState) -> dict:
     async def _impl(state: OmniBrandState) -> dict:
         total_cost = 0.0
         translated = 0
         errors: list[str] = []
-        for variant in state.get("variants", []):
-            cost, error_msg = await _translate_variant(variant, state)
-            total_cost += cost
-            if error_msg:
-                errors.append(error_msg)
-            if variant.get("status") == "translated":
-                translated += 1
+        touched: list[ContentVariant] = []
+
+        existing_by_task_id = {v["task_id"]: v for v in state.get("variants", [])}
+        locales = _target_locales(state)
+
+        # Locale fan-out happens HERE, from state["tasks"] (channel x segment
+        # masters produced by content_generator/personalization_agent) — NOT
+        # by iterating state["variants"], since that list only has one entry
+        # per task until this loop creates the per-locale ones. This is the
+        # one place per-locale variants get created; content_generator never
+        # sees locale at all (2026-07-27, see intake.py/content_generator.py).
+        for task in state.get("tasks", []):
+            base_task_id = task["task_id"]
+            master = existing_by_task_id.get(base_task_id)
+            if master is None:
+                continue  # no generated content for this task at all
+
+            # Frozen BEFORE the locale loop below — the master's own entry
+            # gets mutated in place for the source locale (see is_source
+            # branch), so forking a later locale from the LIVE master object
+            # would copy its already-translated status/content instead of
+            # the pre-translation generation/personalization output every
+            # locale actually needs to start from.
+            master_snapshot = dict(master)
+
+            for locale in locales:
+                is_source = base_locale(locale) == SOURCE_LOCALE_BASE
+                final_task_id = base_task_id if is_source else f"{base_task_id}_{base_locale(locale)}"
+                existing_final = existing_by_task_id.get(final_task_id)
+
+                # Checkpoint-resume idempotency guard (mirrors the old
+                # per-variant check) PLUS reflexion exclusion: reflexion
+                # resets a flagged variant's status back to "generated" and
+                # routes it straight to the judges (see reflexion.py), never
+                # back through this agent. reflexion operates on whichever
+                # variant judges actually flagged — for the source locale
+                # that's `master` itself (same object as `existing_final`
+                # here); for any other locale it's the already-forked child —
+                # so this check must run per-locale against `existing_final`,
+                # not once against the master.
+                if existing_final is not None and (
+                    existing_final.get("status") in _TERMINAL_STATUSES
+                    or (
+                        existing_final.get("status") == "generated"
+                        and existing_final.get("reflexion_applied")
+                    )
+                ):
+                    continue
+
+                if is_source:
+                    variant = master
+                    variant["locale"] = locale
+                else:
+                    variant = existing_final or cast(
+                        ContentVariant,
+                        {
+                            **master_snapshot,
+                            "task_id": final_task_id,
+                            "locale": locale,
+                            # Reset — every locale starts fresh from the
+                            # master's generation/personalization output,
+                            # never from another locale's translation result.
+                            "translated_content": None,
+                            "final_content": None,
+                            "status": master_snapshot.get("status"),
+                            "translation_gate_status": None,
+                            "translation_engine": None,
+                            "back_translation_score": None,
+                            "retry_count": 0,
+                            "translation_retry_count": 0,
+                            "failure_reason": None,
+                        },
+                    )
+
+                cost, error_msg = await _translate_variant(variant, state)
+                total_cost += cost
+                touched.append(variant)
+                if error_msg:
+                    errors.append(error_msg)
+                if variant.get("status") == "translated":
+                    translated += 1
 
         log.info(
             "agent_complete",
@@ -592,7 +801,24 @@ async def translation_agent(state: OmniBrandState) -> dict:
             campaign_id=state.get("campaign_id"),
             translated=translated,
         )
-        result: dict[str, Any] = {"token_cost_usd": total_cost}
+        await publish_campaign_event(
+            campaign_id=state.get("campaign_id"),
+            agent="translation_agent",
+            phase="translation_complete",
+            payload={
+                "translated": translated,
+                "error_count": len(errors),
+                # Per-task status so the frontend plan can flag exactly which
+                # row needs attention, not just an aggregate count — see
+                # next_tasks.md "inline campaign plan" (2026-07-26).
+                "tasks": [
+                    {"task_id": v["task_id"], "status": v.get("status")} for v in touched
+                ],
+            },
+        )
+        result: dict[str, Any] = {"token_cost_usd": total_cost, "current_phase": "translation_complete"}
+        if touched:
+            result["variants"] = touched
         if errors:
             result["errors"] = errors
         return result

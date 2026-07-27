@@ -14,15 +14,40 @@ from email.mime.text import MIMEText
 
 import aiosmtplib
 import structlog
+from sqlalchemy import text
 
 from core.config import settings
-from pipeline.agents.base import safe_agent_run
+from core.database import get_db
+from pipeline.agents.base import publish_campaign_event, safe_agent_run
 from pipeline.agents.email_templates import build_campaign_email_html
 from pipeline.state import OmniBrandState
 
 log = structlog.get_logger()
 
 _ELIGIBLE_STATUSES = {"approved", "generated", "personalized"}
+
+
+async def _resolve_creator_email(user_id: str) -> str | None:
+    """The campaign creator's real email, if `state["user_id"]` resolves to
+    an actual user row. Not every campaign has one — server-to-server/API-key
+    callers use a non-UUID actor sentinel (see CLAUDE.md's dual-auth note),
+    so this fails open (returns None) rather than raising, letting the
+    caller fall back to the configured demo recipient list."""
+    try:
+        uuid.UUID(str(user_id))
+    except (ValueError, TypeError):
+        return None
+    try:
+        async with get_db() as conn:
+            result = await conn.execute(
+                text("SELECT email FROM users WHERE id = CAST(:uid AS UUID)"),
+                {"uid": user_id},
+            )
+            row = result.mappings().first()
+            return str(row["email"]) if row and row["email"] else None
+    except Exception as exc:  # noqa: BLE001
+        log.warning("publish_creator_email_lookup_failed", user_id=user_id, error=str(exc))
+        return None
 
 
 async def publishing_agent(state: OmniBrandState) -> dict:
@@ -33,11 +58,22 @@ async def publishing_agent(state: OmniBrandState) -> dict:
         brief = state.get("brief")
 
         # ── 1. Resolve recipient list ──────────────────────────────────────
-        recipients = [
-            r.strip()
-            for r in (settings.PUBLISH_RECIPIENT_EMAILS or "").split(",")
-            if r.strip()
-        ]
+        # The campaign creator's own email is the real, meaningful recipient
+        # (2026-07-27) — previously every campaign, from every user, always
+        # went to one shared static demo address regardless of who made it.
+        # Falls back to the configured demo list when there's no resolvable
+        # creator (API-key-created campaigns, or the env var override for
+        # local testing without a seeded user).
+        creator_email = await _resolve_creator_email(state.get("user_id", ""))
+        recipients = (
+            [creator_email]
+            if creator_email
+            else [
+                r.strip()
+                for r in (settings.PUBLISH_RECIPIENT_EMAILS or "").split(",")
+                if r.strip()
+            ]
+        )
         if not recipients:
             log.warning(
                 "publish_skipped_no_recipients",
@@ -193,6 +229,12 @@ async def publishing_agent(state: OmniBrandState) -> dict:
         }
         if errors:
             result["errors"] = errors
+        await publish_campaign_event(
+            campaign_id=campaign_id,
+            agent="publishing_agent",
+            phase="publishing_complete",
+            payload={"published": len(receipts), "error_count": len(errors)},
+        )
         return result
 
     return await safe_agent_run(_impl, state)

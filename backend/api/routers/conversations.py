@@ -4,6 +4,7 @@ import json
 import uuid
 from typing import Annotated, Any
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
 from opentelemetry.propagate import inject
 from pydantic import BaseModel
@@ -14,14 +15,20 @@ from api.middleware.auth import decode_access_token, is_jti_revoked
 from core.config import settings
 from core.ids import new_campaign_id, new_request_id
 from core.redis import get_redis
-from pipeline.conversation_models import ConversationPlannerInput, ConversationSession, ExtractionMeta, IntentClassification, PartialBrief, UnderstandingResult
+from pipeline.agents.base import traced_llm_call
+from pipeline.conversation_models import ConversationPlannerInput, ConversationSession, ExtractionMeta, IntentClassification, PartialBrief, SimilarCampaignMatch, UnderstandingResult
+from pipeline.intake_validation import ROUGH_TOKENS_PER_TASK, estimate_task_count
+from pipeline.locale_utils import SOURCE_LOCALE, SUPPORTED_LOCALES, is_locale_supported
 from services.chat.brief_collector import brief_collector
 from services.campaign.campaign_query import get_recent_campaigns
+from services.campaign.similarity_service import find_similar_campaign
 from services.chat.conversation_planner import conversation_planner
 from services.chat.conversation_responder import conversation_responder
 from services.chat.session_manager import session_manager
 from services.chat.understanding_engine import understanding_engine
 from services import review_service
+
+log = structlog.get_logger()
 
 router = APIRouter()
 
@@ -288,6 +295,38 @@ def _brief_updates(previous_brief: PartialBrief, current_brief: PartialBrief) ->
     return updates
 
 
+def _build_rejection_notice(rejected: dict[str, list[str]]) -> str:
+    """Tell the user why a free-text mention of a channel/locale/segment
+    didn't change anything, instead of silently dropping it — item 23d
+    (2026-07-27). `rejected` comes from BriefCollector._merge()."""
+    if not rejected:
+        return ""
+
+    parts: list[str] = []
+
+    channels = rejected.get("channels") or []
+    if channels:
+        values = ", ".join(f"'{v}'" for v in channels)
+        verb = "isn't" if len(channels) == 1 else "aren't"
+        parts.append(f"{values} {verb} a supported channel for this brand")
+
+    locales = rejected.get("locales") or []
+    if locales:
+        values = ", ".join(f"'{v}'" for v in locales)
+        verb = "isn't" if len(locales) == 1 else "aren't"
+        parts.append(f"{values} {verb} a supported locale")
+
+    if rejected.get("audience_segments"):
+        parts.append(
+            "audience segments come from this brand's real segment data, not free text"
+        )
+
+    if not parts:
+        return ""
+
+    return "Heads up — " + "; ".join(parts) + ". Please select from the options below."
+
+
 def _brief_changes(previous_brief: PartialBrief, current_brief: PartialBrief) -> list[dict[str, Any]]:
     changes: list[dict[str, Any]] = []
 
@@ -366,17 +405,147 @@ def _norm_list(values: list[str]) -> set[str]:
     return {v.strip().lower() for v in values if isinstance(v, str) and v.strip()}
 
 
-async def _process_turn(
+async def _campaign_status(campaign_id: str) -> str | None:
+    from core.database import get_db
+
+    async with get_db() as conn:
+        row = (
+            await conn.execute(
+                text("SELECT status FROM campaigns WHERE id = CAST(:cid AS UUID)"),
+                {"cid": campaign_id},
+            )
+        ).mappings().first()
+    return str(row["status"]) if row is not None else None
+
+
+async def _rejected_task_ids(campaign_id: str) -> list[str]:
+    from core.database import get_db
+
+    # Edits/reruns INSERT a fresh content_variants row per re-run rather than
+    # updating in place (same pattern as send_campaign_to_review's own query)
+    # — DISTINCT ON picks only the newest row per task_id before filtering to
+    # the ones still sitting at 'rejected'.
+    async with get_db() as conn:
+        rows = (
+            await conn.execute(
+                text(
+                    """
+                    SELECT DISTINCT ON (task_id) task_id, status
+                    FROM content_variants
+                    WHERE campaign_id = CAST(:cid AS UUID)
+                    ORDER BY task_id, created_at DESC
+                    """
+                ),
+                {"cid": campaign_id},
+            )
+        ).mappings().all()
+    return [str(r["task_id"]) for r in rows if r["status"] == "rejected"]
+
+
+async def _handle_revision_reply(
     *,
     session: ConversationSession,
     conversation_id: str,
     user: UserContext,
     user_message: str,
 ) -> dict[str, Any]:
+    """A campaign parked in 'needs_revision' (see review_service._park_for_revision)
+    is waiting on the creator's next chat message as fix instructions for every
+    currently-rejected variant — not a new brief turn. Regenerates only those
+    variants (via the same single-task rerun_service path the "Modify prompt"
+    feature already uses), then resubmits just the regenerated ones for review."""
+    from services.campaign.rerun_service import rerun_service
+
+    campaign_id = session.active_campaign_id
+    assert campaign_id is not None
+
+    task_ids = await _rejected_task_ids(campaign_id)
+    for task_id in task_ids:
+        await rerun_service.rerun_campaign(
+            campaign_id=campaign_id,
+            resume_from_node="content_generator",
+            requested_by=user.user_id,
+            trigger="reviewer_rejection_revision",
+            user_edit=user_message,
+            variant_task_id=task_id,
+        )
+
+    review_count = await review_service.send_campaign_to_review(campaign_id)
+
+    plural = "variant" if len(task_ids) == 1 else "variants"
+    assistant_message = (
+        f"Regenerated {len(task_ids)} {plural} with your changes and sent "
+        f"{'it' if review_count == 1 else 'them'} back to the reviewer."
+        if task_ids
+        else "Nothing was pending revision for this campaign anymore."
+    )
+    await session_manager.add_message(
+        conversation_id,
+        "assistant",
+        assistant_message,
+        intent_classified="revision_applied",
+        campaign_id=campaign_id,
+    )
+
+    return {
+        "conversation_id": conversation_id,
+        "intent": "revision_applied",
+        "brief": session.partial_brief.model_dump(),
+        "brief_complete": session.partial_brief.is_complete(),
+        "awaiting_confirmation": False,
+        "campaign_id": campaign_id,
+        "similar_campaign": None,
+        "message": assistant_message,
+        "brief_updates": [],
+        "brief_changes": [],
+        "conversation_stage": None,
+        "planner_objective": None,
+        "primary_objective": None,
+        "secondary_objectives": [],
+        "turn_type": None,
+        "needs_clarification": False,
+        "clarification_target": None,
+        "brief_field_states": [],
+        "suggested_prompts": [],
+        "correction_detected": False,
+        "pending_reviews": [],
+    }
+
+
+async def _process_turn(
+    *,
+    session: ConversationSession,
+    conversation_id: str,
+    user: UserContext,
+    user_message: str,
+    websocket: WebSocket | None = None,
+) -> dict[str, Any]:
+    async def _status(stage: str) -> None:
+        # Real, in-flight pipeline stages — not a timer-driven guess. Lets the
+        # frontend show a "doing X" indicator that always matches what's
+        # actually running, since the socket is already open per conversation.
+        # Logged explicitly (2026-07-27) — websocket.send_json itself produces
+        # no server-side log line at all, so there was previously no way to
+        # confirm from the server side whether this was ever actually firing.
+        log.info("chat_status_pushed", conversation_id=conversation_id, stage=stage, has_socket=websocket is not None)
+        if websocket is not None:
+            await websocket.send_json({"type": "status", "stage": stage})
+
     await session_manager.add_message(conversation_id, "user", user_message)
+
+    if session.active_campaign_id:
+        campaign_status = await _campaign_status(session.active_campaign_id)
+        if campaign_status == "needs_revision":
+            return await _handle_revision_reply(
+                session=session,
+                conversation_id=conversation_id,
+                user=user,
+                user_message=user_message,
+            )
 
     history = await session_manager.load_messages(conversation_id)
     context = _chat_state_context(session)
+    await _status("understanding")
     understanding = await _understand_turn(
         previous_brief=session.partial_brief,
         user_message=user_message,
@@ -392,6 +561,7 @@ async def _process_turn(
 
     await session_manager.update_partial_brief(conversation_id, brief)
     brief_changes = _brief_changes(previous_brief, brief)
+    await _status("checking_brief")
 
     planner_output = _build_planner_output(
         user_message=user_message,
@@ -416,6 +586,7 @@ async def _process_turn(
             session=session,
             intent=intent,
             user_message=user_message,
+            state=context,
         )
     elif intent == "list_reviews" and session.active_campaign_id:
         pending_reviews = await _fetch_pending_reviews(session.active_campaign_id)
@@ -435,9 +606,22 @@ async def _process_turn(
 
     should_run = False
     confirm_playback = False
+    similar_campaign: SimilarCampaignMatch | None = None
     if brief_complete and not session.active_campaign_id and not campaign_copilot_message:
         if was_awaiting and (affirmative or explicit_run):
             should_run = True
+        elif not was_awaiting:
+            # Brief just became complete for the first time — check
+            # similarity right here, before ever asking "shall I run this?",
+            # so a match is visible the moment the brief is ready rather than
+            # only after the user already said yes. Checking against the
+            # SAME turn that renders the brief panel (not a later bare "yes"
+            # message, which carries no brief content of its own) also keeps
+            # the brief/brief_field_states in this response fully populated.
+            await _status("checking_similar")
+            similar_campaign = await find_similar_campaign(brand_id=session.brand_id, brief=brief)
+            if similar_campaign is None:
+                confirm_playback = True
         else:
             confirm_playback = True
 
@@ -452,10 +636,17 @@ async def _process_turn(
     elif confirm_playback:
         if not was_awaiting:
             await session_manager.set_status(conversation_id, "awaiting_confirmation")
+    elif similar_campaign is not None:
+        # Held for a decision (Verify / Proceed anyway) rather than enqueued
+        # — still mark the session as "awaiting" so a later confirmation
+        # (should the user type instead of using the card) resumes correctly.
+        if not was_awaiting:
+            await session_manager.set_status(conversation_id, "awaiting_confirmation")
     elif was_awaiting and not brief_complete:
         # User edited the brief back into an incomplete state; resume collecting.
         await session_manager.set_status(conversation_id, "collecting")
 
+    await _status("drafting_reply")
     assistant_message = await _compose_assistant_message(
         campaign_id=campaign_id,
         campaign_copilot_message=campaign_copilot_message,
@@ -466,7 +657,11 @@ async def _process_turn(
         brief_changes=brief_changes,
         context=context,
         confirm_playback=confirm_playback,
+        similar_campaign=similar_campaign,
     )
+    rejection_notice = _build_rejection_notice(extraction_meta.rejected)
+    if rejection_notice:
+        assistant_message = f"{rejection_notice} {assistant_message}".strip()
 
     await session_manager.add_message(
         conversation_id,
@@ -474,6 +669,8 @@ async def _process_turn(
         assistant_message,
         intent_classified=intent,
         campaign_id=campaign_id,
+        captured=brief_updates,
+        changes=brief_changes,
     )
 
     return {
@@ -483,6 +680,7 @@ async def _process_turn(
         "brief_complete": brief.is_complete(),
         "awaiting_confirmation": confirm_playback,
         "campaign_id": campaign_id,
+        "similar_campaign": similar_campaign.model_dump() if similar_campaign else None,
         "message": assistant_message,
         "brief_updates": brief_updates,
         "brief_changes": brief_changes,
@@ -517,7 +715,7 @@ async def _understand_turn(
     except Exception:
         # Degrade gracefully: keep the existing brief and mark intent unknown so
         # the turn still produces a safe conversational reply.
-        merged = brief_collector._merge(previous_brief, {}, user_message)
+        merged, _ = brief_collector._merge(previous_brief, {}, user_message)
         return UnderstandingResult(
             intent=IntentClassification(primary="other", secondary=[], confidence=0.0),
             brief=merged,
@@ -581,7 +779,14 @@ async def _compose_assistant_message(
     brief_changes: list[dict[str, Any]],
     context: dict[str, Any],
     confirm_playback: bool = False,
+    similar_campaign: SimilarCampaignMatch | None = None,
 ) -> str:
+    if similar_campaign:
+        return (
+            "This looks similar to an existing campaign — check the card above before "
+            "creating a new one."
+        )
+
     if campaign_id:
         return (
             "Campaign queued successfully. "
@@ -620,6 +825,7 @@ async def _campaign_copilot_reply(
     session: ConversationSession,
     intent: str,
     user_message: str,
+    state: dict[str, Any],
 ) -> str | None:
     campaign_id = session.active_campaign_id
     if not campaign_id:
@@ -674,7 +880,7 @@ async def _campaign_copilot_reply(
     if intent == "explain_progress":
         return _campaign_progress_reply(campaign_id, summary)
     if intent == "show_agent_output":
-        return _campaign_agent_output_reply(campaign_id, user_message, summary, trace)
+        return await _campaign_agent_output_reply(campaign_id, user_message, summary, trace, state)
     if intent == "view_history":
         return _campaign_history_reply(conversation_id, campaign_id, summary)
     return None
@@ -880,28 +1086,92 @@ def _campaign_progress_reply(campaign_id: str, summary: dict[str, Any]) -> str:
     )
 
 
-def _campaign_agent_output_reply(
+_KNOWN_AGENTS: tuple[str, ...] = (
+    "content_generator",
+    "personalization_agent",
+    "translation_agent",
+    "judge_claude",
+    "judge_gpt4o",
+    "judge_llama",
+    "confidence_aggregator",
+    "review_gate",
+    "publishing_agent",
+)
+
+_AGENT_TARGET_PROMPT = (
+    "The user is asking about a running campaign's agent output. Given their message "
+    "and the list of known pipeline agents, decide which agent(s) they mean.\n\n"
+    f"Known agents: {', '.join(_KNOWN_AGENTS)}\n\n"
+    'Reply with ONLY a JSON object: {"agents": [...]}\n'
+    '- If the user names one or more specific agents (even loosely, e.g. "the judges" '
+    'means all three judge_* agents), list exactly those agent names.\n'
+    '- If the user wants everything (e.g. "all of them", "both", "everything", '
+    '"show me all the outputs"), return every known agent name.\n'
+    "- If the message gives no usable signal at all, return an empty list."
+)
+
+
+async def _resolve_requested_agents(user_message: str, state: dict[str, Any]) -> list[str]:
+    """LLM-resolved agent target for a `show_agent_output` turn — replaces the old
+    pure-keyword `_extract_requested_agent`, which had no entry for "all"/"both"/
+    "everything" and so repeated the same canned prompt forever once a user
+    answered a clarifying question with anything but a literal agent name (see
+    next_tasks.md item 8, 2026-07-26).
+
+    Cheap fast path first: a literal agent-name match needs no LLM call at all.
+    Only unresolved messages fall through to a `util-fast` classification call,
+    kept deliberately tiny (one message, temperature 0) since this is a
+    reply-composition detail, not a generation step.
+    """
+    direct = _extract_requested_agent(user_message)
+    if direct:
+        return [direct]
+
+    try:
+        content, _usage = await traced_llm_call(
+            model=state.get("model_aliases", {}).get("utility", "util-fast"),
+            messages=[
+                {"role": "system", "content": _AGENT_TARGET_PROMPT},
+                {"role": "user", "content": user_message},
+            ],
+            task="campaign_copilot_agent_resolution",
+            state=state,
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        parsed = json.loads(content)
+        agents = parsed.get("agents") if isinstance(parsed, dict) else None
+        if not isinstance(agents, list):
+            return []
+        return [a for a in agents if a in _KNOWN_AGENTS]
+    except Exception:
+        # Best-effort: degrade to "couldn't resolve" rather than breaking the turn.
+        return []
+
+
+async def _campaign_agent_output_reply(
     campaign_id: str,
     user_message: str,
     summary: dict[str, Any],
     trace: list[dict[str, Any]],
+    state: dict[str, Any],
 ) -> str:
-    requested_agent = _extract_requested_agent(user_message)
-    if requested_agent:
-        trace_line = _agent_trace_line(trace, requested_agent)
-        if trace_line:
-            return (
-                f"Campaign {campaign_id} latest {requested_agent} output: {trace_line}. "
-                f"Overall status is '{summary['status']}' with {summary['total_variants']} variants."
+    requested_agents = await _resolve_requested_agents(user_message, state)
+    if requested_agents:
+        lines = []
+        for agent_name in requested_agents:
+            trace_line = _agent_trace_line(trace, agent_name)
+            lines.append(
+                f"{agent_name}: {trace_line}" if trace_line else f"{agent_name}: no output recorded yet"
             )
+        joined = " | ".join(lines)
         return (
-            f"For {requested_agent}, open the campaign stream panel and filter by agent. "
-            f"I can confirm campaign {campaign_id} status is '{summary['status']}' "
-            f"with {summary['total_variants']} variants so far."
+            f"Campaign {campaign_id} — {joined}. "
+            f"Overall status is '{summary['status']}' with {summary['total_variants']} variants."
         )
     return (
-        "Tell me which agent output you want (for example: content_generator, personalization_agent, or judge_claude), "
-        "and I will summarize the latest campaign state around that step."
+        "Tell me which agent output you want (for example: content_generator, personalization_agent, or judge_claude — "
+        "or say \"all of them\"), and I will summarize the latest campaign state around that step."
     )
 
 
@@ -919,17 +1189,7 @@ def _campaign_history_reply(conversation_id: str, campaign_id: str, summary: dic
 
 def _extract_requested_agent(user_message: str) -> str | None:
     requested = user_message.lower()
-    for agent_name in (
-        "content_generator",
-        "personalization_agent",
-        "translation_agent",
-        "judge_claude",
-        "judge_gpt4o",
-        "judge_llama",
-        "confidence_aggregator",
-        "review_gate",
-        "publishing_agent",
-    ):
+    for agent_name in _KNOWN_AGENTS:
         if agent_name.replace("_", " ") in requested or agent_name in requested:
             return agent_name
     return None
@@ -1066,6 +1326,78 @@ async def _enqueue_campaign(
     return campaign_id
 
 
+@router.post("/conversations/{conversation_id}/run-anyway")
+async def run_campaign_anyway(
+    conversation_id: str,
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    """Enqueues the session's current brief directly, bypassing intent
+    classification and the similarity check entirely — the "Proceed anyway"
+    action on a similar-campaign flag card. The check already ran once for
+    this exact brief inside _process_turn; re-running it here would just
+    repeat the same (free, local) embedding call for a decision the user
+    already made."""
+    session = await session_manager.get(conversation_id)
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="conversation not found")
+    if session.org_id != user.org_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="conversation does not belong to org"
+        )
+    _assert_brand_access(user, session.brand_id)
+
+    if session.active_campaign_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="conversation already has an active campaign",
+        )
+    if not session.partial_brief.is_complete():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="brief is not complete"
+        )
+
+    campaign_id = await _enqueue_campaign(
+        user=user,
+        brand_id=session.brand_id,
+        brief=session.partial_brief,
+        request_id=new_request_id(),
+    )
+    await session_manager.attach_campaign(conversation_id, campaign_id)
+    # This bypasses _process_turn entirely (a button click, not a chat
+    # message), which previously meant it left zero trace in the
+    # conversation — no confirmation that anything happened at all, unlike
+    # the normal "type run campaign" path which posts this exact message.
+    # See next_tasks.md 2026-07-26 ("where is the approval or yes command,
+    # you just started the queue").
+    queued_message = (
+        "Campaign queued successfully. "
+        f"Campaign ID: {campaign_id}. You can subscribe to /campaigns/{campaign_id}/stream."
+    )
+    await session_manager.add_message(conversation_id, "assistant", queued_message)
+    return {"campaign_id": campaign_id, "message": queued_message}
+
+
+@router.post("/conversations/{conversation_id}/archive")
+async def archive_conversation(
+    conversation_id: str,
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    """Soft-archives a conversation (status='archived') so it drops out of
+    the sidebar without deleting anything — user-requested cleanup option
+    (2026-07-26), deliberately non-destructive."""
+    session = await session_manager.get(conversation_id)
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="conversation not found")
+    if session.org_id != user.org_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="conversation does not belong to org"
+        )
+    _assert_brand_access(user, session.brand_id)
+
+    await session_manager.set_status(conversation_id, "archived")
+    return {"status": "archived"}
+
+
 @router.post("/conversations")
 async def create_conversation(
     body: CreateConversationRequest,
@@ -1080,14 +1412,296 @@ async def create_conversation(
     )
 
 
+@router.get("/conversations/{conversation_id}/messages")
+async def get_conversation_messages(
+    conversation_id: str,
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    """Full message history for a conversation, oldest first — used to
+    reconstruct the chat view when resuming an old conversation from the
+    sidebar (the live WebSocket only ever carries *new* turns)."""
+    from core.database import get_db
+
+    normalized_id = _normalize_uuid(conversation_id, "conversation_id")
+    session = await session_manager.get(normalized_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
+    _assert_brand_access(user, session.brand_id)
+
+    async with get_db() as conn:
+        rows = (
+            await conn.execute(
+                text(
+                    """
+                    SELECT role, content, campaign_id, created_at, captured, changes
+                    FROM conversation_messages
+                    WHERE conversation_id = CAST(:cid AS UUID)
+                    ORDER BY created_at ASC
+                    """
+                ),
+                {"cid": normalized_id},
+            )
+        ).mappings().all()
+
+    # The similar-campaign flag is otherwise only ever delivered once, over
+    # the live WebSocket message that triggered it — nothing persists it.
+    # Since this app does full page navigations between routes (not a
+    # client-side SPA) and conversation switches deliberately reset the
+    # frontend's flag state, both would silently lose it even though the
+    # underlying situation (an unresolved duplicate-looking brief) hasn't
+    # changed. Recomputing it here — cheap, local embeddings, no LLM cost —
+    # whenever a conversation is (re)loaded restores it reliably instead.
+    similar_campaign: SimilarCampaignMatch | None = None
+    if (
+        session.status == "awaiting_confirmation"
+        and not session.active_campaign_id
+        and session.partial_brief.is_complete()
+    ):
+        similar_campaign = await find_similar_campaign(
+            brand_id=session.brand_id, brief=session.partial_brief
+        )
+
+    return {
+        "conversation_id": normalized_id,
+        "messages": [
+            {
+                "role": r["role"],
+                "content": r["content"],
+                "campaign_id": str(r["campaign_id"]) if r["campaign_id"] else None,
+                "created_at": r["created_at"],
+                "captured": r["captured"] or [],
+                "changes": r["changes"] or [],
+            }
+            for r in rows
+        ],
+        "similar_campaign": similar_campaign.model_dump() if similar_campaign else None,
+    }
+
+
+# ── Structured brief inputs (next_tasks.md item 23, 2026-07-27) ─────────────
+# Pills/dropdown/tier-picker selections bypass understanding_engine/
+# brief_collector's LLM extraction entirely — that's the actual design
+# choice that closes the whole "locale as 'English', channel as 'SMS',
+# audience-segment infinite loop" bug class this session kept hitting, not
+# just a UI layer on top of the same fragile free-text parsing.
+
+_LOCALE_LABELS = {
+    "en-US": "English (US)",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+    "hi": "Hindi",
+}
+
+_SETTABLE_BRIEF_FIELDS = {"channels", "locales", "audience_segments", "token_budget"}
+
+
+@router.get("/locales/supported")
+async def _brand_config(brand_id: str | None) -> dict:
+    """Same brands.config lookup intake_agent uses for entitlement
+    enforcement (pipeline/agents/intake.py::_load_brand_profile) — reused
+    here so the pickers only ever offer what a brief would actually be
+    allowed to use, not the full global set for brands that have configured
+    a narrower allow-list (item 42, 2026-07-27). Fails open on any error —
+    same reasoning as intake_agent's copy of this lookup."""
+    if not brand_id:
+        return {}
+    from core.database import get_db
+
+    try:
+        async with get_db() as conn:
+            result = await conn.execute(
+                text("SELECT config FROM brands WHERE id = :brand_id"),
+                {"brand_id": brand_id},
+            )
+            row = result.mappings().first()
+            return dict(row["config"] or {}) if row and row["config"] else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+@router.get("/locales/supported")
+async def get_supported_locales(brand_id: str | None = None) -> dict:
+    """Canonical locale pill options — the exact same source of truth
+    translation_agent gates against (pipeline/locale_utils.py), so a pill
+    selection can never produce a locale the pipeline doesn't actually
+    support (unlike free-text extraction, which has repeatedly produced
+    unsupported/malformed locale values this session). Narrowed further by
+    the brand's own configured allow-list, if it has one (item 42)."""
+    config = await _brand_config(brand_id)
+    allowed = config.get("locales")
+    codes = [SOURCE_LOCALE] + sorted(set(allowed) if allowed else SUPPORTED_LOCALES)
+    return {"locales": [{"code": code, "label": _LOCALE_LABELS.get(code, code)} for code in codes]}
+
+
+@router.get("/channels/supported")
+async def get_supported_channels(brand_id: str | None = None) -> dict:
+    """Canonical channel pill options — the exact same source of truth
+    content_generator actually has a prompt template for
+    (pipeline/agents/prompts/channel_prompts.py's DEFAULT_CHANNEL_CONSTRAINTS).
+    Added 2026-07-27 after a live campaign requested "RCS" as a channel via
+    free-text chat and failed mid-pipeline with "No prompt template seeded
+    for channel 'rcs'" — RCS was never in DEFAULT_CHANNEL_CONSTRAINTS at
+    all, so this picker can never offer it (or any other channel that would
+    hard-fail generation), closing that failure mode at the source instead
+    of catching it after wasted generation cost. Narrowed further by the
+    brand's own configured allow-list, if it has one (item 42)."""
+    from pipeline.agents.prompts.channel_prompts import DEFAULT_CHANNEL_CONSTRAINTS
+
+    config = await _brand_config(brand_id)
+    allowed = config.get("channels")
+    channels = set(allowed) if allowed else set(DEFAULT_CHANNEL_CONSTRAINTS.keys())
+    return {"channels": sorted(channels & set(DEFAULT_CHANNEL_CONSTRAINTS.keys()))}
+
+
+class EstimateBudgetRequest(BaseModel):
+    channels: list[str] = []
+    locales: list[str] = []
+    audience_segments: list[str] = []
+
+
+@router.post("/conversations/{conversation_id}/estimate-budget")
+async def estimate_budget(
+    conversation_id: str,
+    body: EstimateBudgetRequest,
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    """Budget-tier suggestions computed live from the existing
+    check_budget/ROUGH_TOKENS_PER_TASK estimator (pipeline/intake_validation.py)
+    — not fixed round numbers — given whatever channels/locales/segments are
+    already selected (falls back to the conversation's current partial
+    brief for anything not passed explicitly)."""
+    normalized_id = _normalize_uuid(conversation_id, "conversation_id")
+    session = await session_manager.get(normalized_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
+    _assert_brand_access(user, session.brand_id)
+
+    channels = body.channels or session.partial_brief.channels
+    locales = body.locales or session.partial_brief.locales
+    segments = body.audience_segments or session.partial_brief.audience_segments
+    task_count = estimate_task_count(channels, locales, segments) if (channels and locales and segments) else 1
+    base_tokens = task_count * ROUGH_TOKENS_PER_TASK
+
+    # Same "credit load" pattern as a $10/$15/$25/$50 top-up picker — tiers
+    # scale off the real estimate rather than being arbitrary fixed amounts,
+    # rounded to a clean multiple of 500 for readability.
+    def _round_clean(n: float) -> int:
+        return max(500, round(n / 500) * 500)
+
+    tiers = [
+        {"tokens": _round_clean(base_tokens * multiplier), "multiplier": multiplier}
+        for multiplier in (1, 1.5, 2.5, 5)
+    ]
+    return {"task_count": task_count, "estimated_tokens": base_tokens, "tiers": tiers}
+
+
+class SetBriefFieldRequest(BaseModel):
+    field: str
+    value: Any
+
+
+@router.post("/conversations/{conversation_id}/set-brief-field")
+async def set_brief_field(
+    conversation_id: str,
+    body: SetBriefFieldRequest,
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    """Directly patch one brief field from a structured UI selection —
+    deliberately bypasses understanding_engine/brief_collector's LLM
+    extraction entirely for these three fields, per the item 23 design
+    decision (2026-07-27): a pill/dropdown/tier selection is already
+    unambiguous, so re-formatting it into a chat message and re-parsing it
+    with an LLM would just reintroduce the same extraction fragility this
+    endpoint exists to remove."""
+    if body.field not in _SETTABLE_BRIEF_FIELDS:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"field must be one of {sorted(_SETTABLE_BRIEF_FIELDS)}",
+        )
+    normalized_id = _normalize_uuid(conversation_id, "conversation_id")
+    session = await session_manager.get(normalized_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
+    _assert_brand_access(user, session.brand_id)
+
+    brief = session.partial_brief.model_copy()
+    if body.field == "channels":
+        from pipeline.agents.prompts.channel_prompts import DEFAULT_CHANNEL_CONSTRAINTS
+
+        if not isinstance(body.value, list) or not all(isinstance(v, str) for v in body.value):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "channels must be a list of strings")
+        unsupported = [ch for ch in body.value if ch not in DEFAULT_CHANNEL_CONSTRAINTS]
+        if unsupported:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, f"unsupported channel(s): {unsupported}"
+            )
+        brief.channels = body.value
+        summary = ", ".join(body.value)
+    elif body.field == "locales":
+        if not isinstance(body.value, list) or not all(isinstance(v, str) for v in body.value):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "locales must be a list of strings")
+        unsupported = [loc for loc in body.value if not is_locale_supported(loc)]
+        if unsupported:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, f"unsupported locale(s): {unsupported}"
+            )
+        brief.locales = body.value
+        summary = ", ".join(body.value)
+    elif body.field == "audience_segments":
+        if not isinstance(body.value, list) or not all(isinstance(v, str) for v in body.value):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "audience_segments must be a list of strings"
+            )
+        brief.audience_segments = body.value
+        summary = ", ".join(body.value)
+    else:  # token_budget
+        if not isinstance(body.value, int) or body.value <= 0:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "token_budget must be a positive integer")
+        brief.token_budget = body.value
+        summary = f"{body.value:,} tokens"
+
+    await session_manager.update_partial_brief(normalized_id, brief)
+
+    field_label = body.field.replace("_", " ")
+    # Persist the pick as its own user-turn message too, not just the
+    # assistant's ack — otherwise a reload/conversation-switch re-fetches
+    # history from GET /conversations/{id}/messages and the selection bubble
+    # the frontend showed live (built purely client-side) is gone, since it
+    # was never actually saved server-side (2026-07-27 persistence bug).
+    user_message = f"{field_label.capitalize()}: {summary}"
+    await session_manager.add_message(normalized_id, "user", user_message)
+    ack_message = f"Got it — {field_label} set to {summary}."
+    await session_manager.add_message(normalized_id, "assistant", ack_message)
+
+    is_complete = brief.is_complete()
+    if is_complete:
+        await session_manager.set_status(normalized_id, "awaiting_confirmation")
+
+    return {
+        "brief": brief.model_dump(),
+        "missing_slots": brief.missing_slots(),
+        "is_complete": is_complete,
+        "awaiting_confirmation": is_complete,
+        "message": ack_message,
+    }
+
+
 @router.get("/me/recent-campaigns")
 async def recent_campaigns(
     user: Annotated[UserContext, Depends(get_current_user)],
+    include_archived: bool = False,
 ) -> dict[str, Any]:
+    # Admins see every campaign in their brand scope (not just their own) so
+    # they can actually find something to archive per the 2026-07-26
+    # permission split; regular users keep the existing "my campaigns" view
+    # and never see archived ones regardless of what they pass.
+    is_admin = "admin" in user.roles
     campaigns = await get_recent_campaigns(
         org_id=user.org_id,
         brand_ids=user.brand_ids,
-        created_by=_optional_uuid(user.user_id),
+        created_by=None if is_admin else _optional_uuid(user.user_id),
+        include_archived=include_archived and is_admin,
         limit=12,
     )
     return {"campaigns": [c.model_dump() for c in campaigns]}
@@ -1200,6 +1814,7 @@ async def conversation_ws(websocket: WebSocket, conversation_id: str) -> None:
                     conversation_id=normalized_id,
                     user=user,
                     user_message=user_message,
+                    websocket=websocket,
                 )
 
             await websocket.send_json(response_payload)

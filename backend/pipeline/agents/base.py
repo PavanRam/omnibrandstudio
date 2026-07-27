@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 from collections.abc import Awaitable, Callable
@@ -24,6 +25,7 @@ __all__ = [
     "safe_agent_run",
     "publish_campaign_event",
     "AGENT_WRITE_PERMISSIONS",
+    "LLMCallError",
 ]
 
 
@@ -58,14 +60,24 @@ async def publish_campaign_event(
         )
 
 
-def _fallback_content_from_messages(messages: list[dict]) -> str:
-    for msg in reversed(messages):
-        if str(msg.get("role", "")).lower() == "user":
-            text = str(msg.get("content", "")).strip()
-            if text:
-                snippet = text[:220]
-                return f"[fallback-generated] {snippet}"
-    return "[fallback-generated]"
+class LLMCallError(RuntimeError):
+    """A traced_llm_call attempt exhausted its retries (or hit a
+    non-retriable error) without a real model response. Deliberately a real
+    exception, not a fabricated string — see traced_llm_call's docstring
+    for why this replaced the old silent-fallback behavior (2026-07-27).
+    Propagates to safe_agent_run, the existing, already-in-place mechanism
+    every agent already relies on to turn a raised exception into a clean
+    per-task/per-variant failure — this class doesn't change how that
+    happens, only ensures a real failure actually reaches it instead of
+    being disguised as a successful (fabricated) response."""
+
+
+# HTTP statuses worth retrying — genuinely transient (rate limit, upstream
+# provider hiccup). Everything else (400/401/403/404/422/...) is a
+# permanent/configuration problem retrying can't fix.
+_RETRIABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+_MAX_ATTEMPTS = 3
+_BACKOFF_SECONDS = (1.0, 2.0)  # delay before attempt 2, then before attempt 3
 
 
 async def traced_llm_call(
@@ -99,38 +111,60 @@ async def traced_llm_call(
         span.set_attribute("request_id", request_id)
 
         async with httpx.AsyncClient(base_url=settings.LITELLM_BASE_URL, timeout=60) as client:
-            try:
-                response = await client.post(
-                    "/chat/completions",
-                    json={"model": model, "messages": messages, **kwargs},
-                )
-                response.raise_for_status()
-                payload = response.json()
-                span.set_attribute("http.status_code", response.status_code)
-            except httpx.HTTPError as exc:
-                status_code = getattr(getattr(exc, "response", None), "status_code", 0)
-                span.set_attribute("http.status_code", int(status_code or 0))
-                span.set_attribute("llm.fallback", True)
-                log.warning(
-                    "llm_call_http_failed_using_fallback",
+            payload = None
+            last_exc: httpx.HTTPError | None = None
+            last_status = 0
+            for attempt in range(1, _MAX_ATTEMPTS + 1):
+                try:
+                    response = await client.post(
+                        "/chat/completions",
+                        json={"model": model, "messages": messages, **kwargs},
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                    span.set_attribute("http.status_code", response.status_code)
+                    span.set_attribute("llm.attempts", attempt)
+                    break
+                except httpx.HTTPError as exc:
+                    last_exc = exc
+                    last_status = int(getattr(getattr(exc, "response", None), "status_code", 0) or 0)
+                    retriable = last_status in _RETRIABLE_STATUS_CODES
+                    if not retriable or attempt == _MAX_ATTEMPTS:
+                        break
+                    delay = _BACKOFF_SECONDS[min(attempt - 1, len(_BACKOFF_SECONDS) - 1)]
+                    log.warning(
+                        "llm_call_http_failed_retrying",
+                        agent=agent,
+                        task=task,
+                        model=model,
+                        status_code=last_status,
+                        attempt=attempt,
+                        delay_seconds=delay,
+                        error=str(exc),
+                    )
+                    await asyncio.sleep(delay)
+
+            if payload is None:
+                # Every attempt failed (or the first failure was non-retriable) —
+                # raise a real error instead of fabricating content that would
+                # silently look like a genuine model response to the caller and
+                # anything downstream (quality gates, judges, truthfulness
+                # checks). safe_agent_run — already wrapping every agent body,
+                # unchanged here — turns this into a clean per-task/per-variant
+                # failure, exactly as it already does for any other exception.
+                span.set_attribute("http.status_code", last_status)
+                span.set_attribute("llm.failed", True)
+                log.error(
+                    "llm_call_failed",
                     agent=agent,
                     task=task,
                     model=model,
-                    status_code=status_code,
-                    error=str(exc),
+                    status_code=last_status,
+                    error=str(last_exc),
                 )
-                payload = {
-                    "choices": [
-                        {
-                            "message": {
-                                "content": _fallback_content_from_messages(messages),
-                            }
-                        }
-                    ],
-                    "usage": {"prompt_tokens": 0, "completion_tokens": 0},
-                    "model": f"fallback/{model}",
-                    "_hidden_params": {"response_cost": 0.0},
-                }
+                raise LLMCallError(
+                    f"{task}: LLM call to {model} failed after retries (status={last_status}): {last_exc}"
+                ) from last_exc
 
     latency_ms = int((time.perf_counter() - start) * 1000)
     content = payload["choices"][0]["message"]["content"]
@@ -250,11 +284,13 @@ AGENT_WRITE_PERMISSIONS: dict[str, set[str]] = {
         "failed_task_ids",
         "token_cost_usd",
         "current_phase",
+        "current_task",
+        "user_edit_note",
         "errors",
     },
-    "personalization_agent": {"variants", "token_cost_usd", "errors"},
-    "translation_agent": {"variants", "token_cost_usd", "errors"},
-    "judge_gate": {"judge_mode"},
+    "personalization_agent": {"variants", "token_cost_usd", "current_phase", "errors"},
+    "translation_agent": {"variants", "token_cost_usd", "current_phase", "errors"},
+    "judge_gate": {"judge_mode", "current_phase"},
     "judge_claude": {"brand_scores", "errors"},
     "judge_gpt4o": {"brand_scores", "errors"},
     "judge_llama": {"brand_scores", "errors"},
@@ -262,8 +298,9 @@ AGENT_WRITE_PERMISSIONS: dict[str, set[str]] = {
         "aggregated_scores",
         "review_requests",
         "human_review_requested",
+        "current_phase",
     },
-    "reflexion": {"variants", "brand_scores", "aggregated_scores", "errors"},
+    "reflexion": {"variants", "brand_scores", "aggregated_scores", "current_phase", "errors"},
     "review_gate": {"variants", "current_phase", "review_round"},
     "publishing_agent": {"publication_receipts", "variants", "current_phase", "errors"},
 }

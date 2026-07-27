@@ -3,7 +3,9 @@ from typing import Annotated
 from core.database import get_db
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from services import golden_dataset_service
+from services.rag import get_vector_store
 from services.rag.ingest import ingest_brand_guide, ingest_customer_segments, list_customer_segments
+from sqlalchemy import text
 
 from api.deps import UserContext, get_current_user
 
@@ -17,8 +19,8 @@ async def _assert_brand_access(conn, user: UserContext, brand_id: str) -> None:
 
     # For org-scoped users without explicit brand_ids, enforce org->brand ownership.
     if not user.brand_ids:
-        result = await conn.exec_driver_sql(
-            "SELECT 1 FROM brands WHERE id = %(brand_id)s AND org_id = %(org_id)s",
+        result = await conn.execute(
+            text("SELECT 1 FROM brands WHERE id = :brand_id AND org_id = :org_id"),
             {"brand_id": brand_id, "org_id": user.org_id},
         )
         if result.mappings().first() is None:
@@ -79,22 +81,21 @@ async def list_brand_guides(
     async with get_db() as conn:
         await _assert_brand_access(conn, user, brand_id)
         if include_inactive:
-            query = (
+            query = text(
                 "SELECT id, locale, version, source_filename, indexed_at, active, chunk_count, created_at "
-                "FROM brand_guides WHERE brand_id = %(brand_id)s "
+                "FROM brand_guides WHERE brand_id = :brand_id "
                 "ORDER BY created_at DESC"
             )
-            params = {"brand_id": brand_id}
         else:
-            query = (
+            query = text(
                 "SELECT id, locale, version, source_filename, indexed_at, active, chunk_count, created_at "
-                "FROM brand_guides WHERE brand_id = %(brand_id)s AND active = TRUE "
+                "FROM brand_guides WHERE brand_id = :brand_id AND active = TRUE "
                 "ORDER BY created_at DESC"
             )
-            params = {"brand_id": brand_id}
+        params = {"brand_id": brand_id}
 
         try:
-            result = await conn.exec_driver_sql(query, params)
+            result = await conn.execute(query, params)
             rows = [dict(row) for row in result.mappings().all()]
         except Exception as exc:
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from exc
@@ -134,6 +135,40 @@ async def upload_customer_segments(
         "status": "indexed",
         **result,
     }
+
+
+@router.get("/segments/{brand_id}/options")
+async def list_segment_options(
+    brand_id: str,
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    """Distinct segment/persona labels for the structured brief-input
+    dropdown (next_tasks.md item 23, 2026-07-27) — reads the REAL seeded
+    customer-segment data (~4,426 chunked rows, 5 distinct `persona` values
+    as seeded), not the 3-persona placeholder list.
+
+    Deliberately does NOT reuse list_customer_segments/list_segments below
+    — those filter on content_type="segment_profile" (what the manual
+    upload path, ingest_customer_segments, writes), while the SEEDED demo
+    data was written by a different path (ingest_seed_datasets ->
+    _build_points) with content_type="segments". Querying the "segment_profile"
+    filter against the seeded data returns nothing at all. This endpoint
+    queries the collection directly with the filter that actually matches
+    the seeded rows.
+    """
+    async with get_db() as conn:
+        await _assert_brand_access(conn, user, brand_id)
+
+    collection = f"brand_{brand_id}_segments"
+    docs = await get_vector_store().get_documents(
+        collection=collection,
+        filters={"brand_id": brand_id},
+        limit=5000,
+    )
+    options = sorted(
+        {str(doc.metadata.get("persona")).strip() for doc in docs if doc.metadata.get("persona")}
+    )
+    return {"brand_id": brand_id, "options": options}
 
 
 @router.get("/segments/{brand_id}")

@@ -69,10 +69,20 @@ scripts/
 
 ## Invariants — never break
 
-**1. Fan-in fields in OmniBrandState must stay `Annotated[list, operator.add]`:**
+**1. Fan-in fields in OmniBrandState must stay `Annotated[list, <reducer>]`:**
 ```
-variants · brand_scores · aggregated_scores · review_requests
-publication_receipts · failed_task_ids · errors
+brand_scores · aggregated_scores · review_requests
+publication_receipts · failed_task_ids · errors   → operator.add
+
+variants → merge_variants (pipeline/state.py) — upserts by task_id instead
+of concatenating. Plain operator.add would duplicate an entry whenever a
+node (reflexion, personalization, translation, a selective content_generator
+regen) re-emits a variant it already produced, which is also the only way
+an in-place mutation to a variant survives a checkpoint resume (LangGraph
+only persists a channel value a node's return dict actually includes).
+Any node touching `variants` must return the touched variant(s) via the
+"variants" key — mutating in place and returning `{}` looks correct within
+one `ainvoke()` call but silently loses the change on resume.
 ```
 
 **2. Every LLM call** goes through `traced_llm_call()`. Never call litellm, httpx, or the Anthropic SDK directly in agent code.
@@ -85,7 +95,15 @@ publication_receipts · failed_task_ids · errors
 
 **6. Model aliases only** — never hardcode `"claude-sonnet-4-6"` or `"gpt-4o"` in agent code. Always read from `state["model_aliases"]`.
 
-**7. Auth is API key only** — HS256 is removed. No JWT bearer tokens, no RS256, no PEM files.
+**7. Auth is dual-path: JWT (RS256) and API key, both live.** `api/deps.py::get_current_user`
+tries a bearer JWT first (`api/middleware/auth.py`, RSA keypair via
+`JWT_PRIVATE_KEY_PATH`/`JWT_PUBLIC_KEY_PATH`, `jti` revocation on logout/refresh), then falls
+back to `X-API-Key` (`_authenticate_api_key`, hashed lookup against `api_keys`). The frontend
+login flow (email/password → access+refresh tokens) uses the JWT path; server-to-server/script
+callers (e.g. the Airtable poller) use API keys with narrow scopes. Don't remove either path
+without confirming what currently depends on it — this previously said "API key only, JWT
+removed," which was wrong; verified 2026-07-26 that JWT is fully live and is what interactive
+login actually uses.
 
 ---
 
@@ -190,6 +208,17 @@ Schema field addition → update in this order, one response:
 
 ### Read only what you need
 Large files (`state.py`, `schemas.py`, `alembic/versions/001_*.py`): read only the relevant section or function, not the whole file. Use line ranges in the Read tool.
+
+### No automated browser testing — ever
+Never drive a browser automation tool against this app to test it — no clicking through the UI, no live campaign click-throughs, no "let me verify this in the browser." This is a hard rule with no round limit: it applies on attempt 1 just as much as attempt 5. **The user does all live/UI testing themselves.** For UI/frontend changes, verify via code review, unit/integration tests, or backend checks (curl, psql) that don't require a browser, then tell the user what to check and let them do it.
+
+### Debugging discipline — cap live-verification rounds
+A "live test" here means anything that triggers the real paid pipeline (`POST /campaigns/{id}/rerun`, a worker-processed campaign, or any path that calls `traced_llm_call` against real Claude/OpenAI/Gemini) — each pass costs real money (content generation + up to 3 judge calls). This applies to curl/API-driven live tests too, not just browser ones (which are excluded entirely per the rule above).
+
+- **Before ever re-running the live pipeline to check a fix, ask: can this be verified with a mocked/unit test instead?** Almost always yes — `traced_llm_call` and `get_examples` are trivial to monkeypatch. Prove the logic once for free, then confirm live at most once or twice at the end.
+- **Cap live-pipeline debugging at 2 rounds.** If the same bug survives 2 live-verification attempts, stop and ask the user how to proceed instead of trying a 3rd time. Don't keep iterating autonomously against paid infra.
+- Postgres/Redis inspection (`psql`, checkpoint dumps) is free and fine to use liberally — it's re-triggering the *paid pipeline* that needs a cap, not looking at data.
+- If a single session already discovered and fixed 2+ interacting bugs via live re-runs, that's the signal to switch to mocked verification for anything further, not push through with a 3rd/4th/5th live round.
 
 ---
 

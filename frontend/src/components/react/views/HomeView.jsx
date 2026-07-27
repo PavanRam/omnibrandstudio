@@ -67,7 +67,7 @@ export function HomeView() {
             title="Your results"
             description={generating ? 'Conjuring your images…' : 'Fresh from your last prompt.'}
             action={
-              <Button href="/gallery" variant="ghost" size="sm">
+              <Button href="/campaigns" variant="ghost" size="sm">
                 Open gallery <ArrowRight size={15} aria-hidden="true" />
               </Button>
             }
@@ -91,7 +91,7 @@ export function HomeView() {
           <SectionHeading
             title="Recent creations"
             action={
-              <Button href="/gallery" variant="ghost" size="sm">
+              <Button href="/campaigns" variant="ghost" size="sm">
                 View all <ArrowRight size={15} aria-hidden="true" />
               </Button>
             }

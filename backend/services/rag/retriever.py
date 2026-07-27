@@ -9,11 +9,20 @@ from typing import Any
 import structlog
 
 from core.config import settings
+from pipeline.locale_utils import normalize_locale
 from services.rag.hybrid import HybridBM25Index, reciprocal_rank_fusion
 from services.rag.reranker import CrossEncoderReranker, MMRReranker, TFIDFReranker
 from services.rag.vector_store import SearchResult, VectorStoreAdapter
 
 log = structlog.get_logger()
+
+# Brief capture (services/chat/brief_collector.py) now normalizes locale up
+# front, so this is mostly a defensive second pass for any caller that
+# builds a query outside that path — cheap, and prevents the "bare short
+# code / language name doesn't match seeded en-US/fr-FR data" class of bug
+# from recurring here even if some future caller forgets to normalize
+# first. See next_tasks.md 2026-07-26.
+_normalize_locale_for_rag = normalize_locale
 
 
 @dataclass(slots=True)
@@ -83,6 +92,8 @@ class RAGRetriever:
 
     @staticmethod
     def _build_where(brand_id: str, locale: str, extra_filters: dict[str, Any] | None) -> dict[str, Any]:
+        # locale is normalized once by the caller (_query_collection) before
+        # reaching here — see the comment there.
         where: dict[str, Any] = {
             "brand_id": brand_id,
             "locale": locale,
@@ -287,6 +298,14 @@ class RAGRetriever:
     ) -> list[RetrievedChunk]:
         if not query.strip():
             return []
+
+        # Normalize once here — every caller (retrieve, get_examples,
+        # query_customer_segments, etc.) funnels through this method, and
+        # every locale-comparison below (_build_where, _filter_scoped_docs,
+        # _hybrid_cache_key) must use the same normalized value or a bare
+        # short code like "en" silently finds nothing even though the
+        # "en-US"-tagged data is right there.
+        locale = _normalize_locale_for_rag(locale)
 
         where = self._build_where(brand_id, locale, extra_filters)
 

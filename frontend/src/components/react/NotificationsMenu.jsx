@@ -1,28 +1,106 @@
-import { useId, useRef, useState } from 'react';
-import { Bell, CheckCheck, CircleCheck, Heart, Info } from 'lucide-react';
-import { NOTIFICATIONS } from '@/data/notifications.js';
+import { useEffect, useId, useRef, useState } from 'react';
+import { Bell, CheckCheck, CircleCheck, Info, XCircle, Pencil } from 'lucide-react';
+import {
+  fetchNotifications,
+  fetchUnreadNotificationCount,
+  markAllNotificationsRead,
+  markNotificationRead,
+} from '@/lib/api.js';
 import { useDismissable } from './hooks/useDismissable.js';
 import { cn } from '@/lib/cn.js';
 import { withBase } from '@/lib/paths.js';
 
 const ICONS = {
-  success: CircleCheck,
-  info: Info,
-  like: Heart,
+  draft_ready: CircleCheck,
+  review_task: Info,
+  approved: CircleCheck,
+  rejected: XCircle,
+  edited: Pencil,
+  campaign_published: CircleCheck,
+  variants_rejected: XCircle,
 };
+
+const UNREAD_POLL_MS = 25_000;
+
+function timeAgo(isoString) {
+  const diffMs = Date.now() - new Date(isoString).getTime();
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
 
 export function NotificationsMenu() {
   const [open, setOpen] = useState(false);
-  const [items, setItems] = useState(NOTIFICATIONS);
+  const [items, setItems] = useState([]);
+  const [unread, setUnread] = useState(0);
+  const [loaded, setLoaded] = useState(false);
   const ref = useRef(null);
   const panelRef = useRef(null);
   const panelId = useId();
 
   useDismissable(open, () => setOpen(false), ref);
 
-  const unread = items.filter((n) => n.unread).length;
-  const markAllRead = () =>
-    setItems((prev) => prev.map((n) => ({ ...n, unread: false })));
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const { count } = await fetchUnreadNotificationCount();
+        if (!cancelled) setUnread(count);
+      } catch {
+        // Transient network/auth errors just leave the last-known count.
+      }
+    };
+    poll();
+    const interval = setInterval(poll, UNREAD_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!open || loaded) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { notifications } = await fetchNotifications();
+        if (!cancelled) {
+          setItems(notifications);
+          setLoaded(true);
+        }
+      } catch {
+        // Leave the panel empty on failure; next open retries since loaded stays false.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, loaded]);
+
+  const markAllRead = async () => {
+    setItems((prev) => prev.map((n) => ({ ...n, read: true })));
+    setUnread(0);
+    try {
+      await markAllNotificationsRead();
+    } catch {
+      // Best-effort; next poll/open will reconcile the true state.
+    }
+  };
+
+  const markOneRead = async (id) => {
+    const wasUnread = items.find((n) => n.id === id)?.read === false;
+    setItems((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
+    if (wasUnread) setUnread((prev) => Math.max(0, prev - 1));
+    try {
+      await markNotificationRead(id);
+    } catch {
+      // Best-effort; next poll/open will reconcile the true state.
+    }
+  };
 
   return (
     <div ref={ref} className="relative">
@@ -71,27 +149,26 @@ export function NotificationsMenu() {
           </div>
 
           <ul className="max-h-[19rem] overflow-y-auto py-1">
+            {loaded && items.length === 0 && (
+              <li className="px-4 py-6 text-center text-xs text-faint">
+                No notifications yet.
+              </li>
+            )}
             {items.map((n) => {
               const Icon = ICONS[n.type] ?? Info;
               return (
                 <li key={n.id}>
                   <button
                     type="button"
-                    onClick={() =>
-                      setItems((prev) =>
-                        prev.map((x) =>
-                          x.id === n.id ? { ...x, unread: false } : x,
-                        ),
-                      )
-                    }
+                    onClick={() => markOneRead(n.id)}
                     className="flex w-full gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-2"
                   >
                     <span
                       className={cn(
                         'mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-lg',
-                        n.type === 'success' && 'bg-success/12 text-success',
-                        n.type === 'like' && 'bg-danger/12 text-danger',
-                        n.type === 'info' && 'bg-brand-soft text-brand',
+                        (n.type === 'draft_ready' || n.type === 'approved' || n.type === 'campaign_published') && 'bg-success/12 text-success',
+                        (n.type === 'rejected' || n.type === 'variants_rejected') && 'bg-danger/12 text-danger',
+                        (n.type === 'review_task' || n.type === 'edited') && 'bg-brand-soft text-brand',
                       )}
                     >
                       <Icon size={16} aria-hidden="true" />
@@ -101,18 +178,20 @@ export function NotificationsMenu() {
                         <span className="truncate text-sm font-medium text-fg">
                           {n.title}
                         </span>
-                        {n.unread && (
+                        {!n.read && (
                           <span
                             className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand"
                             aria-label="unread"
                           />
                         )}
                       </span>
-                      <span className="mt-0.5 block text-xs leading-snug text-muted">
-                        {n.body}
-                      </span>
+                      {n.body && (
+                        <span className="mt-0.5 block text-xs leading-snug text-muted">
+                          {n.body}
+                        </span>
+                      )}
                       <span className="mt-1 block text-[11px] text-faint">
-                        {n.time}
+                        {timeAgo(n.created_at)}
                       </span>
                     </span>
                   </button>
@@ -123,7 +202,7 @@ export function NotificationsMenu() {
 
           <div className="border-t border-border px-4 py-2.5 text-center">
             <a
-              href={withBase('/gallery')}
+              href={withBase('/campaigns')}
               className="text-xs font-medium text-brand hover:underline"
             >
               View all activity

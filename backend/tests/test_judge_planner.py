@@ -20,7 +20,7 @@ def _state(**overrides) -> dict:
 @pytest.mark.asyncio
 async def test_first_campaign_forces_full():
     result = await judge_gate(_state(prior_campaigns=[]))
-    assert result == {"judge_mode": "full"}
+    assert result == {"judge_mode": "full", "current_phase": "judge_gate_complete"}
 
 
 @pytest.mark.asyncio

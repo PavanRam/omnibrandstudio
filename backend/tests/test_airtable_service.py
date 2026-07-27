@@ -70,7 +70,11 @@ async def test_mark_synced_patches_specific_record(monkeypatch, httpx_mock):
     assert req.method == "PATCH"
     assert str(req.url).endswith("/base123/Reviews/rec1")
     payload = json.loads(req.content)
-    assert payload == {"fields": {"Sync Status": "Error", "Sync Error": "boom"}}
+    # typecast:true required — verified 2026-07-27 against the real configured
+    # base: campaign_id/variant_id/Requester Email are singleSelect fields,
+    # and every real review has a genuinely new UUID/email value, so Airtable
+    # rejects the write with 422 INVALID_MULTIPLE_CHOICE_OPTIONS without it.
+    assert payload == {"fields": {"Sync Status": "Error", "Sync Error": "boom"}, "typecast": True}
 
 
 async def test_mark_synced_swallows_http_errors(monkeypatch, httpx_mock):

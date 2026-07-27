@@ -58,7 +58,10 @@ async def test_reflexion_regenerates_rejected_variant(monkeypatch):
     state = _state([variant], [_aggregate("auto_reject", 0.40)])
     result = await reflexion(state)
 
-    assert result == {}  # variant mutated in place, not returned
+    # Mutated in place AND returned via "variants" — merge_variants (state.py)
+    # upserts by task_id, so this durably replaces the entry rather than
+    # duplicating it (see pipeline/state.py:merge_variants docstring).
+    assert result == {"variants": [variant], "current_phase": "reflexion_complete"}
     assert variant["generated_content"] == "Corrected content."
     assert variant["personalized_content"] is None
     assert variant["translated_content"] is None

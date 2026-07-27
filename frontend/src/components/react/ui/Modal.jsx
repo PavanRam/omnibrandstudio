@@ -95,7 +95,10 @@ export function Modal({ open, onClose, title, description, size = 'md', children
         )}
       >
         {(title || onClose) && (
-          <div className="flex items-start justify-between gap-4 p-5 sm:p-6 pb-0">
+          <div 
+            className="flex items-start justify-between gap-4 p-5 sm:p-6 pb-0"
+            style={{ paddingBottom: '0px' }}
+          >
             <div>
               {title && (
                 <h2 id={titleId} className="text-lg font-semibold text-fg">
@@ -113,7 +116,12 @@ export function Modal({ open, onClose, title, description, size = 'md', children
             </IconButton>
           </div>
         )}
-        <div className="p-5 sm:p-6">{children}</div>
+        <div 
+          className={cn("p-5 sm:p-6", (title || onClose) && "pt-0 sm:pt-0")}
+          style={(title || onClose) ? { paddingTop: '0px' } : undefined}
+        >
+          {children}
+        </div>
       </div>
     </div>,
     document.body,

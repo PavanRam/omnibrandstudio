@@ -121,44 +121,43 @@ class SessionManager:
         created_by: str | None = None,
         limit: int = 12,
     ) -> list[RecentConversation]:
+        # LEFT JOIN campaigns for a live campaign_status (see RecentConversation
+        # docstring) and a LATERAL pull of the first user message, used as a
+        # sidebar-title fallback for conversations abandoned before any brief
+        # field was captured.
+        base_select = """
+            SELECT
+                c.id,
+                c.brand_id,
+                c.status,
+                c.active_campaign_id,
+                c.partial_brief,
+                c.updated_at,
+                camp.status AS campaign_status,
+                first_msg.content AS first_message
+            FROM conversations c
+            LEFT JOIN campaigns camp ON camp.id = c.active_campaign_id
+            LEFT JOIN LATERAL (
+                SELECT content FROM conversation_messages
+                WHERE conversation_id = c.id AND role = 'user'
+                ORDER BY created_at ASC
+                LIMIT 1
+            ) first_msg ON TRUE
+            WHERE c.org_id = :org_id AND c.status != 'archived'
+        """
         async with get_db() as conn:
             if created_by:
                 result = await conn.execute(
                     text(
-                        """
-                        SELECT
-                            id,
-                            brand_id,
-                            status,
-                            active_campaign_id,
-                            partial_brief,
-                            updated_at
-                        FROM conversations
-                        WHERE org_id = :org_id
-                          AND created_by = CAST(:created_by AS UUID)
-                        ORDER BY updated_at DESC
-                        LIMIT :limit
-                        """
+                        base_select
+                        + " AND c.created_by = CAST(:created_by AS UUID) "
+                        "ORDER BY c.updated_at DESC LIMIT :limit"
                     ),
                     {"org_id": org_id, "created_by": created_by, "limit": limit},
                 )
             else:
                 result = await conn.execute(
-                    text(
-                        """
-                        SELECT
-                            id,
-                            brand_id,
-                            status,
-                            active_campaign_id,
-                            partial_brief,
-                            updated_at
-                        FROM conversations
-                        WHERE org_id = :org_id
-                        ORDER BY updated_at DESC
-                        LIMIT :limit
-                        """
-                    ),
+                    text(base_select + " ORDER BY c.updated_at DESC LIMIT :limit"),
                     {"org_id": org_id, "limit": limit},
                 )
             rows = result.mappings().all()
@@ -174,8 +173,10 @@ class SessionManager:
                 conversation_id=str(row["id"]),
                 brand_id=str(row["brand_id"]),
                 status=str(row["status"]),
+                campaign_status=str(row["campaign_status"]) if row["campaign_status"] else None,
                 active_campaign_id=str(row["active_campaign_id"]) if row["active_campaign_id"] else None,
                 partial_brief=PartialBrief.model_validate(row["partial_brief"] or {}),
+                first_message=row["first_message"],
                 updated_at=row["updated_at"],
             )
             for row in filtered
@@ -259,7 +260,14 @@ class SessionManager:
         content: str,
         intent_classified: str | None = None,
         campaign_id: str | None = None,
+        captured: list[str] | None = None,
+        changes: list[dict] | None = None,
     ) -> None:
+        # captured/changes drive the "CAPTURED"/"UPDATED" chips under an
+        # assistant turn — previously computed live per-turn and sent only
+        # over the WebSocket, never persisted, so reloading a conversation
+        # silently lost them. Persisting them here lets history reconstruct
+        # the same rendering GET /conversations/{id}/messages returns.
         async with get_db() as conn:
             await conn.execute(
                 text(
@@ -269,9 +277,14 @@ class SessionManager:
                         role,
                         content,
                         intent_classified,
-                        campaign_id
+                        campaign_id,
+                        captured,
+                        changes
                     )
-                    VALUES (:conversation_id, :role, :content, :intent_classified, :campaign_id)
+                    VALUES (
+                        :conversation_id, :role, :content, :intent_classified, :campaign_id,
+                        CAST(:captured AS JSONB), CAST(:changes AS JSONB)
+                    )
                     """
                 ),
                 {
@@ -280,6 +293,8 @@ class SessionManager:
                     "content": content,
                     "intent_classified": intent_classified,
                     "campaign_id": campaign_id,
+                    "captured": json.dumps(captured) if captured else None,
+                    "changes": json.dumps(changes) if changes else None,
                 },
             )
             await conn.commit()

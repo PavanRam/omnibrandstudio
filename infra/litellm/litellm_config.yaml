@@ -1,14 +1,27 @@
 model_list:
-# Generation — premium (paid/enterprise tier)
+# Generation — premium (paid/enterprise tier). No Sonnet (2026-07-26, user
+# request) — pooled across Claude Haiku + Gemini 3.5 Flash(-lite), with
+# gpt-5.4-nano as a cheap OpenAI-family backup.
 - model_name: "gen-premium"
   litellm_params:
-    model: "anthropic/claude-sonnet-4-6"
+    model: "anthropic/claude-haiku-4-5-20251001"
     api_key: "os.environ/ANTHROPIC_API_KEY"
-  model_info: { id: "gen-premium-claude" }
+  model_info: { id: "gen-premium-claude-haiku" }
 - model_name: "gen-premium"
   litellm_params:
-    model: "openai/gpt-4o-2024-11-20"
+    # "Gemini 3.5 Flash" as requested — the only confirmed real ID in that
+    # family is gemini-3.5-flash-lite (no plain non-lite "3.5 Flash" model
+    # is currently verifiable); using -lite here. If a distinct plain
+    # gemini-3.5-flash ID exists on your account, give me the exact string
+    # and this is a one-line swap.
+    model: "gemini/gemini-3.5-flash-lite"
+    api_key: "os.environ/GEMINI_API_KEY"
+  model_info: { id: "gen-premium-gemini-3.5-flash-lite" }
+- model_name: "gen-premium"
+  litellm_params:
+    model: "openai/gpt-5.4-nano"
     api_key: "os.environ/OPENAI_API_KEY"
+  model_info: { id: "gen-premium-gpt-5.4-nano" }
 
 # Generation — free tier (Groq Llama)
 - model_name: "gen-free"
@@ -17,24 +30,38 @@ model_list:
     api_key: "os.environ/GROQ_API_KEY"
   model_info: { id: "gen-free-groq" }
 
-# Judges — pinned by family (never change family on fallback)
+# Judges — pinned by family (never change family on fallback). Single
+# deployment per judge (2026-07-26, user request), not pooled — reinforces
+# the pinning philosophy rather than working against it, and keeps each
+# judge's scoring behavior stable/predictable rather than varying by which
+# pool member happened to answer.
+#   judge-1 → Anthropic family, judge-2 → OpenAI family, judge-3 → Gemini
+#   family. No Sonnet/heavy-tier models in any of the three.
+# judge-2 swapped off gpt-5.4-mini to Gemini 3.5 Flash (2026-07-27, user
+# request) — GPT-4o/gpt-5.4-mini was the sole factual_grounding rejector
+# across 4 consecutive live campaigns (including one deliberately
+# conservative prompt with no unverifiable claims at all), consistently
+# overriding 2/3 judge consensus and mean scores of 0.79-0.86/1.0 via the
+# any-critical-violation override. NOTE: this now means judge-2 and judge-3
+# are both Gemini family, losing the cross-family diversity this panel was
+# designed around (see comment above and judge-3 below) — an explicit,
+# accepted tradeoff for now, not an oversight.
 - model_name: "judge-1"
   litellm_params:
-    model: "anthropic/claude-sonnet-4-6"
+    model: "anthropic/claude-haiku-4-5-20251001"
     api_key: "os.environ/ANTHROPIC_API_KEY"
 
 - model_name: "judge-2"
   litellm_params:
-    model: "openai/gpt-4o-2024-11-20"
-    api_key: "os.environ/OPENAI_API_KEY"
+    model: "gemini/gemini-3.5-flash"
+    api_key: "os.environ/GEMINI_API_KEY"
 
-# judge-3 (paid panel) — was groq/llama-3.2-90b-vision-preview (DECOMMISSIONED
-# by Groq). Repointed to a currently-serveable Groq model so the paid panel
-# still has a distinct open-source family judge.
+# judge-3 — see gen-premium's comment above re: "Gemini 3.5 Flash" mapping
+# to gemini-3.5-flash-lite (only confirmed real ID in that family).
 - model_name: "judge-3"
   litellm_params:
-    model: "groq/llama-3.3-70b-versatile"
-    api_key: "os.environ/GROQ_API_KEY"
+    model: "gemini/gemini-3.5-flash-lite"
+    api_key: "os.environ/GEMINI_API_KEY"
 
 # Free-tier judge panel (Groq) — three DISTINCT families for cross-family
 # disagreement signal, no paid spend. Selected when JUDGE_TIER=free.
@@ -67,49 +94,144 @@ model_list:
     api_key: "os.environ/GROQ_API_KEY"
   model_info: { id: "judge-3-free-qwen" }
 
-# Utility — cheap model for classification, summarisation
+# Utility — cheap model for classification, summarisation. Pooled across
+# both mini tiers (2026-07-26, user request: no heavy models anywhere).
 - model_name: "util-fast"
   litellm_params:
-    model: "groq/llama-3.1-8b-instant"
-    api_key: "os.environ/GROQ_API_KEY"
+    model: "openai/gpt-5.4-mini"
+    api_key: "os.environ/OPENAI_API_KEY"
+  model_info: { id: "util-fast-gpt-5.4-mini" }
+- model_name: "util-fast"
+  litellm_params:
+    model: "openai/gpt-4o-mini"
+    api_key: "os.environ/OPENAI_API_KEY"
+  model_info: { id: "util-fast-gpt-4o-mini" }
 
+# Pooled across all 4 Flash quota buckets — this is only ever hit as a
+# fallback (see router_settings below), so max headroom matters more than
+# picking "the best" single Flash tier.
 - model_name: "util-fast-gemini"
   litellm_params:
-    model: "gemini/gemini-1.5-flash"
+    model: "gemini/gemini-2.5-flash"
     api_key: "os.environ/GEMINI_API_KEY"
+  model_info: { id: "util-fast-gemini-2.5-flash" }
+- model_name: "util-fast-gemini"
+  litellm_params:
+    model: "gemini/gemini-2.5-flash-lite"
+    api_key: "os.environ/GEMINI_API_KEY"
+  model_info: { id: "util-fast-gemini-2.5-flash-lite" }
+- model_name: "util-fast-gemini"
+  litellm_params:
+    model: "gemini/gemini-3.5-flash-lite"
+    api_key: "os.environ/GEMINI_API_KEY"
+  model_info: { id: "util-fast-gemini-3.5-flash-lite" }
+- model_name: "util-fast-gemini"
+  litellm_params:
+    model: "gemini/gemini-3-flash"
+    api_key: "os.environ/GEMINI_API_KEY"
+  model_info: { id: "util-fast-gemini-3-flash" }
 
-# Brief collector — dedicated extraction model for chat slot filling
+# Brief collector — dedicated extraction model for chat slot filling.
+# Pooled across both mini tiers (2026-07-26, user request).
 - model_name: "brief-collector"
   litellm_params:
-    model: "groq/llama-3.1-8b-instant"
-    api_key: "os.environ/GROQ_API_KEY"
+    model: "openai/gpt-5.4-mini"
+    api_key: "os.environ/OPENAI_API_KEY"
+  model_info: { id: "brief-collector-gpt-5.4-mini" }
+- model_name: "brief-collector"
+  litellm_params:
+    model: "openai/gpt-4o-mini"
+    api_key: "os.environ/OPENAI_API_KEY"
+  model_info: { id: "brief-collector-gpt-4o-mini" }
 
 - model_name: "brief-collector-gemini"
   litellm_params:
-    model: "gemini/gemini-1.5-flash"
+    model: "gemini/gemini-2.5-flash"
     api_key: "os.environ/GEMINI_API_KEY"
+  model_info: { id: "brief-collector-gemini-2.5-flash" }
+- model_name: "brief-collector-gemini"
+  litellm_params:
+    model: "gemini/gemini-2.5-flash-lite"
+    api_key: "os.environ/GEMINI_API_KEY"
+  model_info: { id: "brief-collector-gemini-2.5-flash-lite" }
+- model_name: "brief-collector-gemini"
+  litellm_params:
+    model: "gemini/gemini-3.5-flash-lite"
+    api_key: "os.environ/GEMINI_API_KEY"
+  model_info: { id: "brief-collector-gemini-3.5-flash-lite" }
+- model_name: "brief-collector-gemini"
+  litellm_params:
+    model: "gemini/gemini-3-flash"
+    api_key: "os.environ/GEMINI_API_KEY"
+  model_info: { id: "brief-collector-gemini-3-flash" }
 
-# Understanding — merged intent classification + brief extraction (JSON-strong)
+# Understanding — merged intent classification + brief extraction
+# (JSON-strong). Pooled across both mini tiers (2026-07-26, user request).
 - model_name: "understanding"
   litellm_params:
-    model: "groq/llama-3.3-70b-versatile"
-    api_key: "os.environ/GROQ_API_KEY"
+    model: "openai/gpt-5.4-mini"
+    api_key: "os.environ/OPENAI_API_KEY"
+  model_info: { id: "understanding-gpt-5.4-mini" }
+- model_name: "understanding"
+  litellm_params:
+    model: "openai/gpt-4o-mini"
+    api_key: "os.environ/OPENAI_API_KEY"
+  model_info: { id: "understanding-gpt-4o-mini" }
 
 - model_name: "understanding-gemini"
   litellm_params:
     model: "gemini/gemini-2.5-flash"
     api_key: "os.environ/GEMINI_API_KEY"
+  model_info: { id: "understanding-gemini-2.5-flash" }
+- model_name: "understanding-gemini"
+  litellm_params:
+    model: "gemini/gemini-2.5-flash-lite"
+    api_key: "os.environ/GEMINI_API_KEY"
+  model_info: { id: "understanding-gemini-2.5-flash-lite" }
+- model_name: "understanding-gemini"
+  litellm_params:
+    model: "gemini/gemini-3.5-flash-lite"
+    api_key: "os.environ/GEMINI_API_KEY"
+  model_info: { id: "understanding-gemini-3.5-flash-lite" }
+- model_name: "understanding-gemini"
+  litellm_params:
+    model: "gemini/gemini-3-flash"
+    api_key: "os.environ/GEMINI_API_KEY"
+  model_info: { id: "understanding-gemini-3-flash" }
 
-# Responder — high quality conversational turn generation
+# Responder — conversational turn generation. Pooled across both mini
+# tiers (2026-07-26, user request: no heavy models anywhere).
 - model_name: "responder-chat"
   litellm_params:
-    model: "groq/llama-3.3-70b-versatile"
-    api_key: "os.environ/GROQ_API_KEY"
+    model: "openai/gpt-5.4-mini"
+    api_key: "os.environ/OPENAI_API_KEY"
+  model_info: { id: "responder-chat-gpt-5.4-mini" }
+- model_name: "responder-chat"
+  litellm_params:
+    model: "openai/gpt-4o-mini"
+    api_key: "os.environ/OPENAI_API_KEY"
+  model_info: { id: "responder-chat-gpt-4o-mini" }
 
 - model_name: "responder-chat-gemini"
   litellm_params:
     model: "gemini/gemini-2.5-flash"
     api_key: "os.environ/GEMINI_API_KEY"
+  model_info: { id: "responder-chat-gemini-2.5-flash" }
+- model_name: "responder-chat-gemini"
+  litellm_params:
+    model: "gemini/gemini-2.5-flash-lite"
+    api_key: "os.environ/GEMINI_API_KEY"
+  model_info: { id: "responder-chat-gemini-2.5-flash-lite" }
+- model_name: "responder-chat-gemini"
+  litellm_params:
+    model: "gemini/gemini-3.5-flash-lite"
+    api_key: "os.environ/GEMINI_API_KEY"
+  model_info: { id: "responder-chat-gemini-3.5-flash-lite" }
+- model_name: "responder-chat-gemini"
+  litellm_params:
+    model: "gemini/gemini-3-flash"
+    api_key: "os.environ/GEMINI_API_KEY"
+  model_info: { id: "responder-chat-gemini-3-flash" }
 
 # Evaluation
 - model_name: "eval-model"
@@ -124,21 +246,50 @@ model_list:
     api_key: "os.environ/OPENAI_API_KEY"
 
 # Translation — pinned single-provider; never pooled (consistent model
-# family required for reproducible quality-gate scoring across retries).
-#
-# DEV MODE: using free-tier Groq model to avoid Anthropic spend during
-# local/dev validation. SWITCH TO ANTHROPIC BEFORE PROD: comment out the
-# Groq block below and uncomment the Anthropic block once translation
-# quality needs to be validated against the real target model, or before
-# any production deploy.
+# family required for reproducible quality-gate scoring across retries —
+# unlike the pooled aliases above, rotating providers mid-retry-loop here
+# would make the quality gate's pass/fail inconsistent across attempts).
+# Switched to Claude Sonnet (2026-07-27, user request) after gemini-2.5-flash
+# was confirmed live (campaign 019fa487) to fall into a repetition-
+# degeneration loop on long marketing copy — e.g. "bleu"/"bleue" repeated
+# 20+ times in one French email, verified via Helsinki-NLP's faithful
+# back-translation round-trip (see next_tasks.md, translation quality
+# investigation). Previously ran gemini-2.5-pro -> gemini-2.5-flash
+# (2026-07-26, no-Pro-anywhere directive) before this.
 - model_name: "translation-primary"
   litellm_params:
-    model: "groq/llama-3.3-70b-versatile"
-    api_key: "os.environ/GROQ_API_KEY"
+    model: "anthropic/claude-sonnet-4-6"
+    api_key: "os.environ/ANTHROPIC_API_KEY"
+# Alternative: pin back to Gemini if Sonnet translation quality/cost
+# doesn't validate well.
 # - model_name: "translation-primary"
 #   litellm_params:
-#     model: "anthropic/claude-sonnet-4-6"
-#     api_key: "os.environ/ANTHROPIC_API_KEY"
+#     model: "gemini/gemini-2.5-flash"
+#     api_key: "os.environ/GEMINI_API_KEY"
+
+# Translation validator — reverse-translation / reference-translation
+# fallback paths ONLY (pipeline/agents/translation.py: _back_translate and
+# the reference-translation fallback in _run_translation_gate). Primary path
+# for both is now Helsinki-NLP (HF Inference Providers, confirmed live) —
+# this alias only fires if that HF call itself errors, not on every retry
+# attempt, so — unlike translation-primary above — it's safe to pool across
+# providers (2026-07-26, user request; gpt-4o swapped for gpt-5.4-mini here
+# per the "no heavy models" directive from items 26/27).
+- model_name: "translation-validator"
+  litellm_params:
+    model: "gemini/gemini-2.5-flash-lite"
+    api_key: "os.environ/GEMINI_API_KEY"
+  model_info: { id: "translation-validator-gemini-2.5-flash-lite" }
+- model_name: "translation-validator"
+  litellm_params:
+    model: "gemini/gemini-3.5-flash-lite"
+    api_key: "os.environ/GEMINI_API_KEY"
+  model_info: { id: "translation-validator-gemini-3.5-flash-lite" }
+- model_name: "translation-validator"
+  litellm_params:
+    model: "openai/gpt-5.4-mini"
+    api_key: "os.environ/OPENAI_API_KEY"
+  model_info: { id: "translation-validator-gpt-5.4-mini" }
 
 router_settings:
   fallbacks:

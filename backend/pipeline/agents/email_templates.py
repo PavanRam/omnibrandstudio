@@ -417,7 +417,13 @@ def _render_score_block(score: "AggregatedScore | None") -> str:
             f"Brand scores not available for this variant</span></div>"
         )
 
-    composite = float(score.get("weighted_mean") or score.get("composite_score") or 0.0)
+    # weighted_mean is stored on a 0-to-1 scale (aggregator.py's `mean_01`),
+    # not 0-to-10 — every judge_scores entry and everything else in this
+    # block IS already 0-to-10, so convert once here rather than assume.
+    # Previously this treated 0-1 as if it were already 0-10 (e.g. a real
+    # 0.6/1.0 == 6.0/10 average rendered as "0.6/10" with a 6%-wide gauge
+    # instead of 60%) — found live via a real published email (2026-07-27).
+    composite = float(score.get("weighted_mean") or score.get("composite_score") or 0.0) * 10
     composite_pct = int(composite * 10)  # 0–10 → 0–100%
     routing = str(score.get("routing_decision") or "").lower()
     badge_fg, badge_bg, badge_label = _ROUTING_BADGE.get(routing, _DEFAULT_ROUTING_BADGE)
