@@ -12,8 +12,8 @@ def resolve_model_aliases(tier: str | None = None) -> dict[str, str]:
     """Map logical model roles to LiteLLM aliases for the selected judge tier.
 
     ``free`` (default) uses the Groq cross-family panel and free-tier generation
-    so campaigns validate without paid spend; ``paid`` uses the pinned
-    Claude/GPT-4o/Groq panel and premium generation. Switching tiers is a config
+    so campaigns validate without paid spend; ``paid`` uses the premium panel and
+    paid chat aliases for understanding/responder. Switching tiers is a config
     flip (``JUDGE_TIER``) — no agent code reads raw model names.
     """
     resolved = (tier or settings.JUDGE_TIER or "free").lower()
@@ -25,8 +25,8 @@ def resolve_model_aliases(tier: str | None = None) -> dict[str, str]:
             "judge-3": "judge-3",
             "util-fast": "util-fast",
             "eval": "eval-model",
-            "understanding": "understanding",
-            "responder": "responder-chat",
+            "understanding": "understanding-paid",
+            "responder": "responder-chat-paid",
         }
     return {
         "generation": "gen-free",

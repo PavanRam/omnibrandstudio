@@ -1,46 +1,20 @@
 model_list:
-# Generation — premium (paid/enterprise tier)
-- model_name: "gen-premium"
-  litellm_params:
-    model: "anthropic/claude-sonnet-4-6"
-    api_key: "os.environ/ANTHROPIC_API_KEY"
-  model_info: { id: "gen-premium-claude" }
-- model_name: "gen-premium"
-  litellm_params:
-    model: "openai/gpt-4o-2024-11-20"
-    api_key: "os.environ/OPENAI_API_KEY"
+# ============================================================================
+# FREE TIER ALIASES (JUDGE_TIER=free)
+# ============================================================================
 
-# Generation — free tier (Groq Llama)
+# Used by content/personalization/reflexion generation path:
+# - backend/pipeline/agents/content_generator.py
+# - backend/pipeline/agents/personalization.py
+# - backend/pipeline/agents/reflexion.py
 - model_name: "gen-free"
   litellm_params:
     model: "groq/llama-3.3-70b-versatile"
     api_key: "os.environ/GROQ_API_KEY"
   model_info: { id: "gen-free-groq" }
 
-# Judges — pinned by family (never change family on fallback)
-- model_name: "judge-1"
-  litellm_params:
-    model: "anthropic/claude-sonnet-4-6"
-    api_key: "os.environ/ANTHROPIC_API_KEY"
-
-- model_name: "judge-2"
-  litellm_params:
-    model: "openai/gpt-4o-2024-11-20"
-    api_key: "os.environ/OPENAI_API_KEY"
-
-# judge-3 (paid panel) — was groq/llama-3.2-90b-vision-preview (DECOMMISSIONED
-# by Groq). Repointed to a currently-serveable Groq model so the paid panel
-# still has a distinct open-source family judge.
-- model_name: "judge-3"
-  litellm_params:
-    model: "groq/llama-3.3-70b-versatile"
-    api_key: "os.environ/GROQ_API_KEY"
-
-# Free-tier judge panel (Groq) — three DISTINCT families for cross-family
-# disagreement signal, no paid spend. Selected when JUDGE_TIER=free.
-#   judge-1-free → GPT-OSS family   (lead)
-#   judge-2-free → Llama family     (diversity)
-#   judge-3-free → Qwen family      (open-source check, pinned, no cross-family fallback)
+# Used by judge_claude when JUDGE_TIER=free:
+# - backend/pipeline/agents/judges.py (alias key: judge-1)
 - model_name: "judge-1-free"
   litellm_params:
     model: "groq/openai/gpt-oss-120b"
@@ -51,6 +25,8 @@ model_list:
     model: "groq/openai/gpt-oss-20b"
     api_key: "os.environ/GROQ_API_KEY"
 
+# Used by judge_gpt4o when JUDGE_TIER=free:
+# - backend/pipeline/agents/judges.py (alias key: judge-2)
 - model_name: "judge-2-free"
   litellm_params:
     model: "groq/llama-3.3-70b-versatile"
@@ -61,71 +37,135 @@ model_list:
     model: "groq/llama-3.1-8b-instant"
     api_key: "os.environ/GROQ_API_KEY"
 
+# Used by judge_llama when JUDGE_TIER=free:
+# - backend/pipeline/agents/judges.py (alias key: judge-3)
 - model_name: "judge-3-free"
   litellm_params:
     model: "groq/qwen/qwen3-32b"
     api_key: "os.environ/GROQ_API_KEY"
   model_info: { id: "judge-3-free-qwen" }
 
-# Utility — cheap model for classification, summarisation
+# Used by chat understanding engine in free tier:
+# - backend/services/chat/understanding_engine.py
+- model_name: "understanding"
+  litellm_params:
+    model: "groq/llama-3.1-8b-instant"
+    api_key: "os.environ/GROQ_API_KEY"
+
+# Used by chat responder in free tier:
+# - backend/services/chat/conversation_responder.py
+- model_name: "responder-chat"
+  litellm_params:
+    model: "groq/llama-3.3-70b-versatile"
+    api_key: "os.environ/GROQ_API_KEY"
+
+# Used by high-volume utility/eval call paths:
+# - backend/scripts/generate_golden_dataset.py (util-fast)
+# - fallback target for free understanding/responder
 - model_name: "util-fast"
   litellm_params:
     model: "groq/llama-3.1-8b-instant"
     api_key: "os.environ/GROQ_API_KEY"
 
+# Used by ingestion quarantine and evaluation flows:
+# - backend/services/rag/ingest.py (hardcoded eval-model)
+- model_name: "eval-model"
+  litellm_params:
+    model: "anthropic/claude-haiku-4-5"
+    api_key: "os.environ/ANTHROPIC_API_KEY"
+
+# Used by translation agent unless overridden by model_aliases:
+# - backend/pipeline/agents/translation.py
+- model_name: "translation-primary"
+  litellm_params:
+    model: "groq/llama-3.3-70b-versatile"
+    api_key: "os.environ/GROQ_API_KEY"
+
+# ============================================================================
+# PAID TIER ALIASES (JUDGE_TIER=paid)
+# ============================================================================
+
+# Used by content/personalization/reflexion generation path:
+# - backend/pipeline/initial_state.py (paid mapping)
+- model_name: "gen-premium"
+  litellm_params:
+    model: "anthropic/claude-sonnet-4-6"
+    api_key: "os.environ/ANTHROPIC_API_KEY"
+  model_info: { id: "gen-premium-claude" }
+- model_name: "gen-premium"
+  litellm_params:
+    model: "openai/gpt-4o-2024-11-20"
+    api_key: "os.environ/OPENAI_API_KEY"
+
+# Used by judge_claude when JUDGE_TIER=paid:
+# - backend/pipeline/agents/judges.py (alias key: judge-1)
+- model_name: "judge-1"
+  litellm_params:
+    model: "anthropic/claude-sonnet-4-6"
+    api_key: "os.environ/ANTHROPIC_API_KEY"
+
+# Used by judge_gpt4o when JUDGE_TIER=paid:
+# - backend/pipeline/agents/judges.py (alias key: judge-2)
+- model_name: "judge-2"
+  litellm_params:
+    model: "openai/gpt-4o-2024-11-20"
+    api_key: "os.environ/OPENAI_API_KEY"
+
+# Used by judge_llama when JUDGE_TIER=paid:
+# - backend/pipeline/agents/judges.py (alias key: judge-3)
+- model_name: "judge-3"
+  litellm_params:
+    model: "groq/llama-3.3-70b-versatile"
+    api_key: "os.environ/GROQ_API_KEY"
+
+# Used by chat understanding engine in paid tier:
+# - backend/pipeline/initial_state.py maps understanding -> understanding-paid
+- model_name: "understanding-paid"
+  litellm_params:
+    model: "openai/gpt-4o-mini"
+    api_key: "os.environ/OPENAI_API_KEY"
+
+# Used by chat responder in paid tier:
+# - backend/pipeline/initial_state.py maps responder -> responder-chat-paid
+- model_name: "responder-chat-paid"
+  litellm_params:
+    model: "openai/gpt-4o-2024-11-20"
+    api_key: "os.environ/OPENAI_API_KEY"
+
+# ============================================================================
+# SHARED / RESERVED ALIASES
+# ============================================================================
+
+# Reserved for future LiteLLM-routed embeddings.
+# NOTE: Current RAG path uses local embeddings in
+# backend/services/rag/embeddings.py.
+- model_name: "embedding"
+  litellm_params:
+    model: "openai/text-embedding-3-small"
+    api_key: "os.environ/OPENAI_API_KEY"
+
+# ============================================================================
+# DEPRECATED / NOT WIRED (CONSERVATIVE KEEP)
+# ============================================================================
+
+# Not referenced by current runtime alias resolution. Retained temporarily for
+# rollback safety and will be removed after deprecation window.
 - model_name: "util-fast-gemini"
   litellm_params:
     model: "gemini/gemini-1.5-flash"
     api_key: "os.environ/GEMINI_API_KEY"
-
-# Understanding — merged intent classification + brief extraction (JSON-strong)
-# Uses llama-3.1-8b-instant (temperature-0 structured JSON extraction); smaller
-# model cuts time-to-first-token since this call must complete before streaming.
-- model_name: "understanding"
-  litellm_params:
-    model: "groq/llama-3.1-8b-instant"
-    api_key: "os.environ/GROQ_API_KEY"
 
 - model_name: "understanding-gemini"
   litellm_params:
     model: "gemini/gemini-2.5-flash"
     api_key: "os.environ/GEMINI_API_KEY"
 
-# Responder — high quality conversational turn generation
-- model_name: "responder-chat"
-  litellm_params:
-    model: "groq/llama-3.3-70b-versatile"
-    api_key: "os.environ/GROQ_API_KEY"
-
 - model_name: "responder-chat-gemini"
   litellm_params:
     model: "gemini/gemini-2.5-flash"
     api_key: "os.environ/GEMINI_API_KEY"
 
-# Evaluation
-- model_name: "eval-model"
-  litellm_params:
-    model: "anthropic/claude-haiku-4-5"
-    api_key: "os.environ/ANTHROPIC_API_KEY"
-
-# Embeddings
-- model_name: "embedding"
-  litellm_params:
-    model: "openai/text-embedding-3-small"
-    api_key: "os.environ/OPENAI_API_KEY"
-
-# Translation — pinned single-provider; never pooled (consistent model
-# family required for reproducible quality-gate scoring across retries).
-#
-# DEV MODE: using free-tier Groq model to avoid Anthropic spend during
-# local/dev validation. SWITCH TO ANTHROPIC BEFORE PROD: comment out the
-# Groq block below and uncomment the Anthropic block once translation
-# quality needs to be validated against the real target model, or before
-# any production deploy.
-- model_name: "translation-primary"
-  litellm_params:
-    model: "groq/llama-3.3-70b-versatile"
-    api_key: "os.environ/GROQ_API_KEY"
+# Historical alternate translation provider (kept commented for migration docs)
 # - model_name: "translation-primary"
 #   litellm_params:
 #     model: "anthropic/claude-sonnet-4-6"
@@ -133,9 +173,13 @@ model_list:
 
 router_settings:
   fallbacks:
-  - { "responder-chat": [ "responder-chat-gemini" ] }
-  - { "util-fast": [ "util-fast-gemini" ] }
-  - { "understanding": [ "understanding-gemini" ] }
+  # Free tier fallbacks (Groq-only)
+  - { "responder-chat": [ "util-fast" ] }
+  - { "understanding": [ "util-fast" ] }
+
+  # Paid tier fallbacks
+  - { "responder-chat-paid": [ "responder-chat" ] }
+  - { "understanding-paid": [ "understanding" ] }
   retry_policy:
     BadRequestError: { num_retries: 0 }
     RateLimitError: { num_retries: 3, retry_after: 60 }

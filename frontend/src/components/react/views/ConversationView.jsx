@@ -16,6 +16,7 @@ import {
 import { Page } from '../Page.jsx';
 import { Button } from '../ui/Button.jsx';
 import { Badge } from '../ui/Badge.jsx';
+import { Modal } from '../ui/Modal.jsx';
 import { VariantCard } from '../VariantCard.jsx';
 import { cn } from '@/lib/cn.js';
 import { useWebSocket } from '../hooks/useWebSocket.js';
@@ -42,6 +43,17 @@ const RERUN_NODES = [
 
 const DEFAULT_BRAND_ID =
   import.meta.env.PUBLIC_DEFAULT_BRAND_ID || '00000000-0000-0000-0000-000000000002';
+
+const SAMPLE_BRIEF_TEMPLATE = [
+  'Objective: Drive qualified demo requests for our new analytics dashboard',
+  'Target Audience: Enterprise IT leaders and security buyers',
+  'Key Messages: Cuts investigation time by 40%, SOC2-ready out of the box',
+  'Tone: Confident and helpful',
+  'Channels: LinkedIn, Email, Landing Page',
+  'Locales: en-US, en-GB',
+  'Audience Segments: Enterprise, SME',
+  'Token Budget: 50000',
+].join('\n');
 
 function briefValue(brief, key) {
   const v = brief?.[key];
@@ -239,6 +251,45 @@ function BriefFieldStates({ fieldStates }) {
   );
 }
 
+function SampleBriefModal({ open, onClose }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      if (!navigator?.clipboard?.writeText) {
+        return;
+      }
+      await navigator.clipboard.writeText(SAMPLE_BRIEF_TEMPLATE);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  }, []);
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Sample campaign brief"
+      description="Copy this, fill in your details, and paste it into the chat as your first message."
+      size="lg"
+    >
+      <pre className="max-h-[22rem] overflow-auto rounded-xl border border-border bg-surface-2 p-3 text-xs leading-6 text-fg">
+        {SAMPLE_BRIEF_TEMPLATE}
+      </pre>
+      <div className="mt-4 flex flex-wrap justify-end gap-2">
+        <Button variant="secondary" onClick={onClose}>
+          Close
+        </Button>
+        <Button variant="primary" onClick={handleCopy}>
+          {copied ? 'Copied!' : 'Copy template'}
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
 function ChatThreadPanel({
   conversationId,
   conversationStage,
@@ -259,6 +310,7 @@ function ChatThreadPanel({
   sendMessage,
   chatPlaceholder,
   hasConversation,
+  onOpenSampleBrief,
   pendingReviews = [],
   onDecideReview,
   reviewDecisionBusyId = '',
@@ -330,19 +382,13 @@ function ChatThreadPanel({
             <p className="mt-1 max-w-xs text-sm text-muted">
               Describe your campaign objective in plain language — the copilot will ask for anything it needs.
             </p>
-            {canChat && (
-              <button
-                type="button"
-                onClick={() =>
-                  sendPrompt(
-                    "Launch a summer promo for hydration packs targeting 25-34 and 35-44 year olds via email and LinkedIn, confident and helpful tone, en-US, 50000 token budget.",
-                  )
-                }
-                className="mt-4 rounded-full border border-brand/40 bg-brand-soft px-4 py-2 text-xs font-medium text-brand transition-colors hover:border-brand hover:bg-brand/10"
-              >
-                Show me an example brief →
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={onOpenSampleBrief}
+              className="mt-4 rounded-full border border-brand/40 bg-brand-soft px-4 py-2 text-xs font-medium text-brand transition-colors hover:border-brand hover:bg-brand/10"
+            >
+              View sample brief format
+            </button>
           </div>
         ) : (
           messages.map((msg, idx) => {
@@ -462,6 +508,17 @@ function ChatThreadPanel({
 
       {/* Composer */}
       <div className="border-t border-border bg-surface px-4 py-3">
+        {hasConversation ? (
+          <div className="mb-2">
+            <button
+              type="button"
+              onClick={onOpenSampleBrief}
+              className="rounded-full border border-border bg-surface px-2.5 py-1 text-xs text-muted transition-colors hover:border-brand hover:text-brand"
+            >
+              View sample brief format
+            </button>
+          </div>
+        ) : null}
         {suggestedPrompts.length > 0 && !campaignId ? (
           <div className="mb-2 flex flex-wrap gap-1.5">
             {suggestedPrompts.map((prompt) => (
@@ -1270,6 +1327,7 @@ export function ConversationView() {
   const [reviewDecisionBusyId, setReviewDecisionBusyId] = useState('');
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
   const [streamingMessage, setStreamingMessage] = useState('');
+  const [sampleBriefOpen, setSampleBriefOpen] = useState(false);
 
   const loadRecentConversations = useCallback(async () => {
     setRecentLoading(true);
@@ -1646,6 +1704,8 @@ export function ConversationView() {
         </div>
       }
     >
+      <SampleBriefModal open={sampleBriefOpen} onClose={() => setSampleBriefOpen(false)} />
+
       {error ? (
         <div className="mb-4 rounded-xl border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
           {error}
@@ -1681,6 +1741,7 @@ export function ConversationView() {
           sendMessage={sendMessage}
           chatPlaceholder={chatPlaceholder}
           hasConversation={hasConversation}
+          onOpenSampleBrief={() => setSampleBriefOpen(true)}
           pendingReviews={pendingReviews}
           onDecideReview={decideReviewAction}
           reviewDecisionBusyId={reviewDecisionBusyId}
