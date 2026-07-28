@@ -153,7 +153,7 @@ async def test_skips_variants_without_generated_content(echo_llm):
 
 async def test_empty_variants_is_noop(echo_llm):
     result = await personalization_agent(_state([]))
-    assert result == {"token_cost_usd": 0.0}
+    assert result == {"token_cost_usd": 0.0, "guardrail_flags": []}
     assert echo_llm == []
 
 

@@ -169,6 +169,17 @@ async def list_segments(
             offset=offset,
             db=conn,
         )
+        # Fall back to the unversioned view when a specific version yields
+        # nothing (mirrors the brand-guide list's empty-result fallback above).
+        if not items and version:
+            items = await list_customer_segments(
+                brand_id=brand_id,
+                locale=locale,
+                version=None,
+                limit=limit,
+                offset=offset,
+                db=conn,
+            )
     return {
         "brand_id": brand_id,
         "locale": locale,
