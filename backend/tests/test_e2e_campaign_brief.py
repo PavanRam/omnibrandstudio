@@ -170,6 +170,7 @@ async def test_e2e_incremental_collection_and_confirmation_gate(
     Turn 4: user says "yes" → campaign enqueues exactly once.
     """
     session = _make_session()
+    monkeypatch.setattr(conversations.settings, "ENABLE_CONVERSATION_PLANNER", True)
 
     brief_after_t1 = PartialBrief(objective="Launch the Q3 SMB upsell push")
     brief_after_t2 = PartialBrief(
@@ -298,6 +299,7 @@ async def test_e2e_field_correction_detected(
     corrected.objective = "Revised: focus on renewals, not upsell"
 
     session = _make_session(brief=original)
+    monkeypatch.setattr(conversations.settings, "ENABLE_CONVERSATION_PLANNER", True)
 
     _, enqueue_mock, _ = _patch_mocks(
         monkeypatch,

@@ -1349,6 +1349,7 @@ async def test_process_turn_recap_plays_back_brief(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(conversations, "_enqueue_campaign", enqueue_mock)
     respond_mock = AsyncMock(return_value="Here's the brief I've captured ...")
     monkeypatch.setattr(conversations.conversation_responder, "respond", respond_mock)
+    monkeypatch.setattr(conversations.settings, "ENABLE_CONVERSATION_PLANNER", True)
 
     result = await conversations._process_turn(
         session=session,
