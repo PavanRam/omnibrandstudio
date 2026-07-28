@@ -46,6 +46,24 @@ services:
       exit 0;
       "
 
+  # One-shot job: Langfuse stores its data in a separate `langfuse` database on
+  # the same Postgres server. A fresh postgres volume only creates POSTGRES_DB
+  # (omnibrand), so Langfuse's Prisma migrations would fail on first boot. This
+  # idempotently creates the `langfuse` DB before Langfuse starts. Exits 0 both
+  # when it creates the DB and when it already exists.
+  langfuse-db-init:
+    image: postgres:16-alpine
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    entrypoint: >
+      /bin/sh -c "
+      psql -h postgres -U omnibrand -d omnibrand -tc \"SELECT 1 FROM pg_database WHERE datname='langfuse'\" | grep -q 1 ||
+      psql -h postgres -U omnibrand -d omnibrand -c \"CREATE DATABASE langfuse\";
+      exit 0;
+      "
+
   litellm:
     image: ghcr.io/berriai/litellm:main-latest
     command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "4"]
@@ -67,9 +85,23 @@ services:
       NEXTAUTH_URL: http://localhost:3001
       TELEMETRY_ENABLED: "false"
       LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
+      # Headless initialization — auto-create org/project/user + API keys on first
+      # boot so no manual UI setup is needed. Keys MUST match the LANGFUSE_PUBLIC_KEY
+      # / LANGFUSE_SECRET_KEY the app uses in .env, so traced_llm_call() works out of
+      # the box. NOTE: Langfuse requires these values be UNQUOTED in compose.
+      LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-omnibrand}
+      LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-OmniBrand}
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-omnibrand-studio}
+      LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME:-OmniBrand Studio}
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-admin@omnibrand.local}
+      LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-OmniBrand Admin}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-OmniBrand!123}
     ports: ["3001:3000"]
     depends_on:
       postgres: {condition: service_healthy}
+      langfuse-db-init: {condition: service_completed_successfully}
     restart: unless-stopped
 
   prometheus:
@@ -94,6 +126,8 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_USERS_ALLOW_SIGN_UP: "false"
+      # Consumed by the provisioned PostgreSQL datasource via $__env{POSTGRES_PASSWORD}.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - "./infra/grafana/provisioning:/etc/grafana/provisioning:ro"
       - grafana_data:/var/lib/grafana
@@ -125,7 +159,7 @@ services:
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter:v0.15.0
     environment:
-      DATA_SOURCE_NAME: "postgresql://omnibrand:${POSTGRES_PASSWORD}@postgres:5432/omnibrand?sslmode=disable"
+      DATA_SOURCE_NAME: "postgresql://omnibrand:${POSTGRES_PASSWORD_ENCODED}@postgres:5432/omnibrand?sslmode=disable"
     ports: ["9187:9187"]
     depends_on:
       postgres: {condition: service_healthy}

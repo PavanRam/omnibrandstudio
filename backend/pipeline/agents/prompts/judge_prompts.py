@@ -40,13 +40,26 @@ CRITERION_WEIGHTS: dict[str, float] = {
 }
 
 RUBRIC_TEXT = (
-    "Score each criterion from 0 (severe failure) to 10 (exemplary):\n"
+    "Score each criterion from 0 (severe failure) to 10 (exemplary) using these anchors:\n"
+    "  0-2: Complete failure — criterion not addressed at all, or severe brand/policy breach.\n"
+    "  3-5: Partial failure — criterion addressed but with notable gaps or violations.\n"
+    "  6-7: Acceptable — meets the minimum bar; some room for improvement.\n"
+    "  8-9: Good — clearly meets the criterion with only minor issues.\n"
+    " 10  : Exemplary — no issues; could serve as a reference example.\n\n"
+    "Criteria:\n"
     "- tone_alignment: matches the brand's documented voice and register.\n"
     "- vocabulary_compliance: uses approved terms; avoids prohibited/off-brand wording.\n"
     "- channel_format_adherence: fits the channel's structure, length and required elements.\n"
     "- cta_style: the call-to-action matches the brand's CTA conventions.\n"
     "- cultural_appropriateness: appropriate and natural for the target locale/audience.\n"
-    "- factual_grounding: every claim is supported by the brand guide; no fabrication.\n"
+    "- factual_grounding: every claim is supported by the brand guide; no fabrication.\n\n"
+    "ROUTING THRESHOLDS (apply strictly; do not interpolate):\n"
+    "  composite_score >= 7.5  → routing_decision = auto_approve\n"
+    "  4.0 <= composite_score < 7.5 → routing_decision = flag\n"
+    "  composite_score < 4.0  OR any critical_violation present → routing_decision = auto_reject\n\n"
+    "composite_score = weighted average of the six criteria scores using these weights:\n"
+    "  factual_grounding 0.25 · tone_alignment 0.20 · vocabulary_compliance 0.20 · "
+    "channel_format_adherence 0.15 · cultural_appropriateness 0.10 · cta_style 0.10\n\n"
     "A critical_violation is any factual fabrication, compliance breach, or prohibited "
     "content that must block publication regardless of other scores."
 )
@@ -78,7 +91,15 @@ REFLEXION_SYSTEM_TEMPLATE = (
     "{locale} so it fixes the specific problems listed, while preserving the "
     "original intent, key messages and brand voice. Eliminate every critical "
     "violation. Return ONLY the revised content — no preamble, no explanation, "
-    "no markdown fences."
+    "no markdown fences.\n\n"
+    "CONSTRAINTS (apply to the revised content):\n"
+    "- Re-inject brand guide guidance and channel-format constraints. "
+    "The revision must still comply with the channel's character limit and required elements.\n"
+    "- PRESERVE: brand/product names, key messages, calls to action and their destinations "
+    "(URLs, reply keywords). Do NOT swap or invent these.\n"
+    "- CHANGE only what the judge explicitly flagged. Do not refactor sections that scored well.\n"
+    "- Locale cultural register and idioms must remain correct for {locale}.\n"
+    "BRAND GUIDE (use for grounding):\n{brand_guide}"
 )
 
 REFLEXION_USER_TEMPLATE = (
@@ -113,11 +134,12 @@ def build_reflexion_messages(
     critical: list[str],
     channel: str,
     locale: str,
+    brand_guide: str = "(none available)",
 ) -> list[dict]:
     """Code fallback for the reflexion reviser prompt."""
     reasons_text = "\n".join(f"- {r}" for r in reasons) or "- (no specific criterion feedback)"
     critical_text = "\n".join(f"- {c}" for c in critical) or "- (none)"
-    system = REFLEXION_SYSTEM_TEMPLATE.format(channel=channel, locale=locale)
+    system = REFLEXION_SYSTEM_TEMPLATE.format(channel=channel, locale=locale, brand_guide=brand_guide)
     user = REFLEXION_USER_TEMPLATE.format(
         content=content, reasons=reasons_text, critical=critical_text
     )

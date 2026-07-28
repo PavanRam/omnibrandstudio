@@ -20,6 +20,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from services.audit_service import write_audit
+from services.rag.ingest import list_brand_guides_from_store
 
 
 async def open_draft_set(
@@ -67,7 +68,8 @@ async def open_draft_set(
 
 
 async def list_sets(
-    conn: AsyncConnection, *, org_id: str, brand_id: str
+    conn: AsyncConnection, *, org_id: str, brand_id: str,
+    limit: int = 50, offset: int = 0,
 ) -> list[dict[str, Any]]:
     result = await conn.execute(
         text(
@@ -81,11 +83,71 @@ async def list_sets(
             WHERE s.org_id = :org_id AND s.brand_id = :brand_id
             GROUP BY s.id
             ORDER BY s.created_at DESC
+            LIMIT :limit OFFSET :offset
+            """
+        ),
+        {"org_id": org_id, "brand_id": brand_id, "limit": limit, "offset": offset},
+    )
+    return [dict(row) for row in result.mappings().all()]
+
+
+async def backfill_sets_from_guide_versions(
+    conn: AsyncConnection,
+    *,
+    org_id: str,
+    brand_id: str,
+    created_by: str | None = None,
+) -> int:
+    existing_sets = await list_sets(conn, org_id=org_id, brand_id=brand_id)
+    existing_keys = {
+        (str(item.get("locale") or ""), str(item.get("guide_version") or ""))
+        for item in existing_sets
+    }
+
+    result = await conn.execute(
+        text(
+            """
+            SELECT DISTINCT bg.locale, bg.version
+            FROM brand_guides bg
+            JOIN brands b ON b.id = bg.brand_id
+            WHERE bg.brand_id = CAST(:brand_id AS UUID)
+              AND b.org_id = CAST(:org_id AS UUID)
+              AND bg.active = TRUE
+            ORDER BY bg.locale, bg.version
             """
         ),
         {"org_id": org_id, "brand_id": brand_id},
     )
-    return [dict(row) for row in result.mappings().all()]
+    guide_rows = [dict(row) for row in result.mappings().all()]
+
+    if not guide_rows:
+        guide_rows = await list_brand_guides_from_store(brand_id=brand_id)
+
+    inserted = 0
+    seen_keys: set[tuple[str, str]] = set()
+    for row in guide_rows:
+        locale = str(row.get("locale") or "").strip()
+        guide_version = str(row.get("version") or "").strip()
+        if not locale or not guide_version:
+            continue
+
+        key = (locale, guide_version)
+        if key in seen_keys or key in existing_keys:
+            continue
+
+        await open_draft_set(
+            conn,
+            org_id=org_id,
+            brand_id=brand_id,
+            locale=locale,
+            guide_version=guide_version,
+            source="llm_generated",
+            created_by=created_by,
+        )
+        seen_keys.add(key)
+        inserted += 1
+
+    return inserted
 
 
 async def activate_set(
@@ -274,6 +336,57 @@ async def promote_to_golden(
         action="promoted_to_golden",
         actor_id=actor_id,
         entity_id=example_id,
+        brand_id=brand_id,
+        org_id=org_id,
+    )
+
+
+async def delete_set(
+    conn: AsyncConnection,
+    *,
+    org_id: str,
+    brand_id: str,
+    set_id: str,
+    actor_id: str | None = None,
+) -> None:
+    """Delete a draft (non-active) dataset set and its silver examples.
+    Raises ValueError if the set is not found in tenant scope or is currently active."""
+    result = await conn.execute(
+        text(
+            """
+            SELECT status FROM golden_dataset_set
+            WHERE id = :set_id AND org_id = :org_id AND brand_id = :brand_id
+            """
+        ),
+        {"set_id": set_id, "org_id": org_id, "brand_id": brand_id},
+    )
+    row = result.mappings().first()
+    if row is None:
+        raise ValueError("set not found in tenant scope")
+    if row["status"] == "active":
+        raise ValueError("cannot delete an active dataset set; archive it first")
+
+    await conn.execute(
+        text(
+            "DELETE FROM golden_dataset WHERE set_id = :set_id AND org_id = :org_id"
+        ),
+        {"set_id": set_id, "org_id": org_id},
+    )
+    await conn.execute(
+        text(
+            """
+            DELETE FROM golden_dataset_set
+            WHERE id = :set_id AND org_id = :org_id AND brand_id = :brand_id
+            """
+        ),
+        {"set_id": set_id, "org_id": org_id, "brand_id": brand_id},
+    )
+    await write_audit(
+        conn,
+        entity_type="golden_dataset",
+        action="set_deleted",
+        actor_id=actor_id,
+        entity_id=set_id,
         brand_id=brand_id,
         org_id=org_id,
     )

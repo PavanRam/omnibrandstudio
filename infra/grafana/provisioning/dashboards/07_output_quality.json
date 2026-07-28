@@ -1,0 +1,196 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "templating": {
+    "list": [
+      {
+        "name": "org_id",
+        "type": "query",
+        "label": "Org",
+        "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+        "query": "SELECT DISTINCT org_id::text FROM campaigns ORDER BY 1",
+        "includeAll": true,
+        "allValue": "All",
+        "multi": false,
+        "current": {"text": "All", "value": "All"},
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Avg Brand Score (0-100)",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 1, "min": 0, "max": 100, "thresholds": {"steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 70}, {"color": "green", "value": 85}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT AVG(a.weighted_mean) AS avg_score FROM aggregated_scores a JOIN content_variants v ON v.id = a.variant_id JOIN campaigns c ON c.id = v.campaign_id WHERE $__timeFilter(a.created_at) AND ('$org_id' = 'All' OR c.org_id::text = '$org_id')"}
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Critical Violation Rate",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "decimals": 2, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.05}, {"color": "red", "value": 0.15}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT AVG(CASE WHEN a.any_critical_violation THEN 1.0 ELSE 0.0 END) AS violation_rate FROM aggregated_scores a JOIN content_variants v ON v.id = a.variant_id JOIN campaigns c ON c.id = v.campaign_id WHERE $__timeFilter(a.created_at) AND ('$org_id' = 'All' OR c.org_id::text = '$org_id')"}
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Avg Judge Disagreement (variance)",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 3, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 50}, {"color": "red", "value": 150}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT AVG(a.variance) AS avg_variance FROM aggregated_scores a JOIN content_variants v ON v.id = a.variant_id JOIN campaigns c ON c.id = v.campaign_id WHERE $__timeFilter(a.created_at) AND ('$org_id' = 'All' OR c.org_id::text = '$org_id')"}
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Scored Variants",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "fixed", "fixedColor": "blue"}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT COUNT(*) AS scored FROM aggregated_scores a JOIN content_variants v ON v.id = a.variant_id JOIN campaigns c ON c.id = v.campaign_id WHERE $__timeFilter(a.created_at) AND ('$org_id' = 'All' OR c.org_id::text = '$org_id')"}
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Avg Brand Score Over Time",
+      "type": "timeseries",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "max": 100, "custom": {"drawStyle": "line", "fillOpacity": 15, "lineWidth": 2}}, "overrides": []},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "single"}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "time_series", "rawSql": "SELECT $__timeGroup(a.created_at, '1h') AS time, AVG(a.weighted_mean) AS avg_score FROM aggregated_scores a JOIN content_variants v ON v.id = a.variant_id JOIN campaigns c ON c.id = v.campaign_id WHERE $__timeFilter(a.created_at) AND ('$org_id' = 'All' OR c.org_id::text = '$org_id') GROUP BY 1 ORDER BY 1"}
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Brand Score Distribution",
+      "type": "barchart",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {"orientation": "vertical", "legend": {"showLegend": false}, "xTickLabelRotation": 0},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT (LEAST(width_bucket(a.weighted_mean, 0, 100, 10), 10) * 10 - 10)::text || '-' || (LEAST(width_bucket(a.weighted_mean, 0, 100, 10), 10) * 10)::text AS score_range, COUNT(*) AS variants FROM aggregated_scores a JOIN content_variants v ON v.id = a.variant_id JOIN campaigns c ON c.id = v.campaign_id WHERE $__timeFilter(a.created_at) AND ('$org_id' = 'All' OR c.org_id::text = '$org_id') GROUP BY 1 ORDER BY 1"}
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Avg Score by Channel",
+      "type": "barchart",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 12},
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "max": 100}, "overrides": []},
+      "options": {"orientation": "horizontal", "legend": {"showLegend": false}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT v.channel, AVG(a.weighted_mean) AS avg_score FROM aggregated_scores a JOIN content_variants v ON v.id = a.variant_id JOIN campaigns c ON c.id = v.campaign_id WHERE $__timeFilter(a.created_at) AND ('$org_id' = 'All' OR c.org_id::text = '$org_id') GROUP BY v.channel ORDER BY avg_score DESC"}
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Avg Score by Generation Model",
+      "type": "barchart",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 12},
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "max": 100}, "overrides": []},
+      "options": {"orientation": "horizontal", "legend": {"showLegend": false}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT COALESCE(v.generation_model,'unknown') AS model, AVG(a.weighted_mean) AS avg_score FROM aggregated_scores a JOIN content_variants v ON v.id = a.variant_id JOIN campaigns c ON c.id = v.campaign_id WHERE $__timeFilter(a.created_at) AND ('$org_id' = 'All' OR c.org_id::text = '$org_id') GROUP BY v.generation_model ORDER BY avg_score DESC"}
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Per-Judge Avg Score (drift check)",
+      "type": "barchart",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 12},
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "max": 100}, "overrides": []},
+      "options": {"orientation": "horizontal", "legend": {"showLegend": false}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT b.judge_model, AVG(b.composite_score) AS avg_score, COUNT(*) AS evaluations FROM brand_scores b JOIN content_variants v ON v.id = b.variant_id JOIN campaigns c ON c.id = v.campaign_id WHERE $__timeFilter(b.created_at) AND ('$org_id' = 'All' OR c.org_id::text = '$org_id') GROUP BY b.judge_model ORDER BY avg_score DESC"}
+      ]
+    },
+    {
+      "id": 20,
+      "title": "Routing Decision Mix",
+      "type": "piechart",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 20},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "right", "values": ["value", "percent"]}, "pieType": "pie", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT a.routing_decision, COUNT(*) AS n FROM aggregated_scores a JOIN content_variants v ON v.id = a.variant_id JOIN campaigns c ON c.id = v.campaign_id WHERE $__timeFilter(a.created_at) AND ('$org_id' = 'All' OR c.org_id::text = '$org_id') GROUP BY a.routing_decision ORDER BY n DESC"}
+      ]
+    },
+    {
+      "id": 21,
+      "title": "Human Review Outcomes",
+      "type": "piechart",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 20},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "right", "values": ["value", "percent"]}, "pieType": "donut", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT status, COUNT(*) AS n FROM review_requests WHERE $__timeFilter(created_at) AND ('$org_id' = 'All' OR org_id::text = '$org_id') GROUP BY status ORDER BY n DESC"}
+      ]
+    },
+    {
+      "id": 22,
+      "title": "First-Pass Quality Signals",
+      "type": "stat",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 20},
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 3}, "overrides": [
+        {"matcher": {"id": "byName", "options": "reflexion_rate"}, "properties": [{"id": "unit", "value": "percentunit"}]},
+        {"matcher": {"id": "byName", "options": "avg_back_translation"}, "properties": [{"id": "unit", "value": "percentunit"}]}
+      ]},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "orientation": "horizontal", "textMode": "value_and_name"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT AVG(CASE WHEN v.reflexion_applied THEN 1.0 ELSE 0.0 END) AS reflexion_rate, AVG(v.retry_count) AS avg_retries, AVG(v.back_translation_score) AS avg_back_translation FROM content_variants v JOIN campaigns c ON c.id = v.campaign_id WHERE $__timeFilter(v.created_at) AND ('$org_id' = 'All' OR c.org_id::text = '$org_id')"}
+      ]
+    },
+    {
+      "id": 30,
+      "title": "Per-Campaign Quality Detail",
+      "type": "table",
+      "datasource": {"type": "postgres", "uid": "omnibrand-postgres"},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 28},
+      "fieldConfig": {"defaults": {}, "overrides": [
+        {"matcher": {"id": "byName", "options": "avg_score"}, "properties": [{"id": "unit", "value": "short"}, {"id": "decimals", "value": 1}, {"id": "custom.cellOptions", "value": {"type": "color-background"}}, {"id": "thresholds", "value": {"steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 70}, {"color": "green", "value": 85}]}}]},
+        {"matcher": {"id": "byName", "options": "violations"}, "properties": [{"id": "custom.cellOptions", "value": {"type": "color-background"}}, {"id": "thresholds", "value": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}]}
+      ]},
+      "options": {"showHeader": true, "sortBy": [{"displayName": "avg_score", "desc": false}]},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "postgres", "uid": "omnibrand-postgres"}, "format": "table", "rawSql": "SELECT v.campaign_id::text AS campaign_id, COUNT(a.*) AS variants, ROUND(AVG(a.weighted_mean), 1) AS avg_score, ROUND(AVG(a.variance), 1) AS avg_variance, SUM(CASE WHEN a.any_critical_violation THEN 1 ELSE 0 END) AS violations FROM aggregated_scores a JOIN content_variants v ON v.id = a.variant_id JOIN campaigns c ON c.id = v.campaign_id WHERE $__timeFilter(a.created_at) AND ('$org_id' = 'All' OR c.org_id::text = '$org_id') GROUP BY v.campaign_id ORDER BY avg_score ASC LIMIT 100"}
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["omnibrand", "quality", "judges"],
+  "time": {"from": "now-7d", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Output Quality",
+  "uid": "omnibrand-quality",
+  "version": 1
+}

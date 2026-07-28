@@ -355,6 +355,7 @@ async def content_generator(state: OmniBrandState) -> dict[str, Any]:
 
         variants: list[ContentVariant] = []
         failed_task_ids: list[str] = []
+        guardrail_flags: list[str] = []
         total_cost = 0.0
         user_feedback = state.get("user_edit_note")
 
@@ -406,6 +407,20 @@ async def content_generator(state: OmniBrandState) -> dict[str, Any]:
             total_cost += cost
             if variant["status"] == "failed":
                 failed_task_ids.append(task["task_id"])
+
+            # Output guardrail — flag-only (never hard-block) to match
+            # translation.py's existing fail-open posture.
+            generated = variant.get("generated_content") or ""
+            if generated and variant["status"] != "failed":
+                from pipeline.agents.safety import screen_output_safety
+
+                brand_name = (brand_config or {}).get("name")
+                safety_flags = await screen_output_safety(generated, brand_name=brand_name)
+                if safety_flags:
+                    guardrail_flags.extend(
+                        f"{task['task_id']}:{f}" for f in safety_flags
+                    )
+
             await publish_campaign_event(
                 campaign_id=state.get("campaign_id"),
                 agent="content_generator",
@@ -433,7 +448,8 @@ async def content_generator(state: OmniBrandState) -> dict[str, Any]:
         return {
             "variants": variants,
             "failed_task_ids": failed_task_ids,
-            "token_cost_usd": total_cost,
+            "guardrail_flags": guardrail_flags,
+            "token_cost_usd": float(state.get("token_cost_usd", 0.0) or 0.0) + total_cost,
             "current_phase": "content_generated",
             "current_task": None,
             "user_edit_note": None,

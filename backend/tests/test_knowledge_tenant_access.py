@@ -29,7 +29,7 @@ class _Result:
 class _FakeConn:
     exists: bool
 
-    async def exec_driver_sql(self, query: str, params: dict):
+    async def execute(self, query, params: dict):
         return _Result(self.exists)
 
 
@@ -76,6 +76,7 @@ async def test_upload_customer_segments_returns_indexed_payload(monkeypatch: pyt
         "ingest_customer_segments",
         AsyncMock(
             return_value={
+                "status": "indexed",
                 "brand_id": "brand-a",
                 "locale": "en-US",
                 "version": "v1",
@@ -156,6 +157,77 @@ async def test_list_segments_returns_items(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert result["count"] == 1
     assert result["items"][0]["id"] == "s1"
+
+
+@pytest.mark.asyncio
+async def test_list_segments_retries_without_version_when_requested_version_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    @asynccontextmanager
+    async def _fake_get_db():
+        yield _FakeConn(exists=True)
+
+    async def _fake_list_customer_segments(*, brand_id: str, locale: str, version: str | None = None, limit: int = 50, offset: int = 0, db=None):
+        if version == "v1":
+            return []
+        return [{"id": "s2", "text": "segment: Enterprise", "metadata": {"segment": "Enterprise"}}]
+
+    monkeypatch.setattr(knowledge, "get_db", _fake_get_db)
+    monkeypatch.setattr(knowledge, "_assert_brand_access", AsyncMock(return_value=None))
+    monkeypatch.setattr(knowledge, "list_customer_segments", _fake_list_customer_segments)
+
+    user = UserContext(user_id="u1", org_id="org-1", brand_ids=["brand-a"], roles=[])
+
+    result = await knowledge.list_segments(
+        brand_id="brand-a",
+        user=user,
+        locale="en-US",
+        version="v1",
+        limit=10,
+    )
+
+    assert result["count"] == 1
+    assert result["items"][0]["id"] == "s2"
+
+
+@pytest.mark.asyncio
+async def test_list_brand_guides_falls_back_to_rag_when_metadata_rows_are_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    @asynccontextmanager
+    async def _fake_get_db():
+        yield _FakeConn(exists=True)
+
+    class _EmptyRows:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return []
+
+    monkeypatch.setattr(knowledge, "get_db", _fake_get_db)
+    monkeypatch.setattr(knowledge, "_assert_brand_access", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        knowledge,
+        "list_brand_guides_from_store",
+        AsyncMock(return_value=[{"id": "rag:guide", "source_filename": "brand_identity.json", "locale": "en-US", "version": "datasets-v1", "chunk_count": 12, "active": True, "created_at": None, "indexed_at": None, "origin": "rag"}]),
+    )
+
+    class _ConnWithEmptyRows(_FakeConn):
+        async def execute(self, query, params: dict):
+            return _EmptyRows()
+
+    @asynccontextmanager
+    async def _fake_get_db_empty_rows():
+        yield _ConnWithEmptyRows(exists=True)
+
+    monkeypatch.setattr(knowledge, "get_db", _fake_get_db_empty_rows)
+
+    user = UserContext(user_id="u1", org_id="org-1", brand_ids=["brand-a"], roles=[])
+    result = await knowledge.list_brand_guides(brand_id="brand-a", user=user)
+
+    assert result["count"] == 1
+    assert result["items"][0]["origin"] == "rag"
 
 
 @pytest.mark.asyncio

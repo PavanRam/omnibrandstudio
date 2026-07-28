@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncGenerator
 from typing import Any
 
-from pipeline.agents.base import traced_llm_call
+from pipeline.agents.base import traced_llm_call, traced_llm_call_stream
 from pipeline.conversation_models import ConversationPlannerOutput, PartialBrief
 
 _RESPONDER_SYSTEM_PROMPT = (
@@ -12,6 +13,11 @@ _RESPONDER_SYSTEM_PROMPT = (
     "Your responsibility is to communicate the planner's decision clearly and naturally. "
     "The planner determines the conversation objective, allowed response strategy, "
     "and available context. Do not override planner instructions or create your own plan. "
+    "BRAND VOICE: Communicate in a clear, professional, and helpful tone. Be concise but warm. "
+    "Avoid jargon. Never use hollow filler phrases like 'Certainly!' or 'Great question!'. "
+    "RESPONSE LENGTH: Keep replies focused. For brief-collection turns aim for 2-4 sentences "
+    "plus one question. For status/progress turns include concrete data if available. "
+    "Never pad responses or repeat information the user already confirmed. "
     "GROUNDING RULES: "
     "Use only information explicitly provided in planner input, brief state, campaign state, "
     "approved conversation context, or retrieved artifacts. "
@@ -99,9 +105,20 @@ class ConversationResponder:
         confirm_playback: bool = False,
     ) -> str:
         if planner_output is None:
-            if confirm_playback:
-                return self._brief_playback_fallback(brief)
-            return self._fallback_message(None, brief, brief_changes, user_message)
+            return self._fallback_or_playback(
+                planner_output=None,
+                brief=brief,
+                brief_changes=brief_changes,
+                user_message=user_message,
+                confirm_playback=confirm_playback,
+            )
+
+        # During brief-collection turns, prefer deterministic grounded responses
+        # so a model response cannot invent uncaptured campaign fields. A recap /
+        # confirmation turn is exempt: the user asked to hear the brief back, so we
+        # let the model summarize it (with a deterministic playback fallback).
+        if not confirm_playback and self._should_use_grounded_fallback(planner_output, brief):
+            return self._fallback_message(planner_output, brief, brief_changes, user_message)
 
         try:
             content, _ = await traced_llm_call(
@@ -127,24 +144,129 @@ class ConversationResponder:
                 temperature=0.4,
             )
         except Exception:
-            if confirm_playback:
-                return self._brief_playback_fallback(brief)
-            return self._fallback_message(planner_output, brief, brief_changes, user_message)
+            return self._fallback_or_playback(
+                planner_output=planner_output,
+                brief=brief,
+                brief_changes=brief_changes,
+                user_message=user_message,
+                confirm_playback=confirm_playback,
+            )
 
         message = content.strip()
-        if not message:
-            if confirm_playback:
-                return self._brief_playback_fallback(brief)
-            return self._fallback_message(planner_output, brief, brief_changes, user_message)
-        if message.startswith("[fallback-generated]"):
-            if confirm_playback:
-                return self._brief_playback_fallback(brief)
-            return self._fallback_message(planner_output, brief, brief_changes, user_message)
-        if self._looks_like_meta_reasoning_leak(message):
-            if confirm_playback:
-                return self._brief_playback_fallback(brief)
-            return self._fallback_message(planner_output, brief, brief_changes, user_message)
+        if (
+            not message
+            or message.startswith("[fallback-generated]")
+            or self._looks_like_meta_reasoning_leak(message)
+        ):
+            return self._fallback_or_playback(
+                planner_output=planner_output,
+                brief=brief,
+                brief_changes=brief_changes,
+                user_message=user_message,
+                confirm_playback=confirm_playback,
+            )
         return message
+
+    async def respond_stream(
+        self,
+        *,
+        planner_output: ConversationPlannerOutput | None,
+        brief: PartialBrief,
+        brief_changes: list[dict[str, Any]],
+        user_message: str,
+        state: dict[str, Any],
+        confirm_playback: bool = False,
+    ) -> AsyncGenerator[str, None]:
+        """Streaming sibling of ``respond``.
+
+        Yields the assistant reply in chunks. Deterministic/grounded cases (which
+        ``respond`` handles without an LLM) are yielded as a single chunk so the
+        caller can always iterate uniformly. The LLM path streams via
+        ``traced_llm_call_stream``; the WS handler applies the meta-reasoning-leak
+        check on the accumulated text and substitutes a fallback if needed.
+        """
+        if planner_output is None:
+            yield self._fallback_or_playback(
+                planner_output=None,
+                brief=brief,
+                brief_changes=brief_changes,
+                user_message=user_message,
+                confirm_playback=confirm_playback,
+            )
+            return
+
+        if not confirm_playback and self._should_use_grounded_fallback(planner_output, brief):
+            yield self._fallback_message(planner_output, brief, brief_changes, user_message)
+            return
+
+        streamed_any = False
+        try:
+            async for chunk in traced_llm_call_stream(
+                model=state.get("model_aliases", {}).get("responder", "responder-chat"),
+                messages=[
+                    {"role": "system", "content": _RESPONDER_SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "planner": planner_output.model_dump(),
+                                "brief": brief.model_dump(),
+                                "brief_changes": brief_changes,
+                                "user_message": user_message,
+                                "confirm_playback": confirm_playback,
+                            },
+                            ensure_ascii=True,
+                        ),
+                    },
+                ],
+                task="conversation_responder",
+                state=state,
+                temperature=0.4,
+            ):
+                if chunk:
+                    streamed_any = True
+                    yield chunk
+        except Exception:
+            if not streamed_any:
+                yield self._fallback_or_playback(
+                    planner_output=planner_output,
+                    brief=brief,
+                    brief_changes=brief_changes,
+                    user_message=user_message,
+                    confirm_playback=confirm_playback,
+                )
+            return
+
+        if not streamed_any:
+            yield self._fallback_or_playback(
+                planner_output=planner_output,
+                brief=brief,
+                brief_changes=brief_changes,
+                user_message=user_message,
+                confirm_playback=confirm_playback,
+            )
+
+    def _fallback_or_playback(
+        self,
+        *,
+        planner_output: ConversationPlannerOutput | None,
+        brief: PartialBrief,
+        brief_changes: list[dict[str, Any]],
+        user_message: str,
+        confirm_playback: bool,
+    ) -> str:
+        if confirm_playback:
+            return self._brief_playback_fallback(brief)
+        return self._fallback_message(planner_output, brief, brief_changes, user_message)
+
+    def _should_use_grounded_fallback(
+        self,
+        planner_output: ConversationPlannerOutput,
+        brief: PartialBrief,
+    ) -> bool:
+        if brief.is_complete():
+            return False
+        return planner_output.reply_strategy in {"high_value_followup", "clarification_followup"}
 
     def _brief_playback_fallback(self, brief: PartialBrief) -> str:
         lines = ["Here's the campaign brief I've captured:"]

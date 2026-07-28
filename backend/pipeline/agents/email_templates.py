@@ -100,6 +100,100 @@ _DEFAULT_ROUTING_BADGE: tuple[str, str, str] = ("#334155", "#e2e8f0", "— UNSCO
 
 
 # ---------------------------------------------------------------------------
+# Rejection-notice email (human review → rejected)
+# ---------------------------------------------------------------------------
+
+
+def build_rejection_email_html(
+    *,
+    reason: str,
+    objective: str = "",
+    campaign_id: str = "",
+    recipient: str = "",
+) -> str:
+    """Return an inline-styled HTML "campaign rejected" notice.
+
+    Sent to the campaign requester when a reviewer sets ``Decision = Rejected``
+    (in Airtable, the app UI, or Postman). Surfaces the reviewer's reason
+    (``Reviewer Note``) prominently. Reuses this module's palette + shell style.
+    """
+    reason_html = html.escape(str(reason or "No reason provided.")).replace("\n", "<br>")
+    objective_html = html.escape(str(objective)[:120]) if objective else "—"
+    campaign_html = html.escape(str(campaign_id)) if campaign_id else "—"
+    recipient_html = html.escape(str(recipient)) if recipient else ""
+    reject_fg, reject_bg = "#991b1b", "#fee2e2"
+
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en">\n'
+        '<head><meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1.0">'
+        "<title>OmniBrand — Campaign Rejected</title></head>\n"
+        f'<body style="margin:0;padding:0;background:{_BG};'
+        f"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
+        f"'Helvetica Neue',Arial,sans-serif;\">\n"
+        f'<table cellpadding="0" cellspacing="0" border="0" width="100%"'
+        f' style="background:{_BG};padding:32px 16px;">'
+        f'<tr><td align="center">'
+        f'<table cellpadding="0" cellspacing="0" border="0"'
+        f' style="max-width:600px;width:100%;border-radius:16px;overflow:hidden;'
+        f'box-shadow:0 8px 32px rgba(0,0,0,0.12);">'
+        # Header
+        f'<tr><td style="background:{_BRAND_DARK};padding:22px 32px;">'
+        f'<div style="font-size:22px;font-weight:900;color:#fff;letter-spacing:-0.5px;">'
+        f'Omni<span style="color:{_BRAND_ACCENT};">Brand</span>'
+        f'<span style="color:#94a3b8;font-weight:400;font-size:16px;"> Studio</span></div>'
+        f'<div style="font-size:12px;color:#64748b;margin-top:3px;">'
+        f"Agentic Content Platform</div></td></tr>"
+        # Rejected banner
+        f'<tr><td style="background:{_BRAND_MID};padding:12px 32px;">'
+        f'<span style="background:{reject_bg};color:{reject_fg};font-size:12px;'
+        f'font-weight:700;padding:5px 14px;border-radius:20px;letter-spacing:0.5px;">'
+        f"❌ CAMPAIGN REJECTED</span></td></tr>"
+        # Body
+        f'<tr><td style="background:{_CARD_BG};padding:28px 32px;">'
+        f'<div style="font-size:16px;font-weight:700;color:{_TEXT_PRIMARY};'
+        f'margin-bottom:8px;">Your campaign was not approved</div>'
+        f'<div style="font-size:14px;color:{_TEXT_SECONDARY};line-height:1.6;'
+        f'margin-bottom:20px;">A reviewer rejected this campaign during human '
+        f"review. The reason is below. No content has been published.</div>"
+        f'<div style="background:#fef2f2;border-radius:12px;padding:20px 24px;'
+        f'border-left:4px solid #ef4444;margin-bottom:20px;">'
+        f'<div style="font-size:11px;font-weight:700;letter-spacing:1.5px;'
+        f'color:#b91c1c;text-transform:uppercase;margin-bottom:10px;">'
+        f"Reason for rejection</div>"
+        f'<div style="font-size:15px;color:#7f1d1d;line-height:1.6;">{reason_html}</div></div>'
+        f'<table cellpadding="0" cellspacing="0" border="0" width="100%"'
+        f' style="border:1px solid {_BORDER};border-radius:10px;overflow:hidden;'
+        f'background:{_CARD_BG};"><tr>'
+        f'<td style="padding:10px 14px;border-right:1px solid {_BORDER};">'
+        f'<div style="font-size:10px;color:{_TEXT_MUTED};text-transform:uppercase;'
+        f'letter-spacing:0.8px;margin-bottom:3px;">🎯 Objective</div>'
+        f'<div style="font-size:13px;font-weight:600;color:{_TEXT_PRIMARY};">'
+        f"{objective_html}</div></td>"
+        f'<td style="padding:10px 14px;">'
+        f'<div style="font-size:10px;color:{_TEXT_MUTED};text-transform:uppercase;'
+        f'letter-spacing:0.8px;margin-bottom:3px;">🆔 Campaign</div>'
+        f'<div style="font-size:13px;font-weight:600;color:{_TEXT_PRIMARY};">'
+        f"{campaign_html}</div></td></tr></table>"
+        f"</td></tr>"
+        # Footer
+        f'<tr><td style="background:{_BRAND_DARK};padding:18px 32px;text-align:center;">'
+        f'<div style="font-size:12px;color:#475569;">'
+        f'Sent by <span style="color:{_BRAND_ACCENT};font-weight:700;">'
+        f"OmniBrand Studio</span> · human-review notification</div>"
+        + (
+            f'<div style="font-size:11px;color:#334155;margin-top:4px;">'
+            f"Delivered to {recipient_html}</div>"
+            if recipient_html
+            else ""
+        )
+        + "</td></tr>"
+        f"</table></td></tr></table></body></html>"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 

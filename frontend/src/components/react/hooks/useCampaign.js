@@ -23,6 +23,7 @@ export function useCampaign() {
   const [campaignId, setCampaignId] = useState(null);
   const [status, setStatus] = useState(null);
   const [campaign, setCampaign] = useState(null); // full detail with variants[]
+  const [campaignStatus, setCampaignStatus] = useState(null); // lightweight /status payload
   const [error, setError] = useState(null);
   const [elapsedMs, setElapsedMs] = useState(0);
 
@@ -42,6 +43,7 @@ export function useCampaign() {
     setCampaignId(null);
     setStatus(null);
     setCampaign(null);
+    setCampaignStatus(null);
     setError(null);
     setElapsedMs(0);
   }, []);
@@ -56,6 +58,7 @@ export function useCampaign() {
     setPhase('submitting');
     setError(null);
     setCampaign(null);
+    setCampaignStatus(null);
     setStatus(null);
     setCampaignId(null);
     setElapsedMs(0);
@@ -74,6 +77,7 @@ export function useCampaign() {
     const id = created.campaign_id;
     setCampaignId(id);
     setStatus(created.status || 'queued');
+    setCampaignStatus(created);
     setPhase('polling');
 
     // 2) Poll status until the pipeline reaches a terminal state.
@@ -102,6 +106,7 @@ export function useCampaign() {
       }
 
       setStatus(statusResp.status);
+      setCampaignStatus(statusResp);
       setElapsedMs(Date.now() - startedAt);
 
       if (TERMINAL_STATUSES.has(statusResp.status)) {
@@ -110,6 +115,15 @@ export function useCampaign() {
           const full = await getCampaign(id);
           if (cancelledRef.current) return;
           setCampaign(full);
+          setCampaignStatus((prev) => ({
+            ...(prev || {}),
+            campaign_id: full.id || prev?.campaign_id || id,
+            status: full.status || prev?.status,
+            token_cost_usd: full.token_cost_usd,
+            started_at: full.started_at,
+            completed_at: full.completed_at,
+            created_at: full.created_at,
+          }));
         } catch {
           // Non-fatal: we still have a terminal status to show.
         }
@@ -124,6 +138,7 @@ export function useCampaign() {
     campaignId,
     status,
     campaign,
+    campaignStatus,
     error,
     elapsedMs,
     submit,

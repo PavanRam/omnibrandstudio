@@ -237,6 +237,8 @@ async def test_get_campaign_returns_campaign_with_variants(monkeypatch: pytest.M
     class _FakeConn:
         async def execute(self, stmt, *_args, **_kwargs):
             sql_text = str(getattr(stmt, "text", stmt))
+            if "campaign_cost_attribution" in sql_text:
+                return _FakeResult({"token_cost_usd": 1.25})
             if "FROM campaigns" in sql_text:
                 return _FakeResult(
                     {

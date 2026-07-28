@@ -123,3 +123,37 @@ async def test_responder_filters_meta_reasoning_leak(monkeypatch: pytest.MonkeyP
     )
 
     assert message == "Thanks, that helps. What concrete outcome should this campaign drive first?"
+
+
+@pytest.mark.asyncio
+async def test_responder_uses_grounded_fallback_for_incomplete_brief_followup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _should_not_call_llm(**_: object):
+        raise AssertionError("LLM should not be called for grounded follow-up turns")
+
+    monkeypatch.setattr("services.chat.conversation_responder.traced_llm_call", _should_not_call_llm)
+
+    planner_output = ConversationPlannerOutput(
+        stage="objective_discovery",
+        objective="Clarify launch context",
+        reply_strategy="high_value_followup",
+        next_question="What concrete outcome should this campaign drive first?",
+    )
+
+    message = await conversation_responder.respond(
+        planner_output=planner_output,
+        brief=PartialBrief(),
+        brief_changes=[
+            {
+                "field": "key_messages",
+                "change_type": "added",
+                "before": [],
+                "after": ["A compelling opening line or mystery that draws the audience in."],
+            }
+        ],
+        user_message="A compelling opening line or mystery that draws the audience in.",
+        state={"model_aliases": {"responder": "util-fast"}},
+    )
+
+    assert message == "Great, I captured key messaging. What concrete outcome should this campaign drive first?"

@@ -199,6 +199,9 @@ class OmniBrandState(TypedDict):
     publication_receipts: Annotated[list[PublicationReceipt], operator.add]
     failed_task_ids: Annotated[list[str], operator.add]
     errors: Annotated[list[str], operator.add]
+    # Output guardrail flags from content_generator / personalization_agent.
+    # Accumulated via operator.add so both agents can write concurrently.
+    guardrail_flags: Annotated[list[str], operator.add]
 
     # Pipeline control
     current_phase: str
