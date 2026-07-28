@@ -19,44 +19,51 @@ class _FakeConn:
 
 
 @pytest.mark.asyncio
-async def test_list_sets_backfills_from_guides_when_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_backfill_sets_from_guides_is_explicit_post(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Backfill is a deliberate admin action via POST /backfill; GET never writes
+    # (see golden_dataset.backfill_sets docstring). This exercises that POST path.
     conn = _FakeConn()
 
     @asynccontextmanager
     async def _fake_get_db():
         yield conn
 
-    list_sets_mock = AsyncMock(
-        side_effect=[
-            [],
-            [
-                {
-                    "id": "set-1",
-                    "locale": "en-US",
-                    "guide_version": "datasets-v1",
-                    "status": "draft",
-                    "source": "llm_generated",
-                    "example_count": 0,
-                    "golden_count": 0,
-                }
-            ],
-        ]
-    )
     backfill_mock = AsyncMock(return_value=1)
 
     monkeypatch.setattr(golden_dataset, "get_db", _fake_get_db)
     monkeypatch.setattr(golden_dataset, "_assert_brand_access", AsyncMock(return_value=None))
-    monkeypatch.setattr(golden_dataset.svc, "list_sets", list_sets_mock)
+    monkeypatch.setattr(golden_dataset.svc, "backfill_sets_from_guide_versions", backfill_mock)
+
+    user = UserContext(user_id="u1", org_id="org-1", brand_ids=["brand-a"], roles=["admin"])
+    result = await golden_dataset.backfill_sets("brand-a", user)
+
+    assert result["sets_created"] == 1
+    assert conn.committed is True
+    backfill_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_list_sets_does_not_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    # GET list_sets is read-only: it never backfills or commits.
+    conn = _FakeConn()
+
+    @asynccontextmanager
+    async def _fake_get_db():
+        yield conn
+
+    backfill_mock = AsyncMock(return_value=1)
+
+    monkeypatch.setattr(golden_dataset, "get_db", _fake_get_db)
+    monkeypatch.setattr(golden_dataset, "_assert_brand_access", AsyncMock(return_value=None))
+    monkeypatch.setattr(golden_dataset.svc, "list_sets", AsyncMock(return_value=[]))
     monkeypatch.setattr(golden_dataset.svc, "backfill_sets_from_guide_versions", backfill_mock)
 
     user = UserContext(user_id="u1", org_id="org-1", brand_ids=["brand-a"], roles=["admin"])
     result = await golden_dataset.list_sets("brand-a", user)
 
-    assert result["count"] == 1
-    assert result["items"][0]["id"] == "set-1"
-    assert conn.committed is True
-    assert list_sets_mock.await_count == 2
-    backfill_mock.assert_awaited_once()
+    assert result["count"] == 0
+    assert conn.committed is False
+    backfill_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
