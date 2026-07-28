@@ -116,17 +116,28 @@ async def _resolve_ws_user(
 
 
 def _chat_state_context(session: ConversationSession) -> dict[str, Any]:
+    # Chat is tier-aware via JUDGE_TIER (the live Redis toggle is deferred).
+    # free → Groq (*-free) aliases for $0 spend; paid → existing paid aliases.
+    if (settings.JUDGE_TIER or "free").lower() == "paid":
+        model_aliases = {
+            "utility": "util-fast",
+            "brief_collector": "brief-collector",
+            "understanding": "understanding",
+            "responder": "responder-chat",
+        }
+    else:
+        model_aliases = {
+            "utility": "util-fast-free",
+            "brief_collector": "brief-collector-free",
+            "understanding": "understanding-free",
+            "responder": "responder-chat-free",
+        }
     return {
         "campaign_id": session.active_campaign_id,
         "org_id": session.org_id,
         "brand_id": session.brand_id,
         "request_id": new_request_id(),
-        "model_aliases": {
-            "utility": "util-fast",
-            "brief_collector": "brief-collector",
-            "understanding": "understanding",
-            "responder": "responder-chat",
-        },
+        "model_aliases": model_aliases,
     }
 
 

@@ -18,6 +18,9 @@ def resolve_model_aliases(tier: str | None = None) -> dict[str, str]:
     """
     resolved = (tier or settings.JUDGE_TIER or "free").lower()
     if resolved == "paid":
+        # Paid aliases unchanged. brand_truthfulness / translation /
+        # translation_validator are made explicit here (agents previously fell
+        # back to these same defaults) so both tiers stay symmetric.
         return {
             "generation": "gen-premium",
             "judge-1": "judge-1",
@@ -25,14 +28,21 @@ def resolve_model_aliases(tier: str | None = None) -> dict[str, str]:
             "judge-3": "judge-3",
             "util-fast": "util-fast",
             "eval": "eval-model",
+            "brand_truthfulness": "eval-model",
+            "translation": "translation-primary",
+            "translation_validator": "translation-validator",
         }
+    # Free tier — every role routes to a Groq (*-free) alias for $0 spend.
     return {
         "generation": "gen-free",
         "judge-1": "judge-1-free",
         "judge-2": "judge-2-free",
         "judge-3": "judge-3-free",
-        "util-fast": "util-fast",
-        "eval": "eval-model",
+        "util-fast": "util-fast-free",
+        "eval": "eval-model-free",
+        "brand_truthfulness": "eval-model-free",
+        "translation": "translation-primary-free",
+        "translation_validator": "translation-validator-free",
     }
 
 
