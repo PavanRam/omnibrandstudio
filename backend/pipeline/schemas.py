@@ -3,9 +3,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Generic, Literal, TypeVar
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # ── Campaign lifecycle ────────────────────────────────────────────────────
+
+# Default token budget applied when a brief doesn't specify one (2026-07-29):
+# users no longer provide this — it's sized to cover the full multi-agent
+# pipeline (intake, content gen, translation per locale, 3 judges,
+# personalization, publishing) and actual usage is tracked end-to-end.
+DEFAULT_TOKEN_BUDGET = 200000
 
 
 class CreateCampaignRequest(BaseModel):
@@ -17,9 +23,21 @@ class CreateCampaignRequest(BaseModel):
     channels: list[str] = Field(min_length=1)
     locales: list[str] = Field(min_length=1)
     audience_segments: list[str] = Field(min_length=1)
-    token_budget: int = Field(gt=0)
+    # token_budget no longer collected from users (2026-07-29). Absent, null, or a
+    # non-positive legacy value (e.g. 0 from an old queued payload) is coerced to the
+    # default by the validator below so a brief is never rejected on budget grounds.
+    token_budget: int = Field(default=DEFAULT_TOKEN_BUDGET)
     end_date: str | None = None
     raw_text: str = ""
+
+    @field_validator("token_budget", mode="before")
+    @classmethod
+    def _default_token_budget(cls, v: int | None) -> int:
+        # token_budget no longer collected from users (2026-07-29): coerce missing,
+        # null, or non-positive legacy values to the default so validation never fails.
+        if v is None or (isinstance(v, int) and v <= 0):
+            return DEFAULT_TOKEN_BUDGET
+        return v
 
 
 class RunCampaignRequest(BaseModel):

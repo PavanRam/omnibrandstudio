@@ -33,6 +33,27 @@ class BulkInsertRequest(BaseModel):
     examples: list[dict[str, Any]]
 
 
+class UpdateExampleRequest(BaseModel):
+    description: str | None = None
+    expected_content: str | None = None
+    expected_brand_score: float | None = None
+    status: str | None = Field(None, pattern="^(silver|golden)$")
+    known_hallucination_traps: list[str] | None = None
+
+
+class AddExampleRequest(BaseModel):
+    brand_id: str
+    set_id: str
+    channel: str
+    description: str
+    brief: dict[str, Any]
+    expected_content: str
+    expected_brand_score: float
+    status: str = Field(default="silver", pattern="^(silver|golden)$")
+    known_hallucination_traps: list[str] | None = None
+    locale: str | None = None
+
+
 class PromoteRequest(BaseModel):
     brand_id: str
 
@@ -223,3 +244,63 @@ async def delete_example(
         except ValueError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     return {"status": "deleted", "example_id": example_id}
+
+
+@router.patch("/golden-dataset/example/{example_id}")
+async def update_example(
+    example_id: str,
+    brand_id: str,
+    body: UpdateExampleRequest,
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    """Update a golden dataset example. Only provided fields are updated."""
+    async with get_db() as conn:
+        await _assert_brand_access(conn, user, brand_id)
+        try:
+            updated = await svc.update_example(
+                conn,
+                org_id=user.org_id,
+                brand_id=brand_id,
+                example_id=example_id,
+                description=body.description,
+                expected_content=body.expected_content,
+                expected_brand_score=body.expected_brand_score,
+                status=body.status,
+                known_hallucination_traps=body.known_hallucination_traps,
+                actor_id=user.user_id,
+            )
+            await conn.commit()
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    return {"status": "updated", "example_id": example_id, "example": updated}
+
+
+@router.post("/golden-dataset/example")
+async def add_example(
+    body: AddExampleRequest,
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    """Add a single example to a golden dataset set."""
+    async with get_db() as conn:
+        await _assert_brand_access(conn, user, body.brand_id)
+        try:
+            example_id = await svc.add_example(
+                conn,
+                org_id=user.org_id,
+                brand_id=body.brand_id,
+                set_id=body.set_id,
+                channel=body.channel,
+                description=body.description,
+                brief=body.brief,
+                expected_content=body.expected_content,
+                expected_brand_score=body.expected_brand_score,
+                status=body.status,
+                source="human_curated",
+                known_hallucination_traps=body.known_hallucination_traps,
+                locale=body.locale,
+                actor_id=user.user_id,
+            )
+            await conn.commit()
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return {"status": "created", "example_id": example_id}

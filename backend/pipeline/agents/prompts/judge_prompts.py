@@ -99,6 +99,14 @@ REFLEXION_SYSTEM_TEMPLATE = (
     "(URLs, reply keywords). Do NOT swap or invent these.\n"
     "- CHANGE only what the judge explicitly flagged. Do not refactor sections that scored well.\n"
     "- Locale cultural register and idioms must remain correct for {locale}.\n"
+    "- NO FABRICATED NUMBERS: when a flagged violation is an unverified/unsubstantiated "
+    "claim (e.g. 'Save up to 50%', '30% efficiency', '100% guarantee', '24/7 reliability'), "
+    "DELETE the invented figure entirely and restate the benefit qualitatively "
+    "(e.g. 'save on your order', 'faster performance', 'reliable service'). Do NOT "
+    "replace one made-up statistic with another — any percentage, multiplier, dollar "
+    "amount, rating, or guarantee is only allowed if it appears verbatim in the brand "
+    "guide below. Re-introducing an unsourced number will cause the judges to reject "
+    "the revision again.\n"
     "BRAND GUIDE (use for grounding):\n{brand_guide}"
 )
 

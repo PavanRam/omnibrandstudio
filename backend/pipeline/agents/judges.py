@@ -152,15 +152,36 @@ async def _run_judge(
             content=content,
         )
         start = time.perf_counter()
-        raw, _usage = await traced_llm_call(
-            model=model,
-            messages=messages,
-            task=agent_name,
-            state=cast(dict, state),
-            agent=agent_name,
-            response_format={"type": "json_object"},
-            temperature=0,
-        )
+        # 2026-07-27: previously the traced_llm_call was unguarded, so a failure
+        # on the Nth variant (e.g. a transient Groq 400/404 on one locale) raised
+        # straight through _impl into safe_agent_run, which discarded this judge's
+        # ENTIRE `produced` list — including variants already scored successfully.
+        # That is exactly how campaign 4e644ce5 degraded to n_judges=1: judge_claude
+        # scored the English variant, then hit a 400 on the Spanish variant and its
+        # good English score was thrown away. Catch per-variant so partial scores
+        # survive; the judge returns whatever it managed to score and the aggregator
+        # degrades gracefully instead of losing a whole judge.
+        try:
+            raw, _usage = await traced_llm_call(
+                model=model,
+                messages=messages,
+                task=agent_name,
+                state=cast(dict, state),
+                agent=agent_name,
+                response_format={"type": "json_object"},
+                temperature=0,
+            )
+        except Exception as exc:  # noqa: BLE001 — isolate one variant's failure
+            log.warning(
+                "judge_variant_failed",
+                campaign_id=state.get("campaign_id"),
+                judge=judge_label,
+                variant_id=variant_id,
+                round=round_,
+                model=model,
+                error=str(exc),
+            )
+            continue
         latency_ms = int((time.perf_counter() - start) * 1000)
         judge_latency.labels(judge=judge_label).observe(latency_ms / 1000)
 
@@ -217,22 +238,31 @@ async def _run_judge(
     return {"brand_scores": produced}
 
 
-async def judge_claude(state: OmniBrandState) -> dict:
+# Judge functions are named judge_1/2/3 (matching the alias keys judge-1/2/3)
+# rather than model-specific names so they stay accurate when models rotate.
+# Actual models come from state["model_aliases"]["judge-1/2/3"] which resolves
+# to judge-1-free/judge-2-free/judge-3-free → gpt-oss-120b / llama-3.3-70b /
+# gpt-oss-20b on the free tier.  The judge_label is logged in structlog and
+# published via campaign events so the UI shows the real model family.
+async def judge_1(state: OmniBrandState) -> dict:
+    """Judge 1 — gpt-oss-120b family (alias judge-1 / judge-1-free)."""
     async def _impl(state: OmniBrandState) -> dict:
-        return await _run_judge(state, "judge-1", "judge_claude", "claude")
+        return await _run_judge(state, "judge-1", "judge_1", "gptoss")
 
     return await safe_agent_run(_impl, state)
 
 
-async def judge_gpt4o(state: OmniBrandState) -> dict:
+async def judge_2(state: OmniBrandState) -> dict:
+    """Judge 2 — llama-3.3-70b family (alias judge-2 / judge-2-free)."""
     async def _impl(state: OmniBrandState) -> dict:
-        return await _run_judge(state, "judge-2", "judge_gpt4o", "gpt4o")
+        return await _run_judge(state, "judge-2", "judge_2", "llama")
 
     return await safe_agent_run(_impl, state)
 
 
-async def judge_llama(state: OmniBrandState) -> dict:
+async def judge_3(state: OmniBrandState) -> dict:
+    """Judge 3 — gpt-oss-20b family (alias judge-3 / judge-3-free)."""
     async def _impl(state: OmniBrandState) -> dict:
-        return await _run_judge(state, "judge-3", "judge_llama", "llama")
+        return await _run_judge(state, "judge-3", "judge_3", "gptoss20b")
 
     return await safe_agent_run(_impl, state)

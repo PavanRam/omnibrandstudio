@@ -97,17 +97,13 @@ class BriefCollector:
             return "Great, your brief is complete. Say 'run campaign' to start execution."
 
         slot = missing[0]
-        if slot == "token_budget":
-            shortfall = brief.budget_shortfall()
-            if shortfall:
-                return f"{shortfall}. What token budget should we use instead?"
+        # token_budget removed from missing_slots() (2026-07-29) — no longer asked from users.
 
         question_by_slot = {
             "objective": "What is the primary campaign objective?",
             "channels": "Which channels should we target?",
             "locales": "Which locales should we generate content for?",
             "audience_segments": "Which audience segments should we target?",
-            "token_budget": "What token budget should we use for this campaign?",
         }
         return question_by_slot.get(slot, "Please provide the missing campaign details.")
 

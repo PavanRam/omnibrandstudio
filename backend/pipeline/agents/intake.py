@@ -18,7 +18,8 @@ from sqlalchemy import text
 from core.database import get_db
 from pipeline.agents.base import publish_campaign_event, safe_agent_run, traced_llm_call
 from pipeline.agents.prompts.channel_prompts import DEFAULT_CHANNEL_CONSTRAINTS
-from pipeline.intake_validation import check_budget, screen_for_injection
+# check_budget removed (2026-07-29): no longer doing upfront budget validation
+from pipeline.intake_validation import screen_for_injection
 from pipeline.locale_utils import (
     SOURCE_LOCALE,
     SOURCE_LOCALE_BASE,
@@ -142,7 +143,9 @@ async def intake_agent(state: OmniBrandState) -> dict:
         channels: list[str] = raw_brief.get("channels", []) or []
         locales: list[str] = raw_brief.get("locales", []) or []
         audience_segments: list[str] = raw_brief.get("audience_segments", []) or []
-        token_budget: int = raw_brief.get("token_budget", 0) or 0
+        # token_budget no longer collected from users (2026-07-29): fall back to a safe
+        # 200k default instead of 0 so a brief without it never fails validation.
+        token_budget: int = raw_brief.get("token_budget", 0) or 200000
 
         if not channels:
             brief_valid = False
@@ -153,6 +156,7 @@ async def intake_agent(state: OmniBrandState) -> dict:
         if not audience_segments:
             brief_valid = False
             errors.append("brief.audience_segments must be non-empty")
+        # token_budget > 0 always holds now (defaulted above); check kept as a guard.
         if token_budget <= 0:
             brief_valid = False
             errors.append("brief.token_budget must be > 0")
@@ -208,15 +212,12 @@ async def intake_agent(state: OmniBrandState) -> dict:
             )
 
         # ------------------------------------------------------------------
-        # 4. Budget check (deterministic, no LLM)
+        # 4. Budget check removed (2026-07-29)
         # ------------------------------------------------------------------
-        budget_ok = False
-        if brief_valid and campaign_brief is not None:
-            budget_errors = check_budget(token_budget, channels, locales, audience_segments)
-            if budget_errors:
-                errors.extend(budget_errors)
-            else:
-                budget_ok = True
+        # Budget validation removed: token_budget no longer collected from users,
+        # auto-set to safe default (200k), and actual consumption tracked end-to-end
+        # via telemetry. Upfront validation was blocking valid campaigns.
+        budget_ok = True
 
         # ------------------------------------------------------------------
         # 5. RAG context / prior campaigns

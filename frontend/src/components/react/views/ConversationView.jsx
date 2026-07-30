@@ -35,6 +35,7 @@ import { Badge } from '../ui/Badge.jsx';
 import { ReviewCard } from '../ReviewCard.jsx';
 import { CampaignDetailModal, campaignTitle, ChannelIcon } from '../CampaignCard.jsx';
 import { SimilarCampaignModal } from '../SimilarCampaignModal.jsx';
+import { SampleBriefModal } from '../SampleBriefModal.jsx';
 import { cn } from '@/lib/cn.js';
 import { useWebSocket } from '../hooks/useWebSocket.js';
 import { useSSE } from '../hooks/useSSE.js';
@@ -42,7 +43,6 @@ import { useAuth } from '../hooks/useAuth.js';
 import {
   archiveConversation,
   createConversation,
-  estimateBudget,
   fetchCampaign,
   fetchCampaignReplay,
   fetchCampaignStats,
@@ -70,19 +70,22 @@ const RERUN_NODES = [
   'publishing_agent',
 ];
 
+// Format brief field values for display. token_budget removed from user-facing
+// collection (2026-07-29) — backend auto-defaults it, so it never needs a value here.
 function briefValue(brief, key) {
   const v = brief?.[key];
-  if (key === 'token_budget') return Number(v || 0) > 0 ? `${Number(v).toLocaleString()} tokens` : '';
   if (Array.isArray(v)) return v;
   return typeof v === 'string' ? v : '';
 }
 
+// Brief collection steps — fields user must fill before campaign submission.
+// token_budget removed (2026-07-29): no longer asked from users; backend auto-defaults
+// it and tracks actual consumption end-to-end.
 const BRIEF_STEP_DEFS = [
   { key: 'objective', label: 'Objective' },
   { key: 'channels', label: 'Channels' },
   { key: 'locales', label: 'Locales' },
   { key: 'audience_segments', label: 'Audience segments' },
-  { key: 'token_budget', label: 'Token budget' },
 ];
 
 // Shared by the read-only sidebar checklist and the inline chat picker so
@@ -98,7 +101,8 @@ function computeBriefSteps(brief) {
 
 // Fields that get a structured picker inline in chat (item 23/23a).
 // Objective stays free-text — it was never in scope for a picker.
-const PICKER_STEP_KEYS = new Set(['channels', 'locales', 'audience_segments', 'token_budget']);
+// token_budget is auto-set, hidden from user (2026-07-29): tracking consumption end-to-end.
+const PICKER_STEP_KEYS = new Set(['channels', 'locales', 'audience_segments']);
 
 // Structured brief-input pickers (next_tasks.md item 23, 2026-07-27) — a
 // pill/dropdown/tier selection patches the brief directly via
@@ -334,87 +338,10 @@ function SegmentDropdownPicker({ conversationId, brandId, currentValue, onSelect
   );
 }
 
-function BudgetTierPicker({ conversationId, brief, onSelected }) {
-  const [tiers, setTiers] = useState([]);
-  const [customValue, setCustomValue] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    estimateBudget(conversationId, {
-      channels: brief?.channels || [],
-      locales: brief?.locales || [],
-      audienceSegments: brief?.audience_segments || [],
-    })
-      .then((res) => {
-        if (!cancelled) setTiers(res.tiers || []);
-      })
-      .catch(() => {
-        if (!cancelled) setError('Could not estimate budget tiers');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId]);
-
-  const submitTokens = async (tokens) => {
-    setSubmitting(true);
-    setError('');
-    try {
-      const res = await setBriefField(conversationId, 'token_budget', tokens);
-      onSelected(res, `Token budget: ${tokens.toLocaleString()} tokens`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to set token budget');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  if (loading) return <p className="mt-2 text-xs text-faint">Estimating budget…</p>;
-
-  return (
-    <div className="mt-2 space-y-2">
-      <div className="flex flex-wrap gap-1.5">
-        {tiers.map((tier) => (
-          <button
-            key={tier.tokens}
-            type="button"
-            onClick={() => submitTokens(tier.tokens)}
-            disabled={submitting}
-            className="rounded-full border border-border bg-surface px-2.5 py-1 text-xs font-medium text-muted transition-colors hover:border-border-strong hover:text-fg disabled:opacity-60"
-          >
-            {tier.tokens.toLocaleString()} tokens
-          </button>
-        ))}
-      </div>
-      <div className="flex items-center gap-2">
-        <input
-          type="number"
-          min="1"
-          value={customValue}
-          onChange={(e) => setCustomValue(e.target.value)}
-          placeholder="Custom amount"
-          className="h-8 w-32 rounded-lg border border-border bg-surface px-2 text-xs text-fg placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-brand"
-        />
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => submitTokens(Number(customValue))}
-          disabled={!customValue || Number(customValue) <= 0 || submitting}
-        >
-          Use custom
-        </Button>
-      </div>
-      {error ? <p className="text-[11px] text-danger">{error}</p> : null}
-    </div>
-  );
-}
+// BudgetTierPicker removed (2026-07-29): token_budget is no longer collected from
+// users — it's auto-set to a safe default and actual consumption is tracked
+// end-to-end via telemetry. The inline budget-tier chooser and its estimateBudget
+// call are no longer needed.
 
 // Read-only progress summary — the "up next" step's picker now lives inline
 // in the chat transcript (ChatThreadPanel), not here. Kept this component
@@ -892,6 +819,7 @@ function ChatThreadPanel({
   statusStage,
   campaignEvents,
   campaignStatus,
+  onOpenSampleBrief,
 }) {
   const stageBadges = [
     conversationStage && { label: conversationStage.replaceAll('_', ' '), key: 'stage' },
@@ -1027,9 +955,8 @@ function ChatThreadPanel({
                 currentValue={brief?.audience_segments}
                 onSelected={onBriefUpdated}
               />
-            ) : currentBriefStep.key === 'token_budget' ? (
-              <BudgetTierPicker conversationId={conversationId} brief={brief} onSelected={onBriefUpdated} />
             ) : null}
+            {/* token_budget picker removed (2026-07-29): auto-set, no longer collected from users */}
           </div>
         ) : null}
 
@@ -1186,6 +1113,13 @@ function ChatThreadPanel({
         ) : null}
         {suggestedPrompts.length > 0 && !campaignId && !draftCampaign && !similarCampaign ? (
           <div className="mb-2 flex flex-wrap gap-1.5">
+            <button
+              type="button"
+              onClick={onOpenSampleBrief}
+              className="rounded-full border border-border bg-surface px-2.5 py-1 text-xs text-muted transition-colors hover:border-brand hover:text-brand disabled:opacity-50"
+            >
+               View Sample Brief
+            </button>
             {suggestedPrompts.map((prompt) => (
               <button
                 key={prompt}
@@ -1210,7 +1144,8 @@ function ChatThreadPanel({
                 key={q}
                 type="button"
                 onClick={() => sendPrompt(q)}
-                className="rounded-full border border-border bg-surface px-2.5 py-1 text-xs text-muted transition-colors hover:border-brand hover:text-brand"
+                disabled={!canChat || waitingForReply}
+                className="rounded-full border border-border bg-surface px-2.5 py-1 text-xs text-muted transition-colors hover:border-brand hover:text-brand disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {q}
               </button>
@@ -1290,7 +1225,17 @@ function RecentConversationsPanel({
             <p className="mt-2 text-sm text-muted">No conversations yet</p>
           </div>
         ) : (
-          recentConversations.map((session) => {
+          recentConversations
+            // Filter out incomplete conversations: those still in 'collecting' status
+            // with no campaign attached and default titles
+            .filter((session) => {
+              const displayStatus = session.campaign_status || session.status || 'collecting';
+              const title = conversationTitle(session);
+              // Hide empty conversations in collecting phase (no campaign created yet)
+              const isEmptyCollecting = displayStatus === 'collecting' && !session.campaign_id;
+              return !isEmptyCollecting;
+            })
+            .map((session) => {
             const isActive = session.conversation_id === conversationId;
             const updated = session.updated_at ? relativeTime(session.updated_at) : '';
             const title = conversationTitle(session);
@@ -2745,6 +2690,7 @@ export function ConversationView() {
   const [clarificationTarget, setClarificationTarget] = useState('');
   const [briefFieldStates, setBriefFieldStates] = useState([]);
   const [suggestedPrompts, setSuggestedPrompts] = useState([]);
+  const [sampleBriefModalOpen, setSampleBriefModalOpen] = useState(false);
   const [status, setStatus] = useState('idle');
   const [error, setError] = useState('');
   const [rerunNode, setRerunNode] = useState('content_generator');
@@ -3493,6 +3439,7 @@ export function ConversationView() {
               statusStage={statusStage}
               campaignEvents={mergedEvents}
               campaignStatus={campaignStatus}
+              onOpenSampleBrief={() => setSampleBriefModalOpen(true)}
             />
 
             {reviewModalCampaignId ? (
@@ -3514,6 +3461,11 @@ export function ConversationView() {
                 onLoadConversation={loadConversationById}
               />
             ) : null}
+
+            <SampleBriefModal
+              open={sampleBriefModalOpen}
+              onClose={() => setSampleBriefModalOpen(false)}
+            />
 
             <WorkspaceInspector
               brief={brief}

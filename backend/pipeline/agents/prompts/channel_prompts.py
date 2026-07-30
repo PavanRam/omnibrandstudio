@@ -71,7 +71,15 @@ _SYSTEM_TEMPLATE = (
     "GROUNDING — NO INVENTED CLAIMS:\n"
     "Only include claims, statistics, product features, or offers that are explicitly "
     "present in the campaign objective, key messages, or brand guide excerpts below. "
-    "Do not invent discounts, deadlines, URLs, or endorsements."
+    "Do not invent discounts, deadlines, URLs, or endorsements.\n"
+    "ABSOLUTELY NO FABRICATED NUMBERS: never invent quantified performance claims — "
+    "no percentages, multipliers, dollar amounts, time savings, ratings, user counts, "
+    "or ROI figures (e.g. 'cut costs by 30%', 'boost speed by 25%', '10x faster', "
+    "'trusted by 5,000 teams') unless that exact figure appears verbatim in the brief "
+    "or brand guide excerpts. Unsubstantiated statistics are treated as factual "
+    "fabrication and will cause the content to be auto-rejected by the compliance "
+    "judges. When you have no sourced number, describe the benefit qualitatively "
+    "instead (e.g. 'reduce costs', 'work faster') — never attach a made-up figure."
 )
 
 _USER_TEMPLATE = (
@@ -85,7 +93,10 @@ _USER_TEMPLATE = (
     "Write one new {channel} post that follows the system instructions exactly.\n"
     "Ensure the output includes ALL required elements with proper formatting.\n"
     "Stay within {char_limit} characters — this is a HARD LIMIT, not a guideline.\n"
-    "Only include claims and offers present in the brief above. Do not invent any."
+    "Only include claims and offers present in the brief above. Do not invent any.\n"
+    "Do NOT attach any percentage, multiplier, dollar amount, or other statistic "
+    "unless it appears verbatim in the brief or brand guide — fabricated numbers are "
+    "auto-rejected. Prefer qualitative benefit language when you have no sourced figure."
 )
 
 

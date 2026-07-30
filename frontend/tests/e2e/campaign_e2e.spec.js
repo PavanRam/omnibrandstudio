@@ -146,10 +146,10 @@ test.describe('OmniBrand Studio — Campaign E2E', () => {
     await page.locator('input[type="password"]').fill(ADMIN_PASSWORD);
     await page.getByRole('button', { name: /sign in/i }).click();
 
-    // Should redirect to /app after login
-    await expect(page).toHaveURL(/\/app/, { timeout: 20_000 });
-    // Workspace heading visible — use first() to handle multiple "Campaign Studio" headings
-    await expect(page.getByRole('heading', { name: /campaign studio/i }).first()).toBeVisible({
+    // Should redirect to /studio after login
+    await expect(page).toHaveURL(/\/studio/, { timeout: 20_000 });
+    // Studio workspace visible
+    await expect(page.getByRole('button', { name: /start new conversation/i })).toBeVisible({
       timeout: 10_000,
     });
   });
@@ -159,10 +159,10 @@ test.describe('OmniBrand Studio — Campaign E2E', () => {
   // ─────────────────────────────────────────────────────────────────────────
   test('2 · Sample brief chip populates the message input', async ({ page }) => {
     await injectAuth(page, accessToken, refreshToken);
-    await page.goto('/app');
+    await page.goto('/studio');
 
-    // Workspace should load with Campaign Studio heading (use .first() — multiple h1/h2 share this name)
-    await expect(page.getByRole('heading', { name: /campaign studio/i }).first()).toBeVisible({
+    // Workspace should load
+    await expect(page.getByRole('button', { name: /start new conversation/i })).toBeVisible({
       timeout: 15_000,
     });
 
@@ -192,9 +192,9 @@ test.describe('OmniBrand Studio — Campaign E2E', () => {
   test('3 · Submit brief, confirm, and launch campaign', async ({ page }) => {
     test.setTimeout(200_000);
     await injectAuth(page, accessToken, refreshToken);
-    await page.goto('/app');
+    await page.goto('/studio');
 
-    await expect(page.getByRole('heading', { name: /campaign studio/i }).first()).toBeVisible({
+    await expect(page.getByRole('button', { name: /start new conversation/i })).toBeVisible({
       timeout: 15_000,
     });
 

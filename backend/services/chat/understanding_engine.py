@@ -32,7 +32,10 @@ _UNDERSTANDING_PROMPT = (
     "check_status/explain_progress/show_agent_output/view_history = campaign monitoring; "
     "iterate_campaign/rerun_campaign = improvement or rerun requests; "
     "ask_product = product capability questions; "
-    "greeting = conversational opener with no concrete request.\n"
+    "greeting = a conversational opener with no concrete request (e.g. 'hi', 'hello there'); "
+    "other = anything off-topic or unrelated to campaigns, including general-knowledge or "
+    "small-talk questions such as 'what's the weather today?', trivia, or jokes. A factual "
+    "off-topic question is 'other', NOT 'greeting', even on the first turn.\n"
     "For output requests, if the user asks to see generated content, agent output, step output, "
     "or 'what content_generator produced', classify as show_agent_output (even if the brief is complete).\n"
     "Do not classify campaign-monitoring questions as collect_brief or submit_campaign unless the user "
@@ -53,7 +56,8 @@ _UNDERSTANDING_PROMPT = (
     "phrase as a custom segment label instead of leaving this empty — do NOT require the "
     "user to restate a fixed category just because target_audience already captured similar "
     "wording.\n"
-    "- token_budget (integer): numeric generation budget\n"
+    # token_budget removed (2026-07-29): no longer collected from users; auto-set to safe
+    # default and actual consumption tracked end-to-end via telemetry.
     "- end_date (string, OPTIONAL): a campaign validity/expiry date the user "
     "mentions, e.g. 'runs through March 31', 'valid until 2026-08-15', 'ends "
     "next Friday'. Extract it in whatever form the user stated it (don't "
@@ -75,7 +79,7 @@ _UNDERSTANDING_PROMPT = (
     '"requires_action": false, "mutation_intent": false},\n'
     '  "brief": {"objective": null, "target_audience": null, "key_messages": [], '
     '"tone_override": null, "channels": [], "locales": [], "audience_segments": [], '
-    '"token_budget": null, "end_date": null},\n'
+    '"end_date": null},\n'
     '  "field_confidence": {}\n'
     "}\n"
     "\n"
@@ -88,7 +92,7 @@ _UNDERSTANDING_PROMPT = (
     "\"brief\": {\"objective\": \"drive qualified demo requests\", \"target_audience\": "
     "\"enterprise IT leaders\", \"key_messages\": [], \"tone_override\": null, "
     "\"channels\": [\"linkedin\", \"email\"], \"locales\": [], \"audience_segments\": "
-    "[\"enterprise\"], \"token_budget\": null}, \"field_confidence\": {\"objective\": 0.9, "
+    "[\"enterprise\"]}, \"field_confidence\": {\"objective\": 0.9, "
     "\"target_audience\": 0.88, \"channels\": 0.95, \"audience_segments\": 0.8}}\n"
     "\n"
     "EDGE-CASE EXAMPLES\n"
@@ -99,7 +103,7 @@ _UNDERSTANDING_PROMPT = (
     "\"confidence\": 0.95, \"requires_action\": false, \"mutation_intent\": true}, "
     "\"brief\": {\"objective\": null, \"target_audience\": null, \"key_messages\": [], "
     "\"tone_override\": \"formal\", \"channels\": [], \"locales\": [], "
-    "\"audience_segments\": [], \"token_budget\": null}, "
+    "\"audience_segments\": []}, "
     "\"field_confidence\": {\"tone_override\": 0.95}}\n"
     "\n"
     "Example 3 (vague message with an active campaign):\n"
@@ -108,8 +112,8 @@ _UNDERSTANDING_PROMPT = (
     "Output: {\"intent\": {\"primary\": \"check_status\", \"secondary\": [], "
     "\"confidence\": 0.8, \"requires_action\": false, \"mutation_intent\": false}, "
     "\"brief\": {\"objective\": null, \"target_audience\": null, \"key_messages\": [], "
-    "\"tone_override\": null, \"channels\": [], \"locales\": [], \"audience_segments\": [], "
-    "\"token_budget\": null}, \"field_confidence\": {}}"
+    "\"tone_override\": null, \"channels\": [], \"locales\": [], \"audience_segments\": []}, "
+    "\"field_confidence\": {}}"
 )
 
 _BRIEF_FIELDS = (
@@ -120,7 +124,7 @@ _BRIEF_FIELDS = (
     "channels",
     "locales",
     "audience_segments",
-    "token_budget",
+    # token_budget removed (2026-07-29): no longer collected from users
     "end_date",
 )
 

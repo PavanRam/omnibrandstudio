@@ -291,66 +291,66 @@ export function CampaignCard({ campaign, onOpen, onArchived }) {
           onOpen(campaign.campaign_id);
         }
       }}
-      className="group relative flex cursor-pointer flex-col overflow-hidden rounded-2xl border border-border bg-surface p-4 text-left transition-all hover:-translate-y-0.5 hover:border-border-strong hover:card-shadow focus:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+      className="group flex cursor-pointer flex-col overflow-hidden rounded-2xl border border-border bg-surface text-left transition-all hover:-translate-y-0.5 hover:border-border-strong hover:card-shadow focus:outline-none focus-visible:ring-2 focus-visible:ring-brand"
     >
-      {/* top accent that hints the status colour */}
-      <span
-        aria-hidden="true"
-        className={cn('absolute inset-x-0 top-0 h-0.5 opacity-70', {
-          'bg-success': meta.tone === 'success',
-          'bg-brand': meta.tone === 'brand',
-          'bg-warning': meta.tone === 'warning',
-          'bg-danger': meta.tone === 'danger',
-          'bg-border-strong': meta.tone === 'muted',
+      {/* ── Zone 1: status-ambient header ── */}
+      {/* Very subtle background tint = status at a glance without reading the pill */}
+      <div
+        className={cn('px-5 pt-5 pb-4', {
+          'bg-success/[0.12]': meta.tone === 'success',
+          'bg-brand/[0.10]': meta.tone === 'brand',
+          'bg-warning/[0.14]': meta.tone === 'warning',
+          'bg-danger/[0.12]': meta.tone === 'danger',
         })}
-      />
-      {showArchive && (
-        <button
-          type="button"
-          onClick={handleArchive}
-          disabled={archiving}
-          title="Archive this campaign"
-          className="absolute right-2 top-3 hidden size-7 items-center justify-center rounded-lg bg-surface text-faint shadow-sm transition-colors hover:bg-surface-2 hover:text-fg group-hover:flex disabled:opacity-60"
-        >
-          <Archive size={14} aria-hidden="true" />
-        </button>
-      )}
-      <header className="flex items-center justify-between gap-2">
-        <StatusPill status={campaign.status} />
-        <span className="text-xs text-faint">{relativeTime(campaign.created_at)}</span>
-      </header>
+      >
+        {/* Row: status pill · time · archive */}
+        <div className="flex items-center justify-between gap-2">
+          <StatusPill status={campaign.status} />
+          <div className="flex shrink-0 items-center gap-1.5">
+            <span className="text-xs text-faint">{relativeTime(campaign.created_at)}</span>
+            {showArchive && (
+              <button
+                type="button"
+                onClick={handleArchive}
+                disabled={archiving}
+                title="Archive"
+                className="hidden size-6 items-center justify-center rounded-md text-faint transition-colors hover:bg-black/10 hover:text-fg group-hover:flex disabled:opacity-60 dark:hover:bg-white/10"
+              >
+                <Archive size={13} aria-hidden="true" />
+              </button>
+            )}
+          </div>
+        </div>
 
-      <div className="mt-3 min-w-0">
-        {title ? (
-          <>
-            <p className="truncate text-sm font-medium text-fg">{title}</p>
-            <div className="mt-1">
-              <CopyId id={campaign.campaign_id} />
-            </div>
-          </>
-        ) : (
-          <>
-            <p className="text-[11px] font-medium uppercase tracking-wide text-faint">Campaign</p>
-            <CopyId id={campaign.campaign_id} />
-          </>
-        )}
+        {/* Title — the hero element */}
+        <div className="mt-3">
+          {title ? (
+            <p className="line-clamp-2 text-sm font-semibold leading-snug text-fg">{title}</p>
+          ) : (
+            <p className="text-sm italic text-faint">Untitled campaign</p>
+          )}
+        </div>
       </div>
 
-      <div className="mt-4 grid grid-cols-2 gap-3 border-t border-border pt-3">
-        <div>
-          <p className="text-[11px] font-medium uppercase tracking-wide text-faint">Variants</p>
-          <p className="mt-0.5 text-sm font-semibold text-fg">{campaign.variant_count ?? 0}</p>
-        </div>
-        <div>
-          <p className="text-[11px] font-medium uppercase tracking-wide text-faint">Cost</p>
-          <p className="mt-0.5 text-sm font-semibold text-fg">
+      {/* ── Zone 2: details body ── */}
+      <div className="flex flex-1 flex-col px-5 pt-3 pb-5">
+        <CopyId id={campaign.campaign_id} />
+
+        {/* Metrics row — pushed to bottom of card */}
+        <div className="mt-auto flex items-center justify-between pt-4">
+          <div className="flex items-center gap-1.5 text-faint">
+            <Layers size={13} className="shrink-0" aria-hidden="true" />
+            <span className="text-sm font-semibold text-fg">{campaign.variant_count ?? 0}</span>
+            <span className="text-xs">variants</span>
+          </div>
+          <span className="text-xs font-medium tabular-nums text-faint">
             ${Number(campaign.cost_usd || 0).toFixed(4)}
-          </p>
+          </span>
         </div>
-      </div>
 
-      <div className="mt-3 flex items-center gap-1.5 text-[11px] text-faint">
-        <span className="truncate font-mono">brand {shortId(campaign.brand_id)}</span>
+        <p className="mt-1.5 truncate font-mono text-[11px] text-faint">
+          brand {shortId(campaign.brand_id)}
+        </p>
       </div>
     </article>
   );
@@ -358,15 +358,23 @@ export function CampaignCard({ campaign, onOpen, onArchived }) {
 
 export function CardSkeleton() {
   return (
-    <div className="rounded-2xl border border-border bg-surface p-4">
-      <div className="flex items-center justify-between">
-        <div className="shimmer relative h-6 w-24 overflow-hidden rounded-full bg-surface-2" />
-        <div className="shimmer relative h-3 w-12 overflow-hidden rounded bg-surface-2" />
+    <div className="flex flex-col overflow-hidden rounded-2xl border border-border bg-surface">
+      {/* Header zone shimmer */}
+      <div className="bg-surface-2/40 px-5 pt-5 pb-4">
+        <div className="flex items-center justify-between">
+          <div className="shimmer relative h-6 w-24 overflow-hidden rounded-full bg-surface-2" />
+          <div className="shimmer relative h-3 w-10 overflow-hidden rounded bg-surface-2" />
+        </div>
+        <div className="shimmer relative mt-3 h-4 w-3/4 overflow-hidden rounded bg-surface-2" />
+        <div className="shimmer relative mt-1.5 h-4 w-2/4 overflow-hidden rounded bg-surface-2" />
       </div>
-      <div className="shimmer relative mt-4 h-4 w-32 overflow-hidden rounded bg-surface-2" />
-      <div className="mt-4 grid grid-cols-2 gap-3 border-t border-border pt-3">
-        <div className="shimmer relative h-8 overflow-hidden rounded bg-surface-2" />
-        <div className="shimmer relative h-8 overflow-hidden rounded bg-surface-2" />
+      {/* Body zone shimmer */}
+      <div className="px-5 pt-3 pb-5">
+        <div className="shimmer relative h-3 w-28 overflow-hidden rounded bg-surface-2" />
+        <div className="mt-4 flex items-center justify-between">
+          <div className="shimmer relative h-4 w-20 overflow-hidden rounded bg-surface-2" />
+          <div className="shimmer relative h-3 w-14 overflow-hidden rounded bg-surface-2" />
+        </div>
       </div>
     </div>
   );

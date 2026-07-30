@@ -72,15 +72,12 @@ export function CampaignsGalleryView() {
 
   const filters = useMemo(
     () => [
-      { key: 'all', label: 'All', count: campaigns.length },
-      { key: 'published', label: 'Published', count: stats.published },
-      { key: 'active', label: 'In progress', count: stats.active },
-      {
-        key: 'failed',
-        label: 'Failed',
-        count: campaigns.filter((c) => ['failed', 'cancelled'].includes((c.status || '').toLowerCase()))
-          .length,
-      },
+      { key: 'all',       label: 'All',        count: campaigns.length,       activeClass: 'bg-brand/15 text-brand',           badgeClass: 'bg-brand/20 text-brand' },
+      { key: 'published', label: 'Published',   count: stats.published,        activeClass: 'bg-success/15 text-success',        badgeClass: 'bg-success/20 text-success' },
+      { key: 'active',    label: 'In progress', count: stats.active,           activeClass: 'bg-warning/15 text-warning',        badgeClass: 'bg-warning/20 text-warning' },
+      { key: 'failed',    label: 'Failed',
+        count: campaigns.filter((c) => ['failed', 'cancelled'].includes((c.status || '').toLowerCase())).length,
+        activeClass: 'bg-danger/15 text-danger', badgeClass: 'bg-danger/20 text-danger' },
     ],
     [campaigns, stats],
   );
@@ -156,7 +153,7 @@ export function CampaignsGalleryView() {
               className={cn(
                 'inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium transition-colors',
                 filter === f.key
-                  ? 'bg-brand text-brand-fg'
+                  ? f.activeClass
                   : 'text-muted hover:bg-surface-2 hover:text-fg',
               )}
             >
@@ -164,7 +161,7 @@ export function CampaignsGalleryView() {
               <span
                 className={cn(
                   'rounded-full px-1.5 text-xs',
-                  filter === f.key ? 'bg-brand-fg/20 text-brand-fg' : 'bg-surface-2 text-faint',
+                  filter === f.key ? f.badgeClass : 'bg-surface-2 text-faint',
                 )}
               >
                 {f.count}
@@ -197,13 +194,13 @@ export function CampaignsGalleryView() {
       {/* Content */}
       <div className="mt-5">
         {loading ? (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {Array.from({ length: 8 }).map((_, i) => (
               <CardSkeleton key={i} />
             ))}
           </div>
         ) : visible.length > 0 ? (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {visible.map((c) => (
               <CampaignCard key={c.campaign_id} campaign={c} onOpen={setActiveCampaignId} onArchived={load} />
             ))}

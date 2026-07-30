@@ -23,11 +23,23 @@ async def get_recent_campaigns(
                     c.brand_id,
                     c.status,
                     c.created_at,
-                    c.token_cost_usd,
+                    -- Prefer attribution sum when token_cost_usd is 0 or NULL
+                    -- (persist_draft_batch historically skipped the rollup;
+                    --  the detail endpoint has the same fallback logic).
+                    COALESCE(
+                        NULLIF(c.token_cost_usd, 0),
+                        attr.attribution_total,
+                        0
+                    ) AS token_cost_usd,
                     c.brief->>'objective' AS objective,
                     c.brief->>'target_audience' AS target_audience,
                     COUNT(v.task_id) AS variant_count
                 FROM campaigns c
+                LEFT JOIN (
+                    SELECT campaign_id, SUM(total_cost_usd) AS attribution_total
+                    FROM campaign_cost_attribution
+                    GROUP BY campaign_id
+                ) attr ON attr.campaign_id = c.id
                 LEFT JOIN (
                     -- Edits INSERT a fresh row per re-run rather than
                     -- updating in place — count only the newest row per

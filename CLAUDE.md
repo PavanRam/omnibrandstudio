@@ -209,9 +209,6 @@ Schema field addition → update in this order, one response:
 ### Read only what you need
 Large files (`state.py`, `schemas.py`, `alembic/versions/001_*.py`): read only the relevant section or function, not the whole file. Use line ranges in the Read tool.
 
-### No automated browser testing — ever
-Never drive a browser automation tool against this app to test it — no clicking through the UI, no live campaign click-throughs, no "let me verify this in the browser." This is a hard rule with no round limit: it applies on attempt 1 just as much as attempt 5. **The user does all live/UI testing themselves.** For UI/frontend changes, verify via code review, unit/integration tests, or backend checks (curl, psql) that don't require a browser, then tell the user what to check and let them do it.
-
 ### Debugging discipline — cap live-verification rounds
 A "live test" here means anything that triggers the real paid pipeline (`POST /campaigns/{id}/rerun`, a worker-processed campaign, or any path that calls `traced_llm_call` against real Claude/OpenAI/Gemini) — each pass costs real money (content generation + up to 3 judge calls). This applies to curl/API-driven live tests too, not just browser ones (which are excluded entirely per the rule above).
 

@@ -196,7 +196,7 @@ def _brief_playback_message(brief: PartialBrief) -> str:
         lines.append(f"- Key messages: {', '.join(brief.key_messages)}")
     if brief.tone_override:
         lines.append(f"- Tone: {brief.tone_override}")
-    lines.append(f"- Token budget: {brief.token_budget or '(none)'}")
+    # token_budget removed from playback (2026-07-29): no longer collected from users.
     lines.append("")
     lines.append(
         "Shall I run the campaign with this? Reply 'yes' to start, or tell me what to change."
@@ -256,6 +256,12 @@ def _select_assistant_message(
         return planner_output.next_question or (
             "Hey, great to collaborate on this. "
             "What are you launching, and who do you most want to reach first?"
+        )
+
+    if planner_output and planner_output.reply_strategy == "witty_redirect":
+        return (
+            "Ha — that's a bit outside my wheelhouse; I'm more of a campaign person. "
+            "Speaking of which, what are you looking to launch, and who do you want to reach?"
         )
 
     if brief.is_complete():
@@ -1109,16 +1115,25 @@ _KNOWN_AGENTS: tuple[str, ...] = (
     "publishing_agent",
 )
 
-_AGENT_TARGET_PROMPT = (
-    "The user is asking about a running campaign's agent output. Given their message "
-    "and the list of known pipeline agents, decide which agent(s) they mean.\n\n"
+AGENT_TARGET_PROMPT = (
+    "You are a narrow classifier for resolving which running-campaign pipeline agent(s) "
+    "the user is referring to.\n\n"
     f"Known agents: {', '.join(_KNOWN_AGENTS)}\n\n"
-    'Reply with ONLY a JSON object: {"agents": [...]}\n'
-    '- If the user names one or more specific agents (even loosely, e.g. "the judges" '
-    'means all three judge_* agents), list exactly those agent names.\n'
-    '- If the user wants everything (e.g. "all of them", "both", "everything", '
-    '"show me all the outputs"), return every known agent name.\n'
-    "- If the message gives no usable signal at all, return an empty list."
+    "Task: infer the intended agent names from the user's message.\n"
+    'Reply with ONLY a valid JSON object in the form: {"agents": [...]}.\n\n'
+    "Rules:\n"
+    "- Return only agent names from the known agents list.\n"
+    "- If the user names one or more specific agents, return exactly those known agent names.\n"
+    "- Match loosely phrased references when the intent is clear, including singular/plural forms, "
+    "common synonyms, role labels, and group references.\n"
+    '- Example: "the judges" should map to all judge_* agents if that meaning is clear.\n'
+    '- Example: "all of them", "both", "everything", or "show me all outputs" should return every known agent name.\n'
+    "- If the user explicitly asks for a subset, return only that subset.\n"
+    "- Do not include agents mentioned only as examples, comparisons, negations, or things the user says they do not want.\n"
+    "- If the message is ambiguous between multiple agent sets, return the smallest set that is clearly supported.\n"
+    "- If no usable signal exists, return an empty list.\n"
+    "- Do not guess, explain, add prose, add markdown, or include any keys other than agents.\n"
+    "- Preserve the canonical spelling of each agent name exactly as it appears in Known agents.\n"
 )
 
 
@@ -1280,7 +1295,9 @@ async def _enqueue_campaign(
         "channels": brief.channels,
         "locales": brief.locales,
         "audience_segments": brief.audience_segments,
-        "token_budget": brief.token_budget or 0,
+        # token_budget no longer collected from users (2026-07-29): default to a safe
+        # 200k so intake's >0 sanity check passes; actual usage tracked end-to-end.
+        "token_budget": brief.token_budget or 200000,
         "raw_text": brief.raw_text,
     }
 

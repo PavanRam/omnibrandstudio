@@ -71,6 +71,10 @@ def check_budget(
     audience_segments: list[str],
 ) -> list[str]:
     """Return a list of budget-violation messages, or [] if the budget is sufficient.
+    
+    Note: token_budget is no longer collected from users (2026-07-29); system provides
+    a default high value (200k tokens) to accommodate multi-agent pipeline and tracks actual
+    usage end-to-end. This validation remains as a safety check to prevent runaway costs.
 
     Only call this after field validation has confirmed all three lists are
     non-empty and token_budget > 0.

@@ -193,8 +193,25 @@ async def persist_draft_batch(state: dict) -> int:
                     },
                 )
 
+        # 2026-07-29: previously only set status='draft' — token_cost_usd was
+        # never rolled up on the normal completion path (persist_draft_batch is
+        # called for all successful campaign runs, not the error/published paths
+        # which correctly do the SUM rollup in worker/main.py). This caused
+        # every draft campaign to show $0 in the UI. Mirrors the identical
+        # rollup pattern in worker/main.py lines ~235 and ~285.
         await conn.execute(
-            text("UPDATE campaigns SET status = 'draft' WHERE id = CAST(:cid AS UUID)"),
+            text(
+                """
+                UPDATE campaigns
+                SET status = 'draft',
+                    token_cost_usd = COALESCE((
+                        SELECT SUM(total_cost_usd)
+                        FROM campaign_cost_attribution
+                        WHERE campaign_id = CAST(:cid AS UUID)
+                    ), 0)
+                WHERE id = CAST(:cid AS UUID)
+                """
+            ),
             {"cid": campaign_id},
         )
         await conn.commit()

@@ -593,6 +593,16 @@ export async function listCustomerSegments(brandId, locale, version = '') {
   return response.json();
 }
 
+export async function getSegmentCollectionInfo(brandId) {
+  const response = await fetchWithAutoRefresh(`${API_BASE}/knowledge/segments/${brandId}/info`, {
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    throw new Error(`segment collection info failed: ${response.status}`);
+  }
+  return response.json();
+}
+
 export async function listGoldenSets(brandId) {
   const response = await fetchWithAutoRefresh(`${API_BASE}/knowledge/golden-dataset/sets/${brandId}`, {
     headers: authHeaders(),
@@ -669,6 +679,73 @@ export async function deleteGoldenExample({ brandId, exampleId }) {
   );
   if (!response.ok) {
     throw new Error(`golden example delete failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function updateGoldenExample({
+  exampleId,
+  brandId,
+  description,
+  expected_content,
+  expected_brand_score,
+  status,
+  known_hallucination_traps,
+}) {
+  const params = new URLSearchParams({ brand_id: brandId });
+  const response = await fetchWithAutoRefresh(
+    `${API_BASE}/knowledge/golden-dataset/example/${exampleId}?${params.toString()}`,
+    {
+      method: 'PATCH',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        description,
+        expected_content,
+        expected_brand_score,
+        status,
+        known_hallucination_traps,
+      }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`golden example update failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function addGoldenExample({
+  brandId,
+  set_id,
+  channel,
+  description,
+  brief,
+  expected_content,
+  expected_brand_score,
+  status = 'silver',
+  known_hallucination_traps,
+  locale,
+}) {
+  const response = await fetchWithAutoRefresh(
+    `${API_BASE}/knowledge/golden-dataset/example`,
+    {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        brand_id: brandId,
+        set_id,
+        channel,
+        description,
+        brief,
+        expected_content,
+        expected_brand_score,
+        status,
+        known_hallucination_traps,
+        locale,
+      }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`golden example add failed: ${response.status}`);
   }
   return response.json();
 }

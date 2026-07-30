@@ -124,5 +124,5 @@ def judge_gate_router(state: OmniBrandState) -> list[str] | str:
     if mode == "skip":
         return "review_gate"
     if mode == "lite":
-        return ["judge_claude"]
-    return ["judge_claude", "judge_gpt4o", "judge_llama"]
+        return ["judge_1"]
+    return ["judge_1", "judge_2", "judge_3"]

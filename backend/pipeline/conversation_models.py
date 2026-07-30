@@ -80,6 +80,7 @@ ConversationStage = Literal[
     "pipeline_monitoring",
     "artifact_exploration",
     "campaign_iteration",
+    "general_assistance",
 ]
 
 
@@ -149,6 +150,8 @@ class PartialBrief(BaseModel):
     channels: list[str] = Field(default_factory=list)
     locales: list[str] = Field(default_factory=list)
     audience_segments: list[str] = Field(default_factory=list)
+    # token_budget no longer collected from users; system tracks end-to-end consumption (2026-07-29)
+    # Kept for backward compatibility but not required in brief collection
     token_budget: int | None = None
     # Optional campaign validity end-date ("this offer runs through March
     # 31") — deliberately NOT in missing_slots()/is_complete(), doesn't
@@ -167,10 +170,8 @@ class PartialBrief(BaseModel):
             missing.append("locales")
         if not self.audience_segments:
             missing.append("audience_segments")
-        if self.token_budget is None or self.token_budget <= 0:
-            missing.append("token_budget")
-        elif "token_budget" not in missing and self.budget_shortfall() is not None:
-            missing.append("token_budget")
+        # token_budget no longer asked from users; auto-set to 200k on frontend (2026-07-29)
+        # Removed from missing_slots() so conversation doesn't ask for budget guardrail
         return missing
 
     def budget_shortfall(self) -> str | None:

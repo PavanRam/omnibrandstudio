@@ -421,3 +421,151 @@ async def delete_example(
         brand_id=brand_id,
         org_id=org_id,
     )
+
+
+async def update_example(
+    conn: AsyncConnection,
+    *,
+    org_id: str,
+    brand_id: str,
+    example_id: str,
+    description: str | None = None,
+    expected_content: str | None = None,
+    expected_brand_score: float | None = None,
+    status: str | None = None,
+    known_hallucination_traps: list[str] | None = None,
+    actor_id: str | None = None,
+) -> dict[str, Any]:
+    """Update a golden dataset example. Returns the updated example."""
+    # Build dynamic UPDATE statement
+    updates: list[str] = []
+    params: dict[str, Any] = {"example_id": example_id, "org_id": org_id, "brand_id": brand_id}
+    
+    if description is not None:
+        updates.append("description = :description")
+        params["description"] = description
+    if expected_content is not None:
+        updates.append("expected_content = :expected_content")
+        params["expected_content"] = expected_content
+    if expected_brand_score is not None:
+        updates.append("expected_brand_score = :expected_brand_score")
+        params["expected_brand_score"] = expected_brand_score
+    if status is not None:
+        updates.append("status = :status")
+        params["status"] = status
+    if known_hallucination_traps is not None:
+        updates.append("known_hallucination_traps = :known_hallucination_traps")
+        params["known_hallucination_traps"] = json.dumps(known_hallucination_traps)
+    
+    if not updates:
+        raise ValueError("no fields to update")
+    
+    update_clause = ", ".join(updates)
+    result = await conn.execute(
+        text(
+            f"""
+            UPDATE golden_dataset
+            SET {update_clause}
+            WHERE id = :example_id AND org_id = :org_id AND brand_id = :brand_id
+            RETURNING id, description, brief, expected_content, expected_brand_score, status, channel, locale
+            """
+        ),
+        params,
+    )
+    row = result.mappings().first()
+    if row is None:
+        raise ValueError("example not found in tenant scope")
+    
+    await write_audit(
+        conn,
+        entity_type="golden_dataset",
+        action="updated",
+        actor_id=actor_id,
+        entity_id=example_id,
+        brand_id=brand_id,
+        org_id=org_id,
+        after_val=dict(row) if row else {},
+    )
+    
+    return dict(row) if row else {}
+
+
+async def add_example(
+    conn: AsyncConnection,
+    *,
+    org_id: str,
+    brand_id: str,
+    set_id: str,
+    channel: str,
+    description: str,
+    brief: dict[str, Any],
+    expected_content: str,
+    expected_brand_score: float,
+    status: str = "silver",
+    source: str = "human_curated",
+    known_hallucination_traps: list[str] | None = None,
+    locale: str | None = None,
+    actor_id: str | None = None,
+) -> str:
+    """Add a single example to a golden dataset set. Returns the example_id."""
+    # Guard: the set must belong to this tenant
+    guard = await conn.execute(
+        text(
+            "SELECT 1 FROM golden_dataset_set "
+            "WHERE id = :set_id AND org_id = :org_id AND brand_id = :brand_id"
+        ),
+        {"set_id": set_id, "org_id": org_id, "brand_id": brand_id},
+    )
+    if guard.first() is None:
+        raise ValueError("set not found in tenant scope")
+    
+    result = await conn.execute(
+        text(
+            """
+            INSERT INTO golden_dataset
+                (org_id, brand_id, set_id, status, source, created_by,
+                 description, brief, expected_content, expected_brand_score,
+                 known_hallucination_traps, channel, locale)
+            VALUES
+                (:org_id, :brand_id, :set_id, :status, :source, :actor_id,
+                 :description, :brief, :expected_content, :expected_brand_score,
+                 :known_hallucination_traps, :channel, :locale)
+            RETURNING id
+            """
+        ),
+        {
+            "org_id": org_id,
+            "brand_id": brand_id,
+            "set_id": set_id,
+            "status": status,
+            "source": source,
+            "actor_id": actor_id,
+            "description": description,
+            "brief": json.dumps(brief),
+            "expected_content": expected_content,
+            "expected_brand_score": expected_brand_score,
+            "known_hallucination_traps": json.dumps(known_hallucination_traps or []),
+            "channel": channel,
+            "locale": locale,
+        },
+    )
+    example_id = result.scalar_one()
+    
+    await write_audit(
+        conn,
+        entity_type="golden_dataset",
+        action="added",
+        actor_id=actor_id,
+        entity_id=example_id,
+        brand_id=brand_id,
+        org_id=org_id,
+        after_val={
+            "description": description,
+            "channel": channel,
+            "expected_brand_score": expected_brand_score,
+            "status": status,
+            "source": source,
+        },
+    )
+    
+    return example_id

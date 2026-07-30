@@ -112,7 +112,9 @@ export function useAuth() {
     removeSession(KEY);
     setUser(null);
     window.dispatchEvent(new Event('obs:authchange'));
-  }, []);
+    // Redirect to home after logout
+    window.location.href = withBase('/');
+  }, [withBase]);
 
   return { user, login, logout, ready };
 }

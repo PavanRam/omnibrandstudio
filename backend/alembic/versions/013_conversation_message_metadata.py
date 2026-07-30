@@ -6,8 +6,8 @@ brief_changes) were computed live per-turn and sent only over the
 WebSocket, never persisted. Reloading a conversation (page reload, or
 switching away and back) silently lost them, falling back to bare text.
 
-Revision ID: 006
-Revises: 005
+Revision ID: 013
+Revises: 012
 Create Date: 2026-07-26
 """
 from typing import Sequence, Union
@@ -15,8 +15,8 @@ from typing import Sequence, Union
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "006"
-down_revision: Union[str, None] = "005"
+revision: str = "013"
+down_revision: Union[str, None] = "012"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

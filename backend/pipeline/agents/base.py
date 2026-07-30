@@ -21,6 +21,7 @@ log = structlog.get_logger()
 
 __all__ = [
     "traced_llm_call",
+    "traced_llm_call_stream",
     "write_audit",
     "safe_agent_run",
     "publish_campaign_event",
@@ -241,6 +242,29 @@ async def traced_llm_call(
         "output_tokens": output_tokens,
         "latency_ms": latency_ms,
     }
+
+
+async def traced_llm_call_stream(
+    model: str,
+    messages: list[dict],
+    task: str,
+    state: dict,
+    **kwargs: Any,
+):
+    """Compatibility streaming wrapper.
+
+    Some callers expect a chunked async iterator. When upstream streaming is
+    unavailable, we still preserve behavior by yielding one full chunk.
+    """
+    content, _ = await traced_llm_call(
+        model=model,
+        messages=messages,
+        task=task,
+        state=state,
+        **kwargs,
+    )
+    if content:
+        yield content
 
 
 async def safe_agent_run(

@@ -26,6 +26,8 @@ class ConversationPlanner:
         reply_strategy = "complete_brief_followup"
         if stage == "greeting":
             reply_strategy = "greeting"
+        elif stage == "general_assistance":
+            reply_strategy = "witty_redirect"
         elif payload.intent in {"check_status", "explain_progress", "show_agent_output", "view_history"}:
             reply_strategy = "campaign_copilot"
         elif not payload.brief.is_complete() and needs_clarification:
@@ -61,6 +63,13 @@ class ConversationPlanner:
 
         if payload.intent == "greeting" or self._is_greeting(payload.user_message):
             return "greeting"
+
+        # Off-topic / general chit-chat (e.g. "what's the weather?") that carries
+        # no campaign signal is handled by a short witty redirect rather than being
+        # forced into brief collection. Greetings are handled above and take
+        # priority, so this only catches genuine off-topic questions.
+        if payload.intent == "other" and not self._is_greeting(payload.user_message):
+            return "general_assistance"
 
         if payload.brief.is_complete() and not payload.active_campaign_id:
             return "campaign_submission"
@@ -105,6 +114,10 @@ class ConversationPlanner:
     ) -> ConversationObjective:
         if stage == "greeting":
             return "build_rapport"
+
+        if stage == "general_assistance":
+            # Off-topic turn: acknowledge briefly, then steer back to planning.
+            return "answer_product_question"
 
         if needs_clarification:
             return "resolve_ambiguity"
@@ -231,6 +244,12 @@ class ConversationPlanner:
                 "Help me shape the campaign brief step by step",
             ]
 
+        # Off-topic turns get a witty redirect, not brief prompts. Returning
+        # missing-slot example utterances here previously let the responder model
+        # render them as if the user had actually supplied those campaign facts.
+        if payload.intent == "other" and not self._is_greeting(payload.user_message):
+            return []
+
         if payload.brief.is_complete() and not payload.active_campaign_id:
             return ["Run campaign", "Recap my brief", "Adjust channels"]
 
@@ -247,8 +266,7 @@ class ConversationPlanner:
             prompts.append("Target enterprise IT leaders and security buyers")
         if "locales" in missing:
             prompts.append("Focus on en-US and en-GB")
-        if "token_budget" in missing:
-            prompts.append("Set token budget to 1500")
+        # token_budget removed (2026-07-29): no longer collected from users, so no suggestion chip.
         if payload.intent_classification and "check_status" in payload.intent_classification.secondary:
             prompts.append("After this, also check my latest campaign status")
         return prompts[:3]

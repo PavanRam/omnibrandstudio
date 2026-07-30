@@ -889,12 +889,23 @@ async def get_campaign(campaign_id: str) -> dict:
 
         cost_by_agent = await _load_cost_attribution(normalized_campaign_id)
 
+    # 2026-07-29: campaigns.token_cost_usd was not rolled up on the draft
+    # path (persist_draft_batch only set status), so all campaigns showed $0.
+    # cost_by_agent is already loaded from campaign_cost_attribution above —
+    # use it as the authoritative source. Fall back to the campaigns column
+    # for older rows written before this fix.
+    attribution_total = sum(
+        entry["cost_usd"] or 0.0
+        for entries in cost_by_agent.values()
+        for entry in entries
+    )
+    reported_cost = attribution_total if attribution_total > 0 else float(campaign_row["token_cost_usd"])
     return {
         "id": str(campaign_row["id"]),
         "org_id": str(campaign_row["org_id"]),
         "brand_id": str(campaign_row["brand_id"]),
         "status": str(campaign_row["status"]),
-        "token_cost_usd": float(campaign_row["token_cost_usd"]),
+        "token_cost_usd": reported_cost,
         "created_at": campaign_row["created_at"],
         "started_at": campaign_row["started_at"],
         "completed_at": campaign_row["completed_at"],

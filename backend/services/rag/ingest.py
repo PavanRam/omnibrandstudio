@@ -323,6 +323,39 @@ async def list_customer_segments(
     ]
 
 
+async def list_brand_guides_from_store(
+    *,
+    brand_id: str,
+    limit: int = 100,
+) -> list[dict]:
+    """Return distinct brand guide locale/version pairs from vector store.
+
+    This preserves compatibility with services expecting a lightweight guide
+    inventory even when Postgres rows are missing.
+    """
+    collection = _collection_name(brand_id, "guidelines")
+    docs = await get_vector_store().get_documents(
+        collection=collection,
+        filters={"brand_id": brand_id, "active": True},
+        limit=limit,
+    )
+
+    seen: set[tuple[str, str]] = set()
+    guides: list[dict] = []
+    for doc in docs:
+        metadata = doc.metadata or {}
+        locale = str(metadata.get("locale") or "").strip()
+        version = str(metadata.get("version") or "").strip()
+        if not locale or not version:
+            continue
+        key = (locale, version)
+        if key in seen:
+            continue
+        seen.add(key)
+        guides.append({"locale": locale, "version": version})
+    return guides
+
+
 def _guidelines_records_from_json(seed_dir: Path) -> list[dict]:
     records: list[dict] = []
     for path in sorted(seed_dir.glob("*.json")):

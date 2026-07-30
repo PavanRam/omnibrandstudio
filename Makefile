@@ -1,4 +1,4 @@
-.PHONY: install install-dev run worker dev frontend dev-full run-local-eval test-local-eval check-local-eval test test-unit test-integration smoke lint format migrate migrate-docker migrate-down migrate-history seed seed-admin check-env up down down-reset fresh-start restart logs certs setup poll-reviews urls
+.PHONY: install install-dev run worker dev frontend dev-full run-local-eval test-local-eval check-local-eval test test-unit test-integration smoke lint format migrate migrate-docker migrate-down migrate-history seed seed-admin seed-golden check-env up down down-reset fresh-start restart restart-api restart-worker logs certs setup poll-reviews urls
 
 # ── Dependencies ─────────────────────────────────────────────────────────────
 install:
@@ -81,6 +81,9 @@ seed:
 seed-admin:
 	cd backend && uv run python scripts/seed_dev_admin.py
 
+seed-golden:
+	cd backend && uv run python ../scripts/seed_golden_datasets.py
+
 # ── Infrastructure ────────────────────────────────────────────────────────────
 # check-env: fail fast with a clear message instead of a raw asyncpg
 # traceback when .env is missing, or when POSTGRES_PASSWORD in .env doesn't
@@ -130,7 +133,19 @@ down-reset:
 
 fresh-start: install certs up
 
+# ── Restart Services ──────────────────────────────────────────────────────────
+# RESTART GUIDE:
+#   make restart      → Full restart (all services). Use after major config changes.
+#   make restart-api  → Restart API only. Use after editing routes, endpoints, auth, schemas.
+#   make restart-worker → Restart worker only. Use after editing agents, campaign logic, RAG.
+
 restart: down up
+
+restart-api:
+	docker compose restart api
+
+restart-worker:
+	docker compose restart worker
 
 logs:
 	docker compose logs -f api worker

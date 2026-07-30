@@ -24,7 +24,54 @@ def test_responder_fallback_uses_greeting_question() -> None:
     assert message == "Hey, what are you launching?"
 
 
-def test_responder_fallback_acknowledges_changes() -> None:
+def test_responder_fallback_witty_redirect_deflects_and_nudges() -> None:
+    planner_output = ConversationPlannerOutput(
+        stage="general_assistance",
+        objective="Steer back to planning",
+        reply_strategy="witty_redirect",
+        next_question=None,
+    )
+
+    message = conversation_responder._fallback_message(
+        planner_output,
+        PartialBrief(),
+        [],
+        "what's the weather today",
+    )
+
+    assert "wheelhouse" in message.lower()
+    assert "launch" in message.lower()
+
+
+@pytest.mark.asyncio
+async def test_responder_witty_redirect_calls_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: dict[str, object] = {}
+
+    async def _fake_traced_llm_call(**kwargs: object):
+        called["hit"] = True
+        return "Ha, no clouds in my forecast — but what campaign can I help you launch?", {}
+
+    monkeypatch.setattr("services.chat.conversation_responder.traced_llm_call", _fake_traced_llm_call)
+
+    planner_output = ConversationPlannerOutput(
+        stage="general_assistance",
+        objective="Steer back to planning",
+        reply_strategy="witty_redirect",
+        next_question=None,
+    )
+
+    message = await conversation_responder.respond(
+        planner_output=planner_output,
+        brief=PartialBrief(),
+        brief_changes=[],
+        user_message="what's the weather today",
+        state={"model_aliases": {"responder": "eval-model"}},
+    )
+
+    # witty_redirect must NOT short-circuit to the grounded fallback; the LLM runs.
+    assert called.get("hit") is True
+    assert message == "Ha, no clouds in my forecast — but what campaign can I help you launch?"
+
     planner_output = ConversationPlannerOutput(
         stage="audience_discovery",
         objective="Understand audience",

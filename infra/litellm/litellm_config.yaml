@@ -10,102 +10,173 @@ model_list:
 # pre-existing config, relocated into one section unchanged (no model updates).
 # =============================================================================
 
-# ============================ FREE TIER — Groq, $0 ===========================
-# Selected when JUDGE_TIER=free. Every deployment here is Groq → zero spend.
+# ============================ FREE TIER — Groq (per-token billing) ===========
+# Selected when JUDGE_TIER=free. All deployments are Groq; see model_info for
+# per-token prices sourced from https://groq.com/pricing (2026-07-29).
 
 # generation — content_generator / personalization / reflexion ("generation")
-- model_name: "gen-free"
-  litellm_params:
-    model: "groq/moonshotai/kimi-k2-instruct"
-    api_key: "os.environ/GROQ_API_KEY"
-  model_info: { id: "gen-free-kimi-k2" }
+# 2026-07-27: groq/moonshotai/kimi-k2-instruct was decommissioned by Groq
+# (returned 404 "model does not exist"), which 404'd every reflexion/generation
+# call routed to the primary deployment. Promoted the previously-fallback
+# llama-3.3-70b-versatile to primary (confirmed live via /v1/models) and added
+# gpt-oss-120b as a distinct, high-quality cross-family fallback.
 - model_name: "gen-free"
   litellm_params:
     model: "groq/llama-3.3-70b-versatile"
     api_key: "os.environ/GROQ_API_KEY"
-  model_info: { id: "gen-free-llama-3.3-70b" }
+  model_info:
+    id: "gen-free-llama-3.3-70b"
+    input_cost_per_token: 5.9e-7
+    output_cost_per_token: 7.9e-7
+- model_name: "gen-free"
+  litellm_params:
+    model: "groq/openai/gpt-oss-120b"
+    api_key: "os.environ/GROQ_API_KEY"
+  model_info:
+    id: "gen-free-gpt-oss-120b"
+    input_cost_per_token: 1.5e-7
+    output_cost_per_token: 6e-7.00000000
 
 # Free judge panel (Groq) — three DISTINCT families for cross-family
 # disagreement signal, no paid spend. judges.py keys judge-1/2/3 resolve to
 # these via resolve_model_aliases when JUDGE_TIER=free.
 #   judge-1-free → GPT-OSS family   (lead)
 #   judge-2-free → Llama family     (diversity)
-#   judge-3-free → Qwen family      (open-source check, pinned, no cross-family fallback)
+#   judge-3-free → Qwen family      (open-source cross-family check)
+# 2026-07-29: judge-3 was groq/qwen/qwen3-32b, which Groq decommissioned (404
+# "model does not exist"). Its live successor is groq/qwen/qwen3.6-27b —
+# confirmed via /v1/models AND verified to support response_format=json_object
+# + temperature=0 when called directly against Groq. (An earlier 400 seen while
+# probing this through the litellm proxy was a proxy "invalid model name" error
+# because the raw name wasn't a configured model_name — NOT a Qwen JSON
+# limitation.) A cross-family llama-3.1-8b-instant fallback keeps the third
+# judge alive if Qwen has a single-provider hiccup.
 - model_name: "judge-1-free"
   litellm_params:
     model: "groq/openai/gpt-oss-120b"
     api_key: "os.environ/GROQ_API_KEY"
-  model_info: { id: "judge-1-free-gptoss" }
+  model_info:
+    id: "judge-1-free-gptoss"
+    input_cost_per_token: 1.5e-7
+    output_cost_per_token: 6e-7.00000000
+# gpt-oss-120b occasionally returns a transient 400 under Groq load; the
+# gpt-oss-20b sibling deployment below gives litellm a same-family retry target.
 - model_name: "judge-1-free"
   litellm_params:
     model: "groq/openai/gpt-oss-20b"
     api_key: "os.environ/GROQ_API_KEY"
+  model_info:
+    input_cost_per_token: 7.5e-8
+    output_cost_per_token: 3e-7.00000000
 
 - model_name: "judge-2-free"
   litellm_params:
     model: "groq/llama-3.3-70b-versatile"
     api_key: "os.environ/GROQ_API_KEY"
-  model_info: { id: "judge-2-free-llama" }
+  model_info:
+    id: "judge-2-free-llama"
+    input_cost_per_token: 5.9e-7
+    output_cost_per_token: 7.9e-7
 - model_name: "judge-2-free"
   litellm_params:
     model: "groq/llama-3.1-8b-instant"
     api_key: "os.environ/GROQ_API_KEY"
+  model_info:
+    input_cost_per_token: 5e-8
+    output_cost_per_token: 8e-8
 
+# judge-3-free — gpt-oss-20b primary with llama-3.1-8b-instant as secondary.
+# 2026-07-29: qwen/qwen3.6-27b was tried and verified to work on SHORT prompts
+# (direct Groq test passes json_object), but fails with json_validate_failed
+# (failed_generation: "") on the REAL multi-criterion judge prompt — the long
+# system template exhausts its JSON generation budget. litellm treats 400 as
+# non-retryable (retry_policy.BadRequestError.num_retries=0), so the secondary
+# llama deployment was never reached. Switched to gpt-oss-20b (proven reliable
+# for the full judge prompt, distinct deployment from judge-1's 120b, so the
+# aggregator still deduplicates by model string and counts 3 judges).
 - model_name: "judge-3-free"
   litellm_params:
-    model: "groq/qwen/qwen3-32b"
+    model: "groq/openai/gpt-oss-20b"
     api_key: "os.environ/GROQ_API_KEY"
-  model_info: { id: "judge-3-free-qwen" }
+  model_info:
+    id: "judge-3-free-gpt-oss-20b"
+    input_cost_per_token: 7.5e-8
+    output_cost_per_token: 3e-7.00000000
+- model_name: "judge-3-free"
+  litellm_params:
+    model: "groq/llama-3.1-8b-instant"
+    api_key: "os.environ/GROQ_API_KEY"
+  model_info:
+    input_cost_per_token: 5e-8
+    output_cost_per_token: 8e-8
 
 # util-fast-free — chat intent_classifier ("utility") + campaign util-fast key
 - model_name: "util-fast-free"
   litellm_params:
     model: "groq/llama-3.1-8b-instant"
     api_key: "os.environ/GROQ_API_KEY"
-  model_info: { id: "util-fast-free-llama-3.1-8b" }
+  model_info:
+    id: "util-fast-free-llama-3.1-8b"
+    input_cost_per_token: 5e-8
+    output_cost_per_token: 8e-8
 - model_name: "util-fast-free"
   litellm_params:
     model: "groq/openai/gpt-oss-20b"
     api_key: "os.environ/GROQ_API_KEY"
-  model_info: { id: "util-fast-free-gpt-oss-20b" }
+  model_info:
+    id: "util-fast-free-gpt-oss-20b"
+    input_cost_per_token: 7.5e-8
+    output_cost_per_token: 3e-7.00000000
 
 # eval-model-free — intake "brand_truthfulness" + lightweight eval on free tier
 - model_name: "eval-model-free"
   litellm_params:
     model: "groq/openai/gpt-oss-20b"
     api_key: "os.environ/GROQ_API_KEY"
-  model_info: { id: "eval-model-free-gpt-oss-20b" }
+  model_info:
+    id: "eval-model-free-gpt-oss-20b"
+    input_cost_per_token: 7.5e-8
+    output_cost_per_token: 3e-7.00000000
 
 # understanding-free — chat understanding_engine ("understanding")
 - model_name: "understanding-free"
   litellm_params:
     model: "groq/llama-3.1-8b-instant"
     api_key: "os.environ/GROQ_API_KEY"
-  model_info: { id: "understanding-free-llama-3.1-8b" }
-- model_name: "understanding-free"
-  litellm_params:
-    model: "groq/openai/gpt-oss-20b"
-    api_key: "os.environ/GROQ_API_KEY"
-  model_info: { id: "understanding-free-gpt-oss-20b" }
+  model_info:
+    id: "understanding-free-llama-3.1-8b"
+    input_cost_per_token: 5e-8
+    output_cost_per_token: 8e-8
 
-# responder-chat-free — chat conversation_responder ("responder")
-- model_name: "responder-chat-free"
+# Understanding — merged intent classification + brief extraction (JSON-strong)
+# Uses llama-3.1-8b-instant (temperature-0 structured JSON extraction); smaller
+# model cuts time-to-first-token since this call must complete before streaming.
+- model_name: "understanding"
   litellm_params:
-    model: "groq/llama-3.3-70b-versatile"
+    model: "groq/llama-3.1-8b-instant"
     api_key: "os.environ/GROQ_API_KEY"
-  model_info: { id: "responder-chat-free-llama-3.3-70b" }
+  model_info:
+    id: "understanding-llama-3.1-8b"
+    input_cost_per_token: 5e-8
+    output_cost_per_token: 8e-8
 - model_name: "responder-chat-free"
   litellm_params:
     model: "groq/llama-3.1-8b-instant"
     api_key: "os.environ/GROQ_API_KEY"
-  model_info: { id: "responder-chat-free-llama-3.1-8b" }
+  model_info:
+    id: "responder-chat-free-llama-3.1-8b"
+    input_cost_per_token: 5e-8
+    output_cost_per_token: 8e-8
 
 # brief-collector-free — chat brief_collector slot filling ("brief_collector")
 - model_name: "brief-collector-free"
   litellm_params:
     model: "groq/llama-3.1-8b-instant"
     api_key: "os.environ/GROQ_API_KEY"
-  model_info: { id: "brief-collector-free-llama-3.1-8b" }
+  model_info:
+    id: "brief-collector-free-llama-3.1-8b"
+    input_cost_per_token: 5e-8
+    output_cost_per_token: 8e-8
 
 # translation-primary-free — translation.py primary ("translation") on free tier.
 # Pinned single-provider (Groq) for reproducible quality-gate scoring across retries.
@@ -113,7 +184,10 @@ model_list:
   litellm_params:
     model: "groq/llama-3.3-70b-versatile"
     api_key: "os.environ/GROQ_API_KEY"
-  model_info: { id: "translation-primary-free-llama-3.3-70b" }
+  model_info:
+    id: "translation-primary-free-llama-3.3-70b"
+    input_cost_per_token: 5.9e-7
+    output_cost_per_token: 7.9e-7
 
 # translation-validator-free — translation.py fallback validator ("translation_validator")
 # on free tier (back-translation / reference-translation fallback path only).
@@ -121,7 +195,10 @@ model_list:
   litellm_params:
     model: "groq/llama-3.1-8b-instant"
     api_key: "os.environ/GROQ_API_KEY"
-  model_info: { id: "translation-validator-free-llama-3.1-8b" }
+  model_info:
+    id: "translation-validator-free-llama-3.1-8b"
+    input_cost_per_token: 5e-8
+    output_cost_per_token: 8e-8
 
 # ===================== PAID TIER — unchanged (moved here) =====================
 # Selected when JUDGE_TIER=paid. Everything below is the pre-existing config,

@@ -111,6 +111,24 @@ def test_plan_treats_hey_with_suffix_as_greeting() -> None:
     assert output.reply_strategy == "greeting"
 
 
+def test_planner_routes_off_topic_question_to_witty_redirect() -> None:
+    output = conversation_planner.plan(
+        ConversationPlannerInput(
+            user_message="what's the weather today",
+            intent="other",
+            brief=PartialBrief(),
+            conversation_history=[],
+            active_campaign_id=None,
+        )
+    )
+
+    assert output.stage == "general_assistance"
+    assert output.reply_strategy == "witty_redirect"
+    # Off-topic turns must not surface brief example utterances the responder
+    # could otherwise render as user-provided campaign facts.
+    assert output.suggested_prompts == []
+
+
 def test_planner_asks_for_clarification_when_confidence_is_low() -> None:
     output = conversation_planner.plan(
         ConversationPlannerInput(

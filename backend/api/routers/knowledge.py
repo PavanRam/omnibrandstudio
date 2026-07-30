@@ -137,6 +137,36 @@ async def upload_customer_segments(
     }
 
 
+@router.get("/segments/{brand_id}/info")
+async def segment_collection_info(
+    brand_id: str,
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> dict:
+    """Get available locales and versions for segments in a brand collection.
+    
+    Helps users understand what segment data exists before filtering by locale/version.
+    """
+    async with get_db() as conn:
+        await _assert_brand_access(conn, user, brand_id)
+
+    collection = f"brand_{brand_id}_segments"
+    docs = await get_vector_store().get_documents(
+        collection=collection,
+        filters={"brand_id": brand_id, "active": True},
+        limit=5000,
+    )
+    
+    locales = sorted({str(doc.metadata.get("locale")).strip() for doc in docs if doc.metadata.get("locale")})
+    versions = sorted({str(doc.metadata.get("version")).strip() for doc in docs if doc.metadata.get("version")})
+    
+    return {
+        "brand_id": brand_id,
+        "total_chunks": len(docs),
+        "available_locales": locales,
+        "available_versions": versions,
+    }
+
+
 @router.get("/segments/{brand_id}/options")
 async def list_segment_options(
     brand_id: str,

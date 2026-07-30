@@ -38,6 +38,7 @@ class CampaignBrief(TypedDict):
     channels: list[str]
     locales: list[str]
     audience_segments: list[str]
+    # token_budget no longer collected from users; tracked end-to-end per campaign (2026-07-29)
     token_budget: int
     # Optional campaign validity end-date, threaded into generated content
     # when present ("Offer valid until..."). See next_tasks.md 2026-07-26

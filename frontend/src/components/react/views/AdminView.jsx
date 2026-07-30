@@ -22,6 +22,7 @@ import {
   X,
   Plus,
   Eye,
+  Edit,
 } from 'lucide-react';
 import { Page } from '../Page.jsx';
 import { Modal } from '../ui/Modal.jsx';
@@ -31,10 +32,12 @@ import { cn } from '@/lib/cn.js';
 import { useAuth } from '../hooks/useAuth.js';
 import {
   activateGoldenSet,
+  addGoldenExample,
   createBrand,
   createUser,
   deleteGoldenExample,
   getBrandConfig,
+  getSegmentCollectionInfo,
   listBrandGuides,
   listBrands,
   listCustomerSegments,
@@ -44,6 +47,7 @@ import {
   openGoldenSet,
   promoteGoldenExample,
   updateBrandConfig,
+  updateGoldenExample,
   updateUser,
   updateUserBrands,
   uploadBrandGuide,
@@ -196,6 +200,8 @@ export function AdminView({ onLock }) {
   const [loadingSegments, setLoadingSegments] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadingSegments, setUploadingSegments] = useState(false);
+  const [availableLocales, setAvailableLocales] = useState([]);
+  const [availableVersions, setAvailableVersions] = useState([]);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
 
@@ -390,6 +396,26 @@ export function AdminView({ onLock }) {
     }
   };
 
+  // Load available locales and versions for segment collection
+  const loadSegmentCollectionInfo = async () => {
+    if (!brandId) return;
+    try {
+      const info = await getSegmentCollectionInfo(brandId.trim());
+      setAvailableLocales(info.available_locales || []);
+      setAvailableVersions(info.available_versions || []);
+      
+      // Auto-select first available locale/version if current ones don't exist
+      if (info.available_locales?.length > 0 && !info.available_locales.includes(locale)) {
+        setLocale(info.available_locales[0]);
+      }
+      if (info.available_versions?.length > 0 && !info.available_versions.includes(version)) {
+        setVersion(info.available_versions[0]);
+      }
+    } catch (err) {
+      // Silently fail - collection might not exist yet
+    }
+  };
+
   const submitSegments = async (event) => {
     event.preventDefault();
     if (!canUploadSegments) return;
@@ -407,6 +433,7 @@ export function AdminView({ onLock }) {
       setStatus(
         `Indexed ${result.records_indexed || 0} segment record(s) and ${result.chunks_indexed || 0} chunks.`,
       );
+      await loadSegmentCollectionInfo();
       await refreshSegments();
       setSegmentFile(null);
     } catch (err) {
@@ -420,18 +447,17 @@ export function AdminView({ onLock }) {
   useEffect(() => {
     if (!isAdmin) return;
     refreshUsers({ showStatus: false });
-    refreshGuides();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin]);
 
-  // Auto-refresh brand guides and customer segments when context or tab changes (2026-07-27)
+  // Auto-load brand guides and customer segments whenever context changes,
+  // so Overview tab shows current counts. Data loads regardless of active tab.
   useEffect(() => {
-    if (!isAdmin) return;
-    if (tab === 'knowledge' || tab === 'brand') {
-      refreshGuides();
-      refreshSegments();
-    }
-  }, [tab, brandId, locale, version, isAdmin]);
+    if (!isAdmin || !brandId) return;
+    loadSegmentCollectionInfo();
+    refreshGuides();
+    refreshSegments();
+  }, [brandId, locale, version, isAdmin]);
 
   if (!isAdmin) {
     return (
@@ -546,6 +572,8 @@ export function AdminView({ onLock }) {
             brands={orgBrands}
             brandsLoading={brandsLoading}
             activeBrandLocales={activeBrandLocales}
+            availableLocales={availableLocales}
+            availableVersions={availableVersions}
           />
         )}
 
@@ -913,7 +941,14 @@ function ContextBar({
   brands,
   brandsLoading,
   activeBrandLocales = ['en-US'],
+  availableLocales = [],
+  availableVersions = [],
 }) {
+  // For segment/golden dataset filtering, prefer available locales from segment collection
+  // Fall back to brand entitlements if none exist
+  const localeOptions = availableLocales.length > 0 ? availableLocales : activeBrandLocales;
+  const versionOptions = availableVersions.length > 0 ? availableVersions : [];
+  
   return (
     <div className="mb-4 rounded-2xl border border-border bg-surface-2/60 p-3">
       <div className="mb-2 flex items-center gap-1.5 px-1 text-xs font-semibold uppercase tracking-wide text-faint">
@@ -943,14 +978,39 @@ function ContextBar({
           onChange={(e) => setLocale(e.target.value)}
           aria-label="Locale"
         >
-          {activeBrandLocales.map((loc) => (
-            <option key={loc} value={loc}>
-              {loc}
-            </option>
-          ))}
+          {localeOptions.length === 0 ? (
+            <option value="">No locales available</option>
+          ) : (
+            localeOptions.map((loc) => (
+              <option key={loc} value={loc}>
+                {loc}
+              </option>
+            ))
+          )}
         </select>
 
-        <input className={inputCls} value={version} onChange={(e) => setVersion(e.target.value)} aria-label="Version" placeholder="Version" />
+        {versionOptions.length > 0 ? (
+          <select
+            className={inputCls}
+            value={version}
+            onChange={(e) => setVersion(e.target.value)}
+            aria-label="Version"
+          >
+            {versionOptions.map((v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            className={inputCls}
+            value={version}
+            onChange={(e) => setVersion(e.target.value)}
+            aria-label="Version"
+            placeholder="Version"
+          />
+        )}
       </div>
     </div>
   );
@@ -1492,6 +1552,12 @@ function GoldenDatasetPanel({ brandId, locale, version, hideExamples = false }) 
   const [previewExamples, setPreviewExamples] = useState([]);
   const [loadingPreview, setLoadingPreview] = useState(false);
   
+  // Edit/Add modal states
+  const [editingExample, setEditingExample] = useState(null);
+  const [addingExample, setAddingExample] = useState(false);
+  const [editFormData, setEditFormData] = useState({});
+  const [addFormData, setAddFormData] = useState({ channel: 'linkedin', status: 'silver', expected_brand_score: 0.85 });
+  
   // Lazy loading examples
   const [visibleCount, setVisibleCount] = useState(3);
 
@@ -1565,6 +1631,55 @@ function GoldenDatasetPanel({ brandId, locale, version, hideExamples = false }) 
       `Deleted example ${exampleId.slice(0, 8)}….`,
     );
 
+  const openEditModal = (example) => {
+    setEditingExample(example);
+    setEditFormData({
+      description: example.description || '',
+      expected_content: example.expected_content || '',
+      expected_brand_score: example.expected_brand_score || 0.85,
+      status: example.status || 'silver',
+    });
+  };
+
+  const saveEdit = async () => {
+    if (!editingExample) return;
+    setError('');
+    setStatus('');
+    try {
+      await updateGoldenExample({
+        exampleId: editingExample.id,
+        brandId: brandId.trim(),
+        ...editFormData,
+      });
+      setStatus(`Updated example ${editingExample.id.slice(0, 8)}….`);
+      setEditingExample(null);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update example');
+    }
+  };
+
+  const saveAdd = async () => {
+    if (!addFormData.set_id || !addFormData.description) {
+      setError('Set ID and description are required');
+      return;
+    }
+    setError('');
+    setStatus('');
+    try {
+      await addGoldenExample({
+        brandId: brandId.trim(),
+        ...addFormData,
+      });
+      setStatus('Example added successfully');
+      setAddingExample(false);
+      setAddFormData({ channel: 'linkedin', status: 'silver', expected_brand_score: 0.85 });
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add example');
+    }
+  };
+
   const handlePreviewSet = async (set) => {
     setPreviewingSet(set);
     setLoadingPreview(true);
@@ -1591,19 +1706,10 @@ function GoldenDatasetPanel({ brandId, locale, version, hideExamples = false }) 
           <div>
             <h2 className="text-base font-semibold text-fg">Golden dataset</h2>
             <p className="mt-0.5 max-w-xl text-sm text-muted">
-              Versioned evaluation sets that calibrate the judge panel. Activate one set per locale;
-              promote strong examples to golden.
+              Auto-generated evaluation sets calibrate the judge panel. Activate one set per locale;
+              promote strong examples to golden. Sets are generated from ingested brand guides + segments.
             </p>
           </div>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" size="sm" onClick={refresh} disabled={loading}>
-            <RefreshCw size={14} aria-hidden="true" className={loading ? 'animate-spin' : ''} />
-            {loading ? 'Loading…' : 'Refresh'}
-          </Button>
-          <Button variant="primary" size="sm" onClick={openSet} disabled={opening}>
-            <Database size={14} aria-hidden="true" /> {opening ? 'Opening…' : 'New draft set'}
-          </Button>
         </div>
       </div>
 
@@ -1614,7 +1720,7 @@ function GoldenDatasetPanel({ brandId, locale, version, hideExamples = false }) 
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Dataset sets</h3>
           {sets.length === 0 ? (
             <p className="rounded-lg border border-dashed border-border bg-surface px-3 py-6 text-center text-sm text-muted">
-              No dataset sets yet.
+              No dataset sets yet. They auto-generate when brand guides are uploaded.
             </p>
           ) : (
             <div className="max-h-[350px] overflow-y-auto pr-1">
@@ -1654,7 +1760,12 @@ function GoldenDatasetPanel({ brandId, locale, version, hideExamples = false }) 
 
         {!hideExamples && (
           <div className="rounded-xl border border-border bg-surface-2 p-3.5">
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-faint">Examples</h3>
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-faint">Examples</h3>
+              <Button variant="ghost" size="sm" onClick={() => setAddingExample(true)} title="Add a new example">
+                <Plus size={14} aria-hidden="true" className="mr-1" /> Add
+              </Button>
+            </div>
             {examples.length === 0 ? (
               <p className="rounded-lg border border-dashed border-border bg-surface px-3 py-6 text-center text-sm text-muted">
                 No examples yet.
@@ -1684,6 +1795,9 @@ function GoldenDatasetPanel({ brandId, locale, version, hideExamples = false }) 
                         <div className="flex shrink-0 gap-1">
                           <Button variant="ghost" size="sm" onClick={() => setViewingExample(example)} title="View content details">
                             <Eye size={14} aria-hidden="true" />
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={() => openEditModal(example)} title="Edit example">
+                            <Edit size={14} aria-hidden="true" />
                           </Button>
                           {example.status !== 'golden' ? (
                             <Button variant="ghost" size="sm" onClick={() => promote(example.id)} title="Promote to golden">
@@ -1820,6 +1934,179 @@ function GoldenDatasetPanel({ brandId, locale, version, hideExamples = false }) 
             <Button variant="ghost" size="sm" onClick={() => setViewingExample(null)}>
               Close
             </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Edit Example Modal */}
+      <Modal
+        open={Boolean(editingExample)}
+        onClose={() => setEditingExample(null)}
+        title="Edit Example"
+        description="Update the example details."
+        size="lg"
+      >
+        {editingExample && (
+          <div className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-faint mb-1">Description</label>
+              <input
+                type="text"
+                value={editFormData.description || ''}
+                onChange={(e) => setEditFormData({ ...editFormData, description: e.target.value })}
+                className={inputCls}
+                placeholder="Brief label for this example"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-faint mb-1">Expected Content</label>
+              <textarea
+                value={editFormData.expected_content || ''}
+                onChange={(e) => setEditFormData({ ...editFormData, expected_content: e.target.value })}
+                className={inputCls + ' min-h-24 resize-none'}
+                placeholder="Example content to evaluate"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-faint mb-1">Brand Score (0.0-1.0)</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={editFormData.expected_brand_score || 0.85}
+                  onChange={(e) => setEditFormData({ ...editFormData, expected_brand_score: parseFloat(e.target.value) })}
+                  className={inputCls}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-faint mb-1">Status</label>
+                <select
+                  value={editFormData.status || 'silver'}
+                  onChange={(e) => setEditFormData({ ...editFormData, status: e.target.value })}
+                  className={inputCls}
+                >
+                  <option value="silver">Silver</option>
+                  <option value="golden">Golden</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex gap-2 justify-end">
+              <Button variant="ghost" onClick={() => setEditingExample(null)}>Cancel</Button>
+              <Button variant="primary" onClick={saveEdit}>Save Changes</Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Add Example Modal */}
+      <Modal
+        open={addingExample}
+        onClose={() => setAddingExample(false)}
+        title="Add Golden Dataset Example"
+        description="Manually create a new evaluation example."
+        size="lg"
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs font-semibold text-faint mb-1">Dataset Set ID *</label>
+            <select
+              value={addFormData.set_id || ''}
+              onChange={(e) => setAddFormData({ ...addFormData, set_id: e.target.value })}
+              className={inputCls}
+            >
+              <option value="">Select a dataset set</option>
+              {sets.map((set) => (
+                <option key={set.id} value={set.id}>
+                  {set.locale} · {set.guide_version || 'no version'} ({set.status})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-faint mb-1">Channel</label>
+            <select
+              value={addFormData.channel || 'linkedin'}
+              onChange={(e) => setAddFormData({ ...addFormData, channel: e.target.value })}
+              className={inputCls}
+            >
+              <option value="linkedin">LinkedIn</option>
+              <option value="email">Email</option>
+              <option value="twitter">Twitter</option>
+              <option value="instagram">Instagram</option>
+              <option value="landing_page">Landing Page</option>
+              <option value="slack">Slack</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-faint mb-1">Description *</label>
+            <input
+              type="text"
+              value={addFormData.description || ''}
+              onChange={(e) => setAddFormData({ ...addFormData, description: e.target.value })}
+              className={inputCls}
+              placeholder="Brief label for this example"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-faint mb-1">Expected Content *</label>
+            <textarea
+              value={addFormData.expected_content || ''}
+              onChange={(e) => setAddFormData({ ...addFormData, expected_content: e.target.value })}
+              className={inputCls + ' min-h-24 resize-none'}
+              placeholder="Example content to evaluate"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-faint mb-1">Brand Score (0.0-1.0)</label>
+              <input
+                type="number"
+                min="0"
+                max="1"
+                step="0.01"
+                value={addFormData.expected_brand_score || 0.85}
+                onChange={(e) => setAddFormData({ ...addFormData, expected_brand_score: parseFloat(e.target.value) })}
+                className={inputCls}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-faint mb-1">Status</label>
+              <select
+                value={addFormData.status || 'silver'}
+                onChange={(e) => setAddFormData({ ...addFormData, status: e.target.value })}
+                className={inputCls}
+              >
+                <option value="silver">Silver</option>
+                <option value="golden">Golden</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-faint mb-1">Locale</label>
+            <input
+              type="text"
+              value={addFormData.locale || ''}
+              onChange={(e) => setAddFormData({ ...addFormData, locale: e.target.value })}
+              className={inputCls}
+              placeholder="e.g., en-US, de-DE"
+            />
+          </div>
+
+          <div className="flex gap-2 justify-end">
+            <Button variant="ghost" onClick={() => setAddingExample(false)}>Cancel</Button>
+            <Button variant="primary" onClick={saveAdd}>Add Example</Button>
           </div>
         </div>
       </Modal>
