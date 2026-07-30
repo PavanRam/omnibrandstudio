@@ -1,4 +1,4 @@
-.PHONY: install install-dev run worker dev frontend dev-full run-local-eval test-local-eval check-local-eval test test-unit test-integration smoke lint format migrate migrate-docker migrate-down migrate-history seed seed-admin seed-golden check-env up down down-reset fresh-start restart restart-api restart-worker logs certs setup poll-reviews urls
+.PHONY: install install-dev run worker dev frontend dev-full run-local-eval test-local-eval check-local-eval test test-unit test-integration smoke lint format migrate migrate-docker migrate-down migrate-history seed seed-admin seed-golden check-env up down down-reset fresh-start restart restart-api restart-worker logs certs setup poll-reviews check-sample-briefs urls
 
 # ── Dependencies ─────────────────────────────────────────────────────────────
 install:
@@ -52,6 +52,12 @@ smoke:
 # Reviews table for reviewer decisions and applies them via /airtable-decide.
 poll-reviews:
 	uv run python scripts/airtable_poll_reviews.py
+
+# Validates all 50 RAG-grounded sample briefs (docs/sample-campaign-briefs.md)
+# against CreateCampaignRequest. Dry-run only — no network calls, no cost.
+# For a real submission: cd backend && uv run python scripts/submit_sample_campaigns.py --live --limit N
+check-sample-briefs:
+	cd backend && uv run python scripts/submit_sample_campaigns.py
 
 # ── Code quality ──────────────────────────────────────────────────────────────
 lint:

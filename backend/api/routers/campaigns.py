@@ -354,13 +354,35 @@ def _build_replay_event_payload(
     payload = agent_output.get(agent)
     normalized_payload = payload if isinstance(payload, dict) else {}
     variants = state.get("variants")
-    variant_samples = variants[:3] if isinstance(variants, list) else []
-    return {
+    variant_list = variants if isinstance(variants, list) else []
+    variant_samples = variant_list[:3]
+    enriched: dict[str, Any] = {
         **normalized_payload,
         "variant_count": state.get("variant_count", 0),
         "human_review_requested": state.get("human_review_requested", False),
         "variant_samples": variant_samples,
     }
+    # The live pub/sub events carry per-agent progress counts the checkpoint
+    # delta doesn't (personalized/translated + per-locale tasks), so replay of
+    # a completed campaign previously rendered "0 variants personalized/
+    # translated" even when content existed. Recompute from checkpoint variants
+    # so replay matches the live run panel.
+    if agent == "personalization_agent":
+        enriched["personalized"] = sum(
+            1 for v in variant_list if isinstance(v, dict) and v.get("personalized_preview")
+        )
+    elif agent == "translation_agent":
+        enriched["translated"] = sum(
+            1
+            for v in variant_list
+            if isinstance(v, dict) and (v.get("translated_preview") or v.get("status") == "translated")
+        )
+        enriched["tasks"] = [
+            {"task_id": v.get("task_id"), "status": v.get("status"), "locale": v.get("locale")}
+            for v in variant_list
+            if isinstance(v, dict)
+        ]
+    return enriched
 
 
 def _normalize_live_stream_payload(normalized_campaign_id: str, payload: str) -> str:

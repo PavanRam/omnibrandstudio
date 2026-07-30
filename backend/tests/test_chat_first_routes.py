@@ -470,6 +470,58 @@ async def test_replay_campaign_events_returns_normalized_contract(monkeypatch: p
 
 
 @pytest.mark.asyncio
+async def test_replay_reconstructs_personalized_and_translated_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression: replay of a completed campaign used to render
+    # "0 variants personalized/translated" because the checkpoint delta lacks
+    # the per-agent progress counts the live pub/sub events carry. They must be
+    # recomputed from checkpoint variants.
+    timeline = [
+        {
+            "step": 3,
+            "created_at": "2026-07-19T10:02:00Z",
+            "agents": ["personalization_agent"],
+            "agent_output": {"personalization_agent": {"current_phase": "personalization_complete"}},
+            "state": {
+                "current_phase": "personalization_complete",
+                "variant_count": 2,
+                "variants": [
+                    {"task_id": "t-1", "status": "personalized", "personalized_preview": "hi"},
+                    {"task_id": "t-2", "status": "personalized", "personalized_preview": "yo"},
+                ],
+            },
+        },
+        {
+            "step": 4,
+            "created_at": "2026-07-19T10:03:00Z",
+            "agents": ["translation_agent"],
+            "agent_output": {"translation_agent": {"current_phase": "translation_complete"}},
+            "state": {
+                "current_phase": "translation_complete",
+                "variant_count": 2,
+                "variants": [
+                    {"task_id": "t-1", "status": "translated", "locale": "en-US", "translated_preview": "hi"},
+                    {"task_id": "t-2", "status": "translated", "locale": "fr-FR", "translated_preview": "salut"},
+                ],
+            },
+        },
+    ]
+    monkeypatch.setattr(campaigns, "_load_in_memory_trace", AsyncMock(return_value=timeline))
+
+    result = await campaigns.replay_campaign_events(
+        "019f76e9-c299-7756-a483-761aa106ba33",
+        limit=60,
+    )
+
+    by_agent = {event["agent"]: event for event in result["events"]}
+    assert by_agent["personalization_agent"]["payload"]["personalized"] == 2
+    translation_payload = by_agent["translation_agent"]["payload"]
+    assert translation_payload["translated"] == 2
+    assert {t["locale"] for t in translation_payload["tasks"]} == {"en-US", "fr-FR"}
+
+
+@pytest.mark.asyncio
 async def test_replay_campaign_events_orders_oldest_to_newest(monkeypatch: pytest.MonkeyPatch) -> None:
     timeline = [
         {

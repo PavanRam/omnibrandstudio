@@ -53,7 +53,8 @@ async def get_recent_campaigns(
                   AND (:brand_filter_disabled OR c.brand_id = ANY(CAST(:brand_ids AS UUID[])))
                                     AND (CAST(:created_by AS UUID) IS NULL OR c.created_by = CAST(:created_by AS UUID))
                   AND (:include_archived OR c.status != 'archived')
-                GROUP BY c.id
+                GROUP BY c.id, c.brand_id, c.status, c.created_at, c.token_cost_usd,
+                         attr.attribution_total, c.brief
                 ORDER BY c.created_at DESC
                 LIMIT :limit
                 """

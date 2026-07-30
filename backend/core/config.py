@@ -76,11 +76,33 @@ class Settings(BaseSettings):
     HF_TOKEN: str = ""
     TRANSLATION_HUMAN_ESCALATION_ENABLED: bool = False
 
-    # Judge panel tier. "free" -> Groq cross-family panel (judge-*-free), no
-    # paid spend; "paid" -> pinned Claude/GPT-4o/Groq panel (judge-1/2/3).
-    # Switching tiers is a config flip; it requires re-running judge
-    # calibration but no agent-code changes. See docs pre-deploy checklist.
-    JUDGE_TIER: str = "free"
+    # LLM cost tier. Governs generation, personalization, translation,
+    # brand-truthfulness checks, and the judge panel (campaign graph), plus
+    # the chat layer's own alias set. "free" -> Groq cross-family panel, no
+    # paid spend; "paid" -> pinned Claude/GPT-4o/Groq panel + premium
+    # generation. Switching tiers is a config flip; it requires re-running
+    # judge calibration but no agent-code changes. See docs pre-deploy checklist.
+    LLM_COST_TIER: str = "free"
+
+    # Per-role model-alias overrides — set any of these to pin one agent's
+    # model independent of LLM_COST_TIER, without touching resolve_model_aliases().
+    # Empty string (default) means "use the tier default for this role."
+    GENERATION_MODEL_ALIAS: str = ""
+    PERSONALIZATION_MODEL_ALIAS: str = ""
+    TRANSLATION_MODEL_ALIAS: str = ""
+    TRANSLATION_VALIDATOR_MODEL_ALIAS: str = ""
+    BRAND_TRUTHFULNESS_MODEL_ALIAS: str = ""
+    JUDGE_1_MODEL_ALIAS: str = ""
+    JUDGE_2_MODEL_ALIAS: str = ""
+    JUDGE_3_MODEL_ALIAS: str = ""
+    UTIL_FAST_MODEL_ALIAS: str = ""
+    EVAL_MODEL_ALIAS: str = ""
+    # Chat-layer roles (separate namespace from the campaign graph — see
+    # api/routers/conversations.py::_chat_state_context).
+    CHAT_UTILITY_MODEL_ALIAS: str = ""
+    CHAT_BRIEF_COLLECTOR_MODEL_ALIAS: str = ""
+    CHAT_UNDERSTANDING_MODEL_ALIAS: str = ""
+    CHAT_RESPONDER_MODEL_ALIAS: str = ""
 
     # Auth
     JWT_PRIVATE_KEY_PATH: str = "./certs/private_key.pem"

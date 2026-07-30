@@ -8,9 +8,77 @@ from pipeline.conversation_models import (
     ConversationPlannerInput,
     ConversationPlannerOutput,
     IntentClassification,
+    PartialBrief,
 )
 
 CLARIFY_CONFIDENCE_THRESHOLD = 0.55
+
+
+def _has_brief_value(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return len(value) > 0
+    if isinstance(value, int):
+        return value > 0
+    return True
+
+
+def compute_brief_field_states(
+    brief: PartialBrief,
+    *,
+    field_confidence: dict[str, float] | None = None,
+    corrected_fields: set[str] | None = None,
+    changed_fields: set[str] | None = None,
+) -> list[BriefFieldState]:
+    """Shared field-status computation — used both for the full chat-turn
+    planner output and for structured picker updates (set_brief_field),
+    which set a field directly without going through a planner turn but
+    still need the panel to reflect the change immediately rather than
+    waiting for the next websocket message (2026-07-30 fix: picker updates
+    previously left the panel showing stale 'missing' status until the
+    next chat turn recomputed it). token_budget is intentionally excluded —
+    it's no longer collected from users (2026-07-29), so it would show as
+    permanently 'missing' with no way for a user to resolve it."""
+    field_confidence = field_confidence or {}
+    corrected_fields = corrected_fields or set()
+    changed_fields = changed_fields or set()
+
+    states: list[BriefFieldState] = []
+    for field in (
+        "objective",
+        "target_audience",
+        "key_messages",
+        "tone_override",
+        "channels",
+        "locales",
+        "audience_segments",
+    ):
+        value = getattr(brief, field)
+        confidence = field_confidence.get(field)
+        has_value = _has_brief_value(value)
+
+        status = "missing"
+        if field in corrected_fields:
+            status = "corrected"
+        elif (
+            field in changed_fields
+            and confidence is not None
+            and confidence < CLARIFY_CONFIDENCE_THRESHOLD
+        ):
+            status = "needs_confirmation"
+        elif has_value and confidence is not None and confidence < 0.75:
+            status = "inferred"
+        elif has_value:
+            status = "captured"
+
+        states.append(
+            BriefFieldState(field=field, status=status, value=value, confidence=confidence)
+        )
+
+    return states
 
 
 class ConversationPlanner:
@@ -291,53 +359,12 @@ class ConversationPlanner:
             for change in payload.brief_changes
             if change.get("field")
         }
-
-        states: list[BriefFieldState] = []
-        for field in (
-            "objective",
-            "target_audience",
-            "key_messages",
-            "tone_override",
-            "channels",
-            "locales",
-            "audience_segments",
-            "token_budget",
-        ):
-            value = getattr(payload.brief, field)
-            confidence = payload.field_confidence.get(field)
-            has_value = self._has_value(value)
-
-            status = "missing"
-            if field in corrected_fields:
-                status = "corrected"
-            elif field in changed_fields and confidence is not None and confidence < CLARIFY_CONFIDENCE_THRESHOLD:
-                status = "needs_confirmation"
-            elif has_value and confidence is not None and confidence < 0.75:
-                status = "inferred"
-            elif has_value:
-                status = "captured"
-
-            states.append(
-                BriefFieldState(
-                    field=field,
-                    status=status,
-                    value=value,
-                    confidence=confidence,
-                )
-            )
-
-        return states
-
-    def _has_value(self, value: object) -> bool:
-        if value is None:
-            return False
-        if isinstance(value, str):
-            return bool(value.strip())
-        if isinstance(value, list):
-            return len(value) > 0
-        if isinstance(value, int):
-            return value > 0
-        return True
+        return compute_brief_field_states(
+            payload.brief,
+            field_confidence=payload.field_confidence,
+            corrected_fields=corrected_fields,
+            changed_fields=changed_fields,
+        )
 
     def _is_greeting(self, message: str) -> bool:
         normalized = re.sub(r"[^a-z\s]", " ", message.lower())

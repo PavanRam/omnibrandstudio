@@ -34,7 +34,7 @@ log = structlog.get_logger()
 
 # Default alias when model_aliases is unpopulated (e.g. unit tests). Defaults to
 # the free panel so validation works without paid keys; build_initial_state
-# overrides these per JUDGE_TIER.
+# overrides these per LLM_COST_TIER.
 DEFAULT_JUDGE_ALIASES: dict[str, str] = {
     "judge-1": "judge-1-free",
     "judge-2": "judge-2-free",

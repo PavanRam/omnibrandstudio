@@ -35,8 +35,7 @@ function conversationStatusInfo(session) {
       Boolean((brief.target_audience || '').trim()) ||
       (brief.channels || []).length > 0 ||
       (brief.locales || []).length > 0 ||
-      (brief.audience_segments || []).length > 0 ||
-      Boolean(brief.token_budget);
+      (brief.audience_segments || []).length > 0;
     return hasAnyContent
       ? { label: 'Waiting for input', tone: 'warning' }
       : { label: 'New', tone: 'neutral' };

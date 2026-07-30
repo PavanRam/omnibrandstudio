@@ -121,7 +121,6 @@ export function CampaignForm({ onSubmit, busy }) {
   const ids = {
     brand: useId(),
     objective: useId(),
-    budget: useId(),
   };
 
   const [brandId, setBrandId] = useState(DEFAULT_BRAND_ID);
@@ -135,7 +134,6 @@ export function CampaignForm({ onSubmit, busy }) {
   const [channels, setChannels] = useState(['email', 'linkedin']);
   const [locales, setLocales] = useState(['en-US']);
   const [segments, setSegments] = useState(['enterprise']);
-  const [tokenBudget, setTokenBudget] = useState(4000);
 
   const toggle = (setter, list) => (value) =>
     setter(list.includes(value) ? list.filter((v) => v !== value) : [...list, value]);
@@ -164,9 +162,8 @@ export function CampaignForm({ onSubmit, busy }) {
       audience.length > 0 &&
       channels.length > 0 &&
       locales.length > 0 &&
-      segments.length > 0 &&
-      Number(tokenBudget) > 0,
-    [busy, brandId, objective, audience, channels, locales, segments, tokenBudget],
+      segments.length > 0,
+    [busy, brandId, objective, audience, channels, locales, segments],
   );
 
   const submit = (e) => {
@@ -182,7 +179,6 @@ export function CampaignForm({ onSubmit, busy }) {
       channels,
       locales,
       audience_segments: segments,
-      token_budget: Number(tokenBudget),
       raw_text: '',
     });
   };
@@ -245,27 +241,14 @@ export function CampaignForm({ onSubmit, busy }) {
           placeholder="Select key messages or type your own…"
         />
 
-        <div className="grid gap-4 sm:grid-cols-2">
-          <MultiSelectField
-            label="Tone override"
-            hint="optional"
-            options={TONE_OPTIONS}
-            value={tones}
-            onChange={setTones}
-            placeholder="Select tones or type your own…"
-          />
-
-          <Field label="Token budget" htmlFor={ids.budget} required>
-            <input
-              id={ids.budget}
-              type="number"
-              min={1}
-              value={tokenBudget}
-              onChange={(e) => setTokenBudget(e.target.value)}
-              className={inputClass}
-            />
-          </Field>
-        </div>
+        <MultiSelectField
+          label="Tone override"
+          hint="optional"
+          options={TONE_OPTIONS}
+          value={tones}
+          onChange={setTones}
+          placeholder="Select tones or type your own…"
+        />
 
         <ChipGroup
           legend="Channels"

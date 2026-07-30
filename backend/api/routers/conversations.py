@@ -22,7 +22,7 @@ from pipeline.locale_utils import SOURCE_LOCALE, SUPPORTED_LOCALES, is_locale_su
 from services.chat.brief_collector import brief_collector
 from services.campaign.campaign_query import get_recent_campaigns
 from services.campaign.similarity_service import find_similar_campaign
-from services.chat.conversation_planner import conversation_planner
+from services.chat.conversation_planner import compute_brief_field_states, conversation_planner
 from services.chat.conversation_responder import conversation_responder
 from services.chat.session_manager import session_manager
 from services.chat.understanding_engine import understanding_engine
@@ -116,9 +116,9 @@ async def _resolve_ws_user(
 
 
 def _chat_state_context(session: ConversationSession) -> dict[str, Any]:
-    # Chat is tier-aware via JUDGE_TIER (the live Redis toggle is deferred).
+    # Chat is tier-aware via LLM_COST_TIER (the live Redis toggle is deferred).
     # free → Groq (*-free) aliases for $0 spend; paid → existing paid aliases.
-    if (settings.JUDGE_TIER or "free").lower() == "paid":
+    if (settings.LLM_COST_TIER or "free").lower() == "paid":
         model_aliases = {
             "utility": "util-fast",
             "brief_collector": "brief-collector",
@@ -132,6 +132,16 @@ def _chat_state_context(session: ConversationSession) -> dict[str, Any]:
             "understanding": "understanding-free",
             "responder": "responder-chat-free",
         }
+    # Per-role overrides, independent of LLM_COST_TIER (see resolve_model_aliases).
+    chat_overrides = {
+        "utility": settings.CHAT_UTILITY_MODEL_ALIAS,
+        "brief_collector": settings.CHAT_BRIEF_COLLECTOR_MODEL_ALIAS,
+        "understanding": settings.CHAT_UNDERSTANDING_MODEL_ALIAS,
+        "responder": settings.CHAT_RESPONDER_MODEL_ALIAS,
+    }
+    for key, override in chat_overrides.items():
+        if override:
+            model_aliases[key] = override
     return {
         "campaign_id": session.active_campaign_id,
         "org_id": session.org_id,
@@ -712,6 +722,11 @@ async def _process_turn(
         "suggested_prompts": planner_output.suggested_prompts if planner_output else [],
         "correction_detected": planner_output.correction_detected if planner_output else False,
         "pending_reviews": pending_reviews,
+        # Field names this turn rejected free-text input for (e.g. picker-only
+        # audience_segments) — lets the frontend force the matching inline
+        # picker into view immediately, instead of waiting for it to become
+        # the "first incomplete step" in the fixed brief-step order.
+        "rejected_fields": list(extraction_meta.rejected.keys()),
     }
 
 
@@ -1712,6 +1727,10 @@ async def set_brief_field(
         "is_complete": is_complete,
         "awaiting_confirmation": is_complete,
         "message": ack_message,
+        # Picker updates bypass the chat websocket turn entirely, so without
+        # this the field-status panel kept showing stale "missing" until the
+        # next chat message recomputed it (2026-07-30 fix).
+        "brief_field_states": [state.model_dump() for state in compute_brief_field_states(brief)],
     }
 
 

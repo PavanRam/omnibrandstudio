@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   MessageSquareText,
   Send,
@@ -820,6 +820,7 @@ function ChatThreadPanel({
   campaignEvents,
   campaignStatus,
   onOpenSampleBrief,
+  forcedPickerStep = '',
 }) {
   const stageBadges = [
     conversationStage && { label: conversationStage.replaceAll('_', ' '), key: 'stage' },
@@ -834,7 +835,13 @@ function ChatThreadPanel({
   // on — same "first incomplete slot" logic the sidebar checklist uses, so
   // the inline picker always matches what the assistant just asked about.
   // No campaign running yet, brief not already complete, not mid-reply.
-  const currentBriefStep = computeBriefSteps(brief).find((s) => !s.ok);
+  // `forcedPickerStep` (set when the last turn rejected free-text input for
+  // a picker-only field) takes priority — otherwise a user who has already
+  // typed a segment name would just see the checklist stay "Pending" with no
+  // picker until every earlier step also happened to be filled.
+  const briefSteps = computeBriefSteps(brief);
+  const forcedStep = forcedPickerStep && briefSteps.find((s) => s.key === forcedPickerStep);
+  const currentBriefStep = (forcedStep && !forcedStep.ok ? forcedStep : null) || briefSteps.find((s) => !s.ok);
   const showInlinePicker =
     Boolean(conversationId) &&
     !campaignId &&
@@ -844,6 +851,11 @@ function ChatThreadPanel({
     PICKER_STEP_KEYS.has(currentBriefStep.key) &&
     messages.length > 0 &&
     messages[messages.length - 1]?.role !== 'user';
+
+  const messagesEndRef = useRef(null);
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ block: 'end' });
+  }, [messages, waitingForReply, showInlinePicker]);
 
   return (
     <section className="flex h-[calc(100vh-13rem)] min-h-[32rem] flex-col overflow-hidden rounded-2xl border border-border bg-surface card-shadow">
@@ -1096,6 +1108,8 @@ function ChatThreadPanel({
             </div>
           </div>
         ) : null}
+
+        <div ref={messagesEndRef} />
       </div>
 
       {/* Composer */}
@@ -2396,12 +2410,16 @@ function parseSocketPayload(payload) {
   const briefFieldStates = Array.isArray(payload?.brief_field_states)
     ? payload.brief_field_states.filter((value) => value && typeof value === 'object')
     : [];
+  const rejectedFields = Array.isArray(payload?.rejected_fields)
+    ? payload.rejected_fields.filter((value) => typeof value === 'string')
+    : [];
 
   return {
     updates,
     changes,
     suggestedPrompts,
     briefFieldStates,
+    rejectedFields,
     conversationStage:
       typeof payload?.conversation_stage === 'string' && payload.conversation_stage
         ? payload.conversation_stage
@@ -2682,6 +2700,11 @@ export function ConversationView() {
   const [message, setMessage] = useState('');
   const [messages, setMessages] = useState([]);
   const [brief, setBrief] = useState({});
+  // A field the latest turn rejected free-text input for (see rejected_fields
+  // in the turn response) — forces that field's inline picker into view even
+  // if an earlier brief step is still incomplete, so the picker appears right
+  // where the user's rejected mention was, not just when its turn comes up.
+  const [forcedPickerStep, setForcedPickerStep] = useState('');
   const [conversationStage, setConversationStage] = useState('');
   const [primaryObjective, setPrimaryObjective] = useState('');
   const [turnType, setTurnType] = useState('');
@@ -2825,6 +2848,9 @@ export function ConversationView() {
       if (payload.brief) setBrief(payload.brief);
       if (payload.campaign_id) setCampaignId(payload.campaign_id);
       setSimilarCampaign(payload.similar_campaign || null);
+      setForcedPickerStep(
+        parsed.rejectedFields.find((field) => PICKER_STEP_KEYS.has(field)) || '',
+      );
       setConversationStage(parsed.conversationStage || '');
       setPrimaryObjective(parsed.primaryObjective || '');
       setTurnType(parsed.turnType || '');
@@ -2863,6 +2889,13 @@ export function ConversationView() {
     enabled: Boolean(conversationId),
     onMessage: handleSocketMessage,
   });
+
+  // The "reconnecting" banner is only meaningful while the socket is down —
+  // clear it once the socket comes back so it doesn't linger indefinitely.
+  useEffect(() => {
+    if (!wsConnected) return;
+    setError((prev) => (prev === 'Chat is reconnecting. Please try again in a moment.' ? '' : prev));
+  }, [wsConnected]);
 
   const createCampaignStream = useCallback(
     () => openCampaignEventStream(campaignId),
@@ -3182,6 +3215,13 @@ export function ConversationView() {
   const handleBriefUpdated = (res, label) => {
     if (!res) return;
     setBrief(res.brief);
+    // Picker updates bypass the chat websocket turn, so the field-status
+    // panel needs this response's own brief_field_states — otherwise it
+    // kept showing stale "missing" until the next chat message came in
+    // and recomputed it server-side (2026-07-30 fix).
+    if (Array.isArray(res.brief_field_states)) {
+      setBriefFieldStates(res.brief_field_states);
+    }
     setMessages((prev) => {
       const next = [...prev];
       // Collapse the picker selection into a normal user-style bubble
@@ -3440,6 +3480,7 @@ export function ConversationView() {
               campaignEvents={mergedEvents}
               campaignStatus={campaignStatus}
               onOpenSampleBrief={() => setSampleBriefModalOpen(true)}
+              forcedPickerStep={forcedPickerStep}
             />
 
             {reviewModalCampaignId ? (

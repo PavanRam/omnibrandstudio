@@ -8,21 +8,40 @@ from pipeline.schemas import CreateCampaignRequest
 from pipeline.state import CampaignBrief, OmniBrandState
 
 
+# Maps each resolve_model_aliases() key to the Settings field that can
+# override it independent of LLM_COST_TIER (empty string = no override).
+_OVERRIDE_SETTINGS: dict[str, str] = {
+    "generation": "GENERATION_MODEL_ALIAS",
+    "personalization": "PERSONALIZATION_MODEL_ALIAS",
+    "translation": "TRANSLATION_MODEL_ALIAS",
+    "translation_validator": "TRANSLATION_VALIDATOR_MODEL_ALIAS",
+    "brand_truthfulness": "BRAND_TRUTHFULNESS_MODEL_ALIAS",
+    "judge-1": "JUDGE_1_MODEL_ALIAS",
+    "judge-2": "JUDGE_2_MODEL_ALIAS",
+    "judge-3": "JUDGE_3_MODEL_ALIAS",
+    "util-fast": "UTIL_FAST_MODEL_ALIAS",
+    "eval": "EVAL_MODEL_ALIAS",
+}
+
+
 def resolve_model_aliases(tier: str | None = None) -> dict[str, str]:
-    """Map logical model roles to LiteLLM aliases for the selected judge tier.
+    """Map logical model roles to LiteLLM aliases for the selected cost tier.
 
     ``free`` (default) uses the Groq cross-family panel and free-tier generation
     so campaigns validate without paid spend; ``paid`` uses the pinned
     Claude/GPT-4o/Groq panel and premium generation. Switching tiers is a config
-    flip (``JUDGE_TIER``) — no agent code reads raw model names.
+    flip (``LLM_COST_TIER``) — no agent code reads raw model names. Any
+    ``*_MODEL_ALIAS`` setting in ``_OVERRIDE_SETTINGS`` pins that one role
+    regardless of tier.
     """
-    resolved = (tier or settings.JUDGE_TIER or "free").lower()
+    resolved = (tier or settings.LLM_COST_TIER or "free").lower()
     if resolved == "paid":
         # Paid aliases unchanged. brand_truthfulness / translation /
         # translation_validator are made explicit here (agents previously fell
         # back to these same defaults) so both tiers stay symmetric.
-        return {
+        aliases = {
             "generation": "gen-premium",
+            "personalization": "gen-premium",
             "judge-1": "judge-1",
             "judge-2": "judge-2",
             "judge-3": "judge-3",
@@ -32,18 +51,25 @@ def resolve_model_aliases(tier: str | None = None) -> dict[str, str]:
             "translation": "translation-primary",
             "translation_validator": "translation-validator",
         }
-    # Free tier — every role routes to a Groq (*-free) alias for $0 spend.
-    return {
-        "generation": "gen-free",
-        "judge-1": "judge-1-free",
-        "judge-2": "judge-2-free",
-        "judge-3": "judge-3-free",
-        "util-fast": "util-fast-free",
-        "eval": "eval-model-free",
-        "brand_truthfulness": "eval-model-free",
-        "translation": "translation-primary-free",
-        "translation_validator": "translation-validator-free",
-    }
+    else:
+        # Free tier — every role routes to a Groq (*-free) alias for $0 spend.
+        aliases = {
+            "generation": "gen-free",
+            "personalization": "gen-free",
+            "judge-1": "judge-1-free",
+            "judge-2": "judge-2-free",
+            "judge-3": "judge-3-free",
+            "util-fast": "util-fast-free",
+            "eval": "eval-model-free",
+            "brand_truthfulness": "eval-model-free",
+            "translation": "translation-primary-free",
+            "translation_validator": "translation-validator-free",
+        }
+    for key, setting_name in _OVERRIDE_SETTINGS.items():
+        override = getattr(settings, setting_name, "")
+        if override:
+            aliases[key] = override
+    return aliases
 
 
 def build_initial_state(

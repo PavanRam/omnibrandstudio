@@ -21,7 +21,7 @@ from pipeline.state import AggregatedScore, ContentVariant, OmniBrandState
 
 log = structlog.get_logger()
 
-_JUDGE_NODES = ["judge_claude", "judge_gpt4o", "judge_llama"]
+_JUDGE_NODES = ["judge_1", "judge_2", "judge_3"]
 
 # Reflexion fires on a hard reject, or on a flag whose confidence is low.
 _FLAG_RETRY_MEAN = 0.72

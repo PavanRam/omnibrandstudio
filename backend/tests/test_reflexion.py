@@ -127,7 +127,7 @@ def test_router_refans_when_reflexed_variant_lacks_new_aggregate():
     variant = _variant(retry_count=1, reflexion_applied=True)
     state = _state([variant], [_aggregate("auto_reject", 0.40, round_=0)])
 
-    assert reflexion_router(state) == ["judge_claude", "judge_gpt4o", "judge_llama"]
+    assert reflexion_router(state) == ["judge_1", "judge_2", "judge_3"]
 
 
 def test_router_proceeds_when_reflexed_variant_reaggregated():
