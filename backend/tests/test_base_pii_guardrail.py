@@ -15,11 +15,12 @@ def _state() -> dict:
 
 
 def _response_payload(content: str) -> dict:
+    # Real LiteLLM proxy JSON body never has `_hidden_params` (SDK-only
+    # attribute) — cost lives in a response header, irrelevant to these tests.
     return {
         "choices": [{"message": {"content": content}}],
         "usage": {"prompt_tokens": 10, "completion_tokens": 5},
         "model": "gen-free",
-        "_hidden_params": {"response_cost": 0.001},
     }
 
 

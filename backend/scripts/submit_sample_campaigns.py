@@ -70,6 +70,7 @@ P1_MSGS = [
     "Exclusively curated for discerning tastes.",
     "Quality that speaks for itself.",
     "A world of premium products, personally selected for you.",
+    "CTA guidance — use exactly 'Explore the Collection' for email, 'Shop the Edit' for instagram, and 'View Exclusive Pieces' for linkedin; keep this exact phrasing per channel and never substitute a CTA from another channel or persona.",
 ]
 P1_CH = ["email", "instagram", "linkedin"]
 P1_SEG = ["High-Income Store Spender"]
@@ -80,6 +81,7 @@ P2_MSGS = [
     "Smart choices for everyday living.",
     "We respect your budget — and your intelligence.",
     "Real value, real savings, real results.",
+    "CTA guidance — use exactly 'See Your Savings' for email and 'Find Your Savings' for sms; keep this exact phrasing per channel and never substitute a CTA from another channel or persona.",
 ]
 P2_CH = ["email", "sms"]
 P2_SEG = ["Budget-Conscious Low Spender"]
@@ -90,6 +92,7 @@ P3_MSGS = [
     "Everything you need, right here, right now.",
     "Discover what's trending — curated just for you.",
     "Fast. Easy. Delivered to your door.",
+    "CTA guidance — use exactly 'Link in Bio' for instagram, 'Shop Now' for facebook, and 'See What's New' for twitter; keep this exact phrasing per channel and never substitute a CTA from another channel or persona.",
 ]
 P3_CH = ["instagram", "facebook", "twitter"]
 P3_SEG = ["Web-Savvy Mid-Tier Buyer"]
@@ -100,6 +103,7 @@ P4_MSGS = [
     "Your exclusive deal is waiting.",
     "Up to 50% off. Right now.",
     "Act fast — limited stock at this price.",
+    "CTA guidance — use exactly 'Grab This Deal' for sms, 'Unlock Your Offer' for whatsapp, and 'Shop Before It's Gone' for facebook; keep this exact phrasing per channel and never substitute a CTA from another channel or persona.",
 ]
 P4_CH = ["sms", "whatsapp", "facebook"]
 P4_SEG = ["Deal-Seeking Value Hunter"]
@@ -110,6 +114,7 @@ P5_MSGS = [
     "As one of our most valued customers, this is for you.",
     "Thank you for your loyalty. You deserve this.",
     "Exclusively for our most engaged community members.",
+    "CTA guidance — use exactly 'Claim Your Reward' for email, 'Early Access — Link in Bio' for instagram, and 'See What We've Saved for You' for linkedin; keep this exact phrasing per channel and never substitute a CTA from another channel or persona.",
 ]
 P5_CH = ["email", "instagram", "linkedin"]
 P5_SEG = ["Highly Engaged Campaign Responder"]

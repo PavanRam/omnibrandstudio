@@ -22,6 +22,9 @@ class NullLangfuse:
     def generation(self, *args: Any, **kwargs: Any) -> "NullLangfuse":
         return self
 
+    def score(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
     def update(self, *args: Any, **kwargs: Any) -> None:
         return None
 

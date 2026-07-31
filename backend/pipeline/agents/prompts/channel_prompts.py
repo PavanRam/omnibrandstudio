@@ -1,6 +1,73 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+import structlog
+
+log = structlog.get_logger()
+
 PROMPT_VERSION = "v1.0.0"
+
+# Persona-specific CTA phrases, loaded once from the same brand-guideline file
+# personalization.py already reads. Content generation previously only had a
+# generic per-CHANNEL cta_pattern example below (not persona-aware), which
+# competed with whatever the RAG-retrieved brand guide excerpt said for that
+# persona — a real contributor to judges' CTA critical_violations. Grounding
+# the system prompt itself in the exact brand-guide phrase removes that
+# ambiguity for every campaign matching a known persona, not just ones whose
+# brief happens to spell out the CTA in its key_messages.
+_CTA_LIBRARY_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "data"
+    / "datasets"
+    / "processed"
+    / "brand_guidelines"
+    / "cta_library.json"
+)
+
+
+def _load_cta_library() -> dict:
+    try:
+        return json.loads(_CTA_LIBRARY_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:  # missing/unreadable file — degrade gracefully
+        log.warning("cta_library_unavailable", error=str(exc))
+        return {}
+
+
+CTA_LIBRARY: dict = _load_cta_library()
+
+# cta_library.json's channel_specific keys only cover Email/Instagram/Facebook/
+# Web/Catalog/Store — these pipeline channels have no dedicated brand-guide
+# entry, so each persona's closest-fit CTA is hand-picked here, mirroring
+# docs/sample-campaign-briefs.md's per-persona "CTA guidance" notes exactly.
+_CHANNEL_TO_CTA_KEY = {"email": "Email", "instagram": "Instagram", "facebook": "Facebook"}
+_CTA_CHANNEL_FALLBACK: dict[str, dict[str, str]] = {
+    "High-Income Store Spender": {"linkedin": "View Exclusive Pieces"},
+    "Budget-Conscious Low Spender": {"sms": "Find Your Savings"},
+    "Web-Savvy Mid-Tier Buyer": {"twitter": "See What's New"},
+    "Deal-Seeking Value Hunter": {"sms": "Grab This Deal", "whatsapp": "Unlock Your Offer"},
+    "Highly Engaged Campaign Responder": {"linkedin": "See What We've Saved for You"},
+}
+
+
+def persona_channel_cta(segment: str, channel: str) -> str | None:
+    """Exact brand-guide CTA phrase for this persona+channel, or ``None`` if
+    the segment isn't a known persona (falls back to the generic per-channel
+    ``cta_pattern`` in ``DEFAULT_CHANNEL_CONSTRAINTS``)."""
+    entry = CTA_LIBRARY.get(segment)
+    if not entry:
+        return None
+    cta_key = _CHANNEL_TO_CTA_KEY.get(channel)
+    if cta_key:
+        exact = (entry.get("channel_specific") or {}).get(cta_key)
+        if exact:
+            return exact
+    fallback = _CTA_CHANNEL_FALLBACK.get(segment, {}).get(channel)
+    if fallback:
+        return fallback
+    primary = entry.get("primary_ctas") or []
+    return primary[0] if primary else None
 
 # Seeded here in-code. In the full system this should move to the DB-backed
 # prompt_registry (see services/prompt_service.py) — render_channel_prompt()
@@ -79,7 +146,14 @@ _SYSTEM_TEMPLATE = (
     "or brand guide excerpts. Unsubstantiated statistics are treated as factual "
     "fabrication and will cause the content to be auto-rejected by the compliance "
     "judges. When you have no sourced number, describe the benefit qualitatively "
-    "instead (e.g. 'reduce costs', 'work faster') — never attach a made-up figure."
+    "instead (e.g. 'reduce costs', 'work faster') — never attach a made-up figure.\n"
+    "NO INVENTED PRODUCT ATTRIBUTES: never invent product specifics — aging or vintage "
+    "periods (e.g. 'aged 12 months', 'vieilli 12 mois'), scarcity or availability status "
+    "(e.g. 'limited edition', 'édition limitée', 'only 100 left'), awards, certifications, "
+    "origin/provenance, materials, or ingredients — unless that exact detail appears "
+    "verbatim in the brief or brand guide excerpts. These are factual fabrication and are "
+    "auto-rejected just like fabricated numbers. When a detail is not sourced, omit it "
+    "rather than inventing one."
 )
 
 _USER_TEMPLATE = (
@@ -96,7 +170,10 @@ _USER_TEMPLATE = (
     "Only include claims and offers present in the brief above. Do not invent any.\n"
     "Do NOT attach any percentage, multiplier, dollar amount, or other statistic "
     "unless it appears verbatim in the brief or brand guide — fabricated numbers are "
-    "auto-rejected. Prefer qualitative benefit language when you have no sourced figure."
+    "auto-rejected. Prefer qualitative benefit language when you have no sourced figure.\n"
+    "Do NOT invent product attributes (aging/vintage period, 'limited edition' or other "
+    "scarcity, awards, certifications, origin, materials, ingredients) unless stated in "
+    "the brief or brand guide — omit the detail instead of inventing it."
 )
 
 

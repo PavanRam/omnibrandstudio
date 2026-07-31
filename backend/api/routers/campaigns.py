@@ -194,7 +194,7 @@ def _agent_input_context(agent_name: str, prev_vals: dict) -> dict:
             "audience_segments": brief.get("audience_segments"),
             "target_audience": brief.get("target_audience"),
         }
-    if agent_name in ("judge_claude", "judge_gpt4o", "judge_llama"):
+    if agent_name in ("judge_1", "judge_2", "judge_3"):
         return {
             "variants_to_judge": len(prev_vals.get("variants") or []),
             "variant_task_ids": [

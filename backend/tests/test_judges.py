@@ -14,7 +14,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from pipeline.agents import judges
-from pipeline.agents.prompts.judge_prompts import CRITERIA
+from pipeline.agents.base import LLMCallError
+from pipeline.agents.prompts.judge_prompts import CRITERIA, build_judge_messages
 
 
 def _score_json(value: float, *, routing: str = "auto_approve", critical=None) -> str:
@@ -61,9 +62,9 @@ def _state(**overrides) -> dict:
 @pytest.mark.parametrize(
     "judge_fn, expected_alias",
     [
-        (judges.judge_claude, "judge-1-free"),
-        (judges.judge_gpt4o, "judge-2-free"),
-        (judges.judge_llama, "judge-3-free"),
+        (judges.judge_1, "judge-1-free"),
+        (judges.judge_2, "judge-2-free"),
+        (judges.judge_3, "judge-3-free"),
     ],
 )
 async def test_each_judge_populates_brand_scores(monkeypatch, judge_fn, expected_alias):
@@ -91,7 +92,7 @@ async def test_judge_uses_paid_alias_from_state(monkeypatch):
     monkeypatch.setattr(judges, "traced_llm_call", mock)
 
     state = _state(model_aliases={"judge-1": "judge-1"})
-    result = await judges.judge_claude(state)
+    result = await judges.judge_1(state)
 
     assert result["brand_scores"][0]["judge_model"] == "judge-1"
 
@@ -106,7 +107,7 @@ async def test_judge_skips_already_scored_round(monkeypatch):
         "judge_model": "judge-1-free",
         "evaluation_round": 0,
     }
-    result = await judges.judge_claude(_state(brand_scores=[existing]))
+    result = await judges.judge_1(_state(brand_scores=[existing]))
 
     assert result["brand_scores"] == []
     mock.assert_not_called()
@@ -117,7 +118,7 @@ async def test_judge_skips_non_scoreable_variant(monkeypatch):
     mock = AsyncMock(return_value=(_score_json(9.0), {"cost": 0.0}))
     monkeypatch.setattr(judges, "traced_llm_call", mock)
 
-    result = await judges.judge_claude(_state(variants=[_variant(status="failed")]))
+    result = await judges.judge_1(_state(variants=[_variant(status="failed")]))
 
     assert result["brand_scores"] == []
     mock.assert_not_called()
@@ -128,6 +129,95 @@ async def test_judge_degrades_on_unparseable_output(monkeypatch):
     mock = AsyncMock(return_value=("not json at all", {"cost": 0.0}))
     monkeypatch.setattr(judges, "traced_llm_call", mock)
 
-    result = await judges.judge_claude(_state())
+    result = await judges.judge_1(_state())
 
     assert result["brand_scores"] == []
+
+
+@pytest.mark.asyncio
+async def test_judge_retries_without_json_mode_on_400(monkeypatch):
+    """A strict-JSON-mode 400 retries once without response_format, then parses."""
+    mock = AsyncMock(
+        side_effect=[
+            LLMCallError("judge-1-free json_validate_failed", status_code=400),
+            (_score_json(8.0), {"cost": 0.0}),
+        ]
+    )
+    monkeypatch.setattr(judges, "traced_llm_call", mock)
+
+    result = await judges.judge_1(_state())
+
+    assert len(result["brand_scores"]) == 1
+    assert result["brand_scores"][0]["composite_score"] == 8.0
+    assert mock.call_count == 2
+    # First attempt forces JSON mode; the recovery attempt drops it so the
+    # model can emit a JSON object in prose instead of failing schema validation.
+    _, first_kwargs = mock.call_args_list[0]
+    _, retry_kwargs = mock.call_args_list[1]
+    assert first_kwargs["response_format"] == {"type": "json_object"}
+    assert "response_format" not in retry_kwargs
+    assert retry_kwargs["temperature"] == 0
+
+
+@pytest.mark.asyncio
+async def test_judge_does_not_retry_non_400(monkeypatch):
+    """A non-400 failure isolates the variant without a second call."""
+    mock = AsyncMock(
+        side_effect=LLMCallError("judge-1-free upstream 500", status_code=500)
+    )
+    monkeypatch.setattr(judges, "traced_llm_call", mock)
+
+    result = await judges.judge_1(_state())
+
+    assert result["brand_scores"] == []
+    assert mock.call_count == 1
+
+
+# ── canonical-CTA grounding (locale-aware cta_style) ─────────────────────────
+
+
+def test_build_judge_messages_omits_cta_block_when_no_canonical_cta():
+    messages = build_judge_messages(
+        brand_guide="Speak warmly.", channel="email", locale="en", content="Buy now."
+    )
+    user = messages[1]["content"]
+    assert "APPROVED CALL-TO-ACTION" not in user
+    assert "faithful translation" not in user.lower()
+
+
+def test_build_judge_messages_injects_cta_block_for_non_english_locale():
+    messages = build_judge_messages(
+        brand_guide="Speak warmly.",
+        channel="instagram",
+        locale="fr-FR",
+        content="Cliquez sur le lien dans notre bio",
+        canonical_cta="Link in Bio",
+    )
+    user = messages[1]["content"]
+    assert 'exactly: "Link in Bio"' in user
+    assert "fr-FR" in user
+    # The core instruction: a faithful translation of the approved CTA is
+    # compliant and must not be penalised for being translated.
+    assert "faithful translation" in user.lower()
+    assert "do not penalize" in user.lower() or "do not penalise" in user.lower()
+
+
+@pytest.mark.asyncio
+async def test_judge_threads_persona_channel_cta_into_prompt(monkeypatch):
+    """A known persona/channel variant carries its authoritative CTA into the
+    judge prompt so a translated CTA isn't flagged as non-compliant."""
+    mock = AsyncMock(return_value=(_score_json(9.0), {"cost": 0.0}))
+    monkeypatch.setattr(judges, "traced_llm_call", mock)
+
+    variant = _variant(task_id="instagram_Web-Savvy Mid-Tier Buyer_fr")
+    variant["channel"] = "instagram"
+    variant["segment"] = "Web-Savvy Mid-Tier Buyer"
+    variant["locale"] = "fr-FR"
+
+    await judges.judge_1(_state(variants=[variant]))
+
+    _, kwargs = mock.call_args
+    user_msg = kwargs["messages"][1]["content"]
+    assert 'exactly: "Link in Bio"' in user_msg
+    assert "faithful translation" in user_msg.lower()
+

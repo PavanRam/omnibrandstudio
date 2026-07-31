@@ -185,6 +185,46 @@ def test_merge_rejects_audience_segments_from_free_text_even_when_extracted() ->
     assert rejected == {"audience_segments": ["high-spenders"]}
 
 
+def test_merge_does_not_reject_already_selected_segment_re_echoed_from_history() -> None:
+    """Regression: once a segment is validly set via the picker
+    (set_brief_field), the understanding engine re-echoes it from conversation
+    history on later turns — including the bare "yes" confirmation. Re-flagging
+    that already-selected value as rejected fired the picker heads-up on every
+    turn after selection. A patch value already present in the brief is a
+    valid selection being echoed, not a new free-text guess, so it must not be
+    rejected."""
+    current = PartialBrief(
+        objective="increase repeat visits",
+        audience_segments=["Budget-Conscious Low Spender"],
+    )
+
+    merged, rejected = brief_collector._merge(
+        current, {"audience_segments": ["Budget-Conscious Low Spender"]}, "yes"
+    )
+
+    assert merged.audience_segments == ["Budget-Conscious Low Spender"]
+    assert rejected == {}
+
+
+def test_merge_rejects_only_new_free_text_segment_when_another_is_selected() -> None:
+    """When a valid segment is already selected and the extraction re-echoes it
+    alongside a genuinely new free-text guess, only the new free-text value is
+    flagged — the already-selected one is left alone."""
+    current = PartialBrief(
+        objective="increase repeat visits",
+        audience_segments=["Budget-Conscious Low Spender"],
+    )
+
+    merged, rejected = brief_collector._merge(
+        current,
+        {"audience_segments": ["Budget-Conscious Low Spender", "high-spenders"]},
+        "also target high-spenders",
+    )
+
+    assert merged.audience_segments == ["Budget-Conscious Low Spender"]
+    assert rejected == {"audience_segments": ["high-spenders"]}
+
+
 def test_merge_rejects_unsupported_channels_and_locales_from_free_text() -> None:
     """Free-text channels/locales must be validated the same way the
     structured picker already validates them (item 23d, 2026-07-27) — an

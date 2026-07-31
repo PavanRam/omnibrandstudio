@@ -10,7 +10,6 @@ task in the campaign, not just the SMS ones.
 from dataclasses import dataclass
 
 import pytest
-
 from pipeline.agents.intake import intake_agent
 
 
@@ -114,12 +113,23 @@ async def test_multi_locale_rag_context_merges_all_requested_locales(monkeypatch
         version: str
         score: float
 
-    calls: list[str] = []
+    calls: list[tuple[str, str]] = []
 
     class _FakeRetriever:
         async def retrieve(self, *, query, brand_id, locale, n_results):
-            calls.append(locale)
-            return [_FakeChunk(content=f"guidance for {locale}", section_type="tone", version="v1", score=0.9)]
+            calls.append((locale, query))
+            # Distinguish the objective-based query from the supplementary
+            # per-segment query (added alongside a segment-specific RAG pull,
+            # see intake.py) so each still returns one distinct chunk.
+            label = "segment" if "customer segment" in query else "objective"
+            return [
+                _FakeChunk(
+                    content=f"{label} guidance for {locale}",
+                    section_type="tone",
+                    version="v1",
+                    score=0.9,
+                )
+            ]
 
     monkeypatch.setattr(intake_module, "get_retriever", lambda: _FakeRetriever())
 
@@ -129,8 +139,11 @@ async def test_multi_locale_rag_context_merges_all_requested_locales(monkeypatch
 
     result = await intake_agent(state)
 
-    assert calls == ["en-US", "fr-FR"]
+    objective_locales = [loc for loc, q in calls if "customer segment" not in q]
+    assert objective_locales == ["en-US", "fr-FR"]
     assert result["rag_context"]["brand_guide_chunks"] == [
-        "guidance for en-US",
-        "guidance for fr-FR",
+        "objective guidance for en-US",
+        "segment guidance for en-US",
+        "objective guidance for fr-FR",
+        "segment guidance for fr-FR",
     ]

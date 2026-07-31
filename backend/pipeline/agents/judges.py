@@ -24,8 +24,15 @@ from typing import Any, cast
 
 import structlog
 
+from core.langfuse import get_langfuse
 from core.metrics import judge_latency
-from pipeline.agents.base import publish_campaign_event, safe_agent_run, traced_llm_call
+from pipeline.agents.base import (
+    LLMCallError,
+    publish_campaign_event,
+    safe_agent_run,
+    traced_llm_call,
+)
+from pipeline.agents.prompts.channel_prompts import persona_channel_cta
 from pipeline.agents.prompts.judge_prompts import CRITERIA, build_judge_messages
 from pipeline.schemas import BrandScoreOutput
 from pipeline.state import BrandScore, OmniBrandState
@@ -122,6 +129,57 @@ def _to_brand_score(
     }
 
 
+async def _judge_llm_call(
+    *,
+    model: str,
+    messages: list[dict],
+    agent_name: str,
+    judge_label: str,
+    variant_id: str,
+    round_: int,
+    state: OmniBrandState,
+) -> tuple[str, dict]:
+    """Call a judge model, recovering from a strict-JSON-mode 400.
+
+    Some Groq models (e.g. gpt-oss, qwen) intermittently reject the long
+    multi-criterion judge prompt with a 400 ``json_validate_failed`` when
+    ``response_format={"type": "json_object"}`` is set — and LiteLLM treats a
+    400 as non-retriable, so its configured deployment fallbacks never fire.
+    Retry the same call once WITHOUT ``response_format`` (the model still emits
+    a JSON object in prose, which ``_parse_brand_score`` already slices out),
+    so a JSON-mode hiccup degrades to a normal parse instead of losing a judge.
+    """
+    try:
+        return await traced_llm_call(
+            model=model,
+            messages=messages,
+            task=agent_name,
+            state=cast(dict, state),
+            agent=agent_name,
+            response_format={"type": "json_object"},
+            temperature=0,
+        )
+    except LLMCallError as exc:
+        if exc.status_code != 400:
+            raise
+        log.warning(
+            "judge_json_mode_retry",
+            campaign_id=state.get("campaign_id"),
+            judge=judge_label,
+            variant_id=variant_id,
+            round=round_,
+            model=model,
+        )
+        return await traced_llm_call(
+            model=model,
+            messages=messages,
+            task=agent_name,
+            state=cast(dict, state),
+            agent=agent_name,
+            temperature=0,
+        )
+
+
 async def _run_judge(
     state: OmniBrandState, alias_key: str, agent_name: str, judge_label: str
 ) -> dict:
@@ -150,6 +208,12 @@ async def _run_judge(
             channel=variant.get("channel", "unknown"),
             locale=variant.get("locale", "en"),
             content=content,
+            # Authoritative approved CTA for this persona/channel — lets the
+            # judge accept a faithful translation of it on non-source locales
+            # instead of flagging every translated CTA as non-compliant.
+            canonical_cta=persona_channel_cta(
+                variant.get("segment", ""), variant.get("channel", "")
+            ),
         )
         start = time.perf_counter()
         # 2026-07-27: previously the traced_llm_call was unguarded, so a failure
@@ -162,14 +226,14 @@ async def _run_judge(
         # survive; the judge returns whatever it managed to score and the aggregator
         # degrades gracefully instead of losing a whole judge.
         try:
-            raw, _usage = await traced_llm_call(
+            raw, usage = await _judge_llm_call(
                 model=model,
                 messages=messages,
-                task=agent_name,
-                state=cast(dict, state),
-                agent=agent_name,
-                response_format={"type": "json_object"},
-                temperature=0,
+                agent_name=agent_name,
+                judge_label=judge_label,
+                variant_id=variant_id,
+                round_=round_,
+                state=state,
             )
         except Exception as exc:  # noqa: BLE001 — isolate one variant's failure
             log.warning(
@@ -190,6 +254,26 @@ async def _run_judge(
             continue
         score = _to_brand_score(variant_id, model, parsed, latency_ms, round_)
         produced.append(score)
+
+        # Push the composite to Langfuse so Scores Analytics populates; keyed
+        # to this judge's own LLM-call trace via the returned trace_id.
+        trace_id = usage.get("trace_id")
+        if trace_id:
+            try:
+                get_langfuse().score(
+                    trace_id=trace_id,
+                    name="brand_composite",
+                    value=score["composite_score"],
+                    comment=judge_label,
+                )
+            except Exception as exc:  # noqa: BLE001 — scoring is best-effort
+                log.warning(
+                    "langfuse_score_failed",
+                    campaign_id=state.get("campaign_id"),
+                    judge=judge_label,
+                    variant_id=variant_id,
+                    error=str(exc),
+                )
 
         # 2026-07-27: judges previously never logged anything on a normal
         # score — routing_decision/critical_violations/per-criterion

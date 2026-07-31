@@ -70,7 +70,15 @@ class LLMCallError(RuntimeError):
     every agent already relies on to turn a raised exception into a clean
     per-task/per-variant failure — this class doesn't change how that
     happens, only ensures a real failure actually reaches it instead of
-    being disguised as a successful (fabricated) response."""
+    being disguised as a successful (fabricated) response.
+
+    ``status_code`` carries the last upstream HTTP status (0 if none) so
+    callers can distinguish a permanent 400 (e.g. Groq ``json_validate_failed``
+    in strict JSON mode) from a transient failure and recover accordingly."""
+
+    def __init__(self, message: str, *, status_code: int = 0) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 # HTTP statuses worth retrying — genuinely transient (rate limit, upstream
@@ -105,6 +113,7 @@ async def traced_llm_call(
     )
 
     start = time.perf_counter()
+    start_dt = datetime.now(UTC)
     with tracer.start_as_current_span(f"{agent}.llm_call") as span:
         span.set_attribute("llm.model", model)
         span.set_attribute("llm.task", task)
@@ -164,15 +173,35 @@ async def traced_llm_call(
                     error=str(last_exc),
                 )
                 raise LLMCallError(
-                    f"{task}: LLM call to {model} failed after retries (status={last_status}): {last_exc}"
+                    f"{task}: LLM call to {model} failed after retries (status={last_status}): {last_exc}",
+                    status_code=last_status,
                 ) from last_exc
 
     latency_ms = int((time.perf_counter() - start) * 1000)
+    end_dt = datetime.now(UTC)
     content = payload["choices"][0]["message"]["content"]
     usage = payload.get("usage", {})
     input_tokens = usage.get("prompt_tokens", 0)
     output_tokens = usage.get("completion_tokens", 0)
-    cost = float(payload.get("_hidden_params", {}).get("response_cost", 0.0) or 0.0)
+    # The LiteLLM PROXY (called here over raw HTTP, not the litellm Python SDK)
+    # never puts `_hidden_params` in the JSON body — that's an SDK-only,
+    # in-process attribute. The proxy reports per-call cost via the
+    # `x-litellm-response-cost` response header instead, so `_hidden_params`
+    # was silently always `{}` and cost was always 0.0 for every call ever
+    # made. Read the header first; keep the old body lookup only as a
+    # last-resort fallback in case a future SDK path ever populates it.
+    cost_header = response.headers.get("x-litellm-response-cost")
+    if cost_header is not None:
+        try:
+            cost = float(cost_header)
+        except (TypeError, ValueError):
+            cost = 0.0
+            log.warning("llm_call_cost_header_unparseable", task=task, value=cost_header)
+    else:
+        raw_response_cost = payload.get("_hidden_params", {}).get("response_cost")
+        cost = float(raw_response_cost or 0.0)
+        if not raw_response_cost:
+            log.warning("llm_call_cost_missing", task=task, model=model)
     resolved_model = str(payload.get("model") or model)
     provider = resolved_model.split("/")[0]
 
@@ -181,7 +210,35 @@ async def traced_llm_call(
     llm_tokens_total.labels(agent=agent, model=model, type="output").inc(output_tokens)
     llm_cost_usd_total.labels(agent=agent, model=model).inc(cost)
 
+    trace_id = getattr(trace, "id", None)
     try:
+        # Langfuse cost/usage/latency dashboards aggregate over generation
+        # observations, not bare traces — a trace with none shows up empty.
+        gen_fn = getattr(trace, "generation", None)
+        if callable(gen_fn):
+            gen = gen_fn(
+                name=task,
+                model=resolved_model,
+                input=messages,
+                output=content,
+                metadata={
+                    "model_alias": model,
+                    "provider": provider,
+                    "request_id": request_id,
+                },
+                usage={
+                    "input": input_tokens,
+                    "output": output_tokens,
+                    "total": input_tokens + output_tokens,
+                    "unit": "TOKENS",
+                    "totalCost": cost,
+                },
+                start_time=start_dt,
+                end_time=end_dt,
+            )
+            gen_end = getattr(gen, "end", None)
+            if callable(gen_end):
+                gen_end()
         trace.update(output=content)
         end_fn = getattr(trace, "end", None)
         if callable(end_fn):
@@ -241,6 +298,7 @@ async def traced_llm_call(
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "latency_ms": latency_ms,
+        "trace_id": trace_id,
     }
 
 
@@ -315,9 +373,9 @@ AGENT_WRITE_PERMISSIONS: dict[str, set[str]] = {
     "personalization_agent": {"variants", "token_cost_usd", "current_phase", "errors"},
     "translation_agent": {"variants", "token_cost_usd", "current_phase", "errors"},
     "judge_gate": {"judge_mode", "current_phase"},
-    "judge_claude": {"brand_scores", "errors"},
-    "judge_gpt4o": {"brand_scores", "errors"},
-    "judge_llama": {"brand_scores", "errors"},
+    "judge_1": {"brand_scores", "errors"},
+    "judge_2": {"brand_scores", "errors"},
+    "judge_3": {"brand_scores", "errors"},
     "confidence_aggregator": {
         "aggregated_scores",
         "review_requests",

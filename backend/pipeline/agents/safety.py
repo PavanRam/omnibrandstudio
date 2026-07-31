@@ -19,7 +19,7 @@ log = structlog.get_logger()
 # Re-exported so callers can import from one place.
 from pipeline.intake_validation import screen_for_injection as screen_for_injection  # noqa: F401
 
-_TOXICITY_MODEL = "martin-ha/toxic-comment-multi-label-classification-roberta"
+_TOXICITY_MODEL = "martin-ha/toxic-comment-model"
 _TOXICITY_THRESHOLD = 0.85
 
 # Module-level HF client (lazy singleton — only created if needed)

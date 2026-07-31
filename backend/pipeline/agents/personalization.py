@@ -33,9 +33,15 @@ from pipeline.state import ContentVariant, OmniBrandState
 try:
     # Same channel constraints the content generator (T3) uses — so a persona
     # rewrite stays within the channel's char limit and keeps required elements.
-    from pipeline.agents.prompts.channel_prompts import DEFAULT_CHANNEL_CONSTRAINTS
+    from pipeline.agents.prompts.channel_prompts import (
+        DEFAULT_CHANNEL_CONSTRAINTS,
+        persona_channel_cta,
+    )
 except Exception:  # module may be absent on some branches — degrade gracefully
     DEFAULT_CHANNEL_CONSTRAINTS = {}
+
+    def persona_channel_cta(*_args: str) -> str | None:
+        return None
 
 log = structlog.get_logger()
 
@@ -221,6 +227,18 @@ async def personalization_agent(state: OmniBrandState) -> dict:
             segment = variant.get("segment") or "consumer"
             profile = profiles.get(segment, _FALLBACK_PROFILE)
             channel = variant.get("channel") or "generic"
+            # Prefer the exact per-channel brand CTA over the persona-level
+            # cta_style (primary_ctas[0] only) so this rewrite stays consistent
+            # with the CTA content_generator already used for this channel.
+            exact_cta = persona_channel_cta(segment, channel)
+            if exact_cta:
+                profile = {
+                    **profile,
+                    "cta_style": (
+                        f'use exactly "{exact_cta}" verbatim — never paraphrase it or '
+                        "substitute a CTA from another channel or persona"
+                    ),
+                }
 
             # T4.3 — segment-conditioned LLM call.
             content, usage = await traced_llm_call(

@@ -54,14 +54,14 @@ async def test_first_campaign_overrides_config_skip():
 
 def test_router_full_fans_out_all_three():
     assert judge_gate_router({"judge_mode": "full"}) == [
-        "judge_claude",
-        "judge_gpt4o",
-        "judge_llama",
+        "judge_1",
+        "judge_2",
+        "judge_3",
     ]
 
 
 def test_router_lite_single_judge():
-    assert judge_gate_router({"judge_mode": "lite"}) == ["judge_claude"]
+    assert judge_gate_router({"judge_mode": "lite"}) == ["judge_1"]
 
 
 def test_router_skip_bypasses_to_review_gate():
@@ -69,4 +69,4 @@ def test_router_skip_bypasses_to_review_gate():
 
 
 def test_router_defaults_to_full_when_unset():
-    assert judge_gate_router({}) == ["judge_claude", "judge_gpt4o", "judge_llama"]
+    assert judge_gate_router({}) == ["judge_1", "judge_2", "judge_3"]

@@ -267,6 +267,43 @@ async def intake_agent(state: OmniBrandState) -> dict:
                         if c.version:
                             all_versions.append(c.version)
 
+                    # Supplementary per-segment retrieval — the objective-text
+                    # query above can be outranked by an unrelated segment's
+                    # chunk (e.g. a "gourmet gift" objective surfacing a
+                    # "Budget-Conscious" persona chunk instead of the actual
+                    # target segment's), leaving content_generator/judges with
+                    # no CTA/tone guidance for the segment they're actually
+                    # writing for. A small targeted pull per segment closes
+                    # that gap without displacing the objective-based results.
+                    for segment in campaign_brief["audience_segments"]:
+                        try:
+                            segment_chunks = await get_retriever().retrieve(
+                                query=f"{segment} customer segment tone and CTA guidance",
+                                brand_id=state["brand_id"],
+                                locale=loc,
+                                n_results=2,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning(
+                                "intake_rag_segment_context_failed",
+                                campaign_id=state.get("campaign_id"),
+                                brand_id=state.get("brand_id"),
+                                locale=loc,
+                                segment=segment,
+                                error=str(exc),
+                            )
+                            continue
+                        for c in segment_chunks:
+                            if c.content in seen_chunks:
+                                continue
+                            seen_chunks.add(c.content)
+                            merged_chunks.append(c.content)
+                            if c.section_type:
+                                merged_section_types.append(c.section_type)
+                            merged_scores.append(float(c.score))
+                            if c.version:
+                                all_versions.append(c.version)
+
                 if merged_chunks:
                     rag_context = {
                         "brand_guide_chunks": merged_chunks,

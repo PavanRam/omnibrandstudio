@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, cast
 
@@ -9,6 +10,7 @@ from pipeline.agents.base import publish_campaign_event, safe_agent_run, traced_
 from pipeline.agents.prompts.channel_prompts import (
     DEFAULT_CHANNEL_CONSTRAINTS,
     PROMPT_VERSION,
+    persona_channel_cta,
     render_channel_prompt,
 )
 from pipeline.agents.retrieval import get_examples
@@ -41,6 +43,21 @@ _CTA_MARKERS = (
     "apply",
     "order",
     "reserve",
+    # Premium/luxury-register CTAs deliberately avoid hard-sell verbs above
+    # (2026-07-31: email/linkedin variants kept failing "missing cta" under a
+    # brief that explicitly asked to avoid hard-sell/informal tone).
+    "priority access",
+    "private appointment",
+    "by appointment",
+    "rsvp",
+    "complimentary",
+    "invite you",
+    "invitation",
+    "confirm",
+    "secure your",
+    "hold your",
+    "await",
+    "indulge",
 )
 
 
@@ -54,12 +71,21 @@ def _has_element(content: str, element: str) -> bool:
     if element == "subject_line":
         # Match various subject_line formats:
         # "Subject: ...", "Subject Line: ...", "---\nSubject: ...", etc.
+        if re.search(
+            r"(?:subject\s*(?:line)?\s*:|\/\/\s*subject|subject\s*line)",
+            lowered,
+            re.IGNORECASE
+        ):
+            return True
+        # Fallback: a short standalone opening line (no literal "Subject:"
+        # prefix) followed by a blank line reads as an implicit title, which
+        # premium-tone copy uses often (2026-07-31 diagnosis).
+        first_para = content.strip().split("\n\n", 1)[0].strip()
         return bool(
-            re.search(
-                r"(?:subject\s*(?:line)?\s*:|\/\/\s*subject|subject\s*line)",
-                lowered,
-                re.IGNORECASE
-            )
+            first_para
+            and "\n" not in first_para
+            and len(first_para) <= 120
+            and not first_para.endswith((".", "!", "?"))
         )
     
     if element == "cta":
@@ -82,6 +108,78 @@ def _has_element(content: str, element: str) -> bool:
         return False
     
     return True
+
+
+_GROUNDING_SYSTEM_PROMPT = (
+    "You fact-check marketing copy against a brand guide, using the SAME strict "
+    "standard a brand-compliance judge would: any factual fabrication — including "
+    "unverifiable superiority or quality claims — must block publication. Return "
+    "ONLY a JSON object (no prose, no markdown fences) with one key: \"violations\", "
+    "an array of strings. Each entry names one specific claim, number, product "
+    "attribute, or superiority/quality claim in the content that does NOT appear "
+    "verbatim (or as a close paraphrase of a real value) in the brand guide "
+    "excerpts. This includes unverifiable superlatives such as \"best\", \"most "
+    "celebrated\", \"unparalleled\", \"finest\", \"world-class\", \"#1\", or "
+    "\"award-winning\" — flag these unless that exact superlative appears in the "
+    "brand guide. Only ignore truly non-factual tone/flavor words with no "
+    "comparative or superiority claim (e.g. \"delicious\", \"vibrant\", \"warm\"). "
+    "If every checkable claim is grounded, return an empty array."
+)
+
+
+def _parse_grounding_violations(raw: str) -> list[str]:
+    """Defensively parse the grounding checker's completion — same tolerant
+    JSON-object slicing as judges.py's `_parse_brand_score`, and fails open
+    (no violations) on any parse error so a checker hiccup never blocks
+    generation."""
+    if not raw:
+        return []
+    text = raw.strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return []
+    try:
+        data = json.loads(text[start : end + 1])
+        violations = data.get("violations") or []
+        return [str(v) for v in violations if str(v).strip()]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("grounding_check_parse_failed", error=str(exc), snippet=text[:200])
+        return []
+
+
+async def _check_grounding(
+    content: str, brand_guidance: str, state: OmniBrandState
+) -> tuple[list[str], float]:
+    """Cheap pre-judge pass: ask a fast/eval model to list any claim in
+    `content` unsupported by `brand_guidance` — the same window the judge
+    panel scores against. Runs before the 3-judge panel so fabrication is
+    caught and retried while it's still cheap, instead of relying solely on
+    reflexion's single post-judge rewrite."""
+    if brand_guidance == NO_CONTEXT_AVAILABLE:
+        return [], 0.0
+    model = state["model_aliases"].get("brand_truthfulness", "eval-model")
+    messages = [
+        {"role": "system", "content": _GROUNDING_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"BRAND GUIDE EXCERPTS:\n{brand_guidance}\n\n"
+                f"CONTENT TO CHECK:\n{content}\n\n"
+                "List any unsupported claims now."
+            ),
+        },
+    ]
+    raw, usage = await traced_llm_call(
+        model=model,
+        messages=messages,
+        task="content_generator_grounding_check",
+        state=cast(dict[str, Any], state),
+        agent="content_generator",
+        response_format={"type": "json_object"},
+        temperature=0,
+    )
+    return _parse_grounding_violations(raw), usage["cost"]
 
 
 def _check_constraints(content: str, constraints: dict[str, Any]) -> list[str]:
@@ -111,6 +209,11 @@ def _check_constraints(content: str, constraints: dict[str, Any]) -> list[str]:
 
 
 def _build_brand_guidance_text(rag_context: dict[str, Any] | None) -> str:
+    """Same chunk window as the judge panel (judges.py `_run_judge`) so the
+    generator can ground claims in everything the judges will check them
+    against — a narrower window here previously let approved facts living in
+    chunks 4-6 (or past a 500-char cut) be invisible to the generator while
+    still visible to the judge, forcing it to omit or fabricate those facts."""
     if not rag_context:
         return NO_CONTEXT_AVAILABLE
     chunks = rag_context.get("brand_guide_chunks") or []
@@ -118,11 +221,11 @@ def _build_brand_guidance_text(rag_context: dict[str, Any] | None) -> str:
         return NO_CONTEXT_AVAILABLE
 
     compact: list[str] = []
-    for chunk in chunks[:3]:
+    for chunk in chunks[:6]:
         text = str(chunk).strip()
         if not text:
             continue
-        compact.append(text[:500])
+        compact.append(text)
 
     if not compact:
         return NO_CONTEXT_AVAILABLE
@@ -158,6 +261,14 @@ async def _generate_for_task(
         raw_text="",
     )
 
+    brand_guidance = _build_brand_guidance_text(state.get("rag_context"))
+    persona_cta = persona_channel_cta(task["segment"], channel)
+    cta_pattern = (
+        f'use exactly this brand CTA phrase, verbatim: "{persona_cta}" — never paraphrase '
+        "it or substitute a CTA from another channel or persona"
+        if persona_cta
+        else constraints.get("cta_pattern", "a clear, brand-appropriate call to action")
+    )
     messages = render_channel_prompt(
         channel,
         brand_name=brand_config.get("name", state["brand_id"]),
@@ -167,14 +278,14 @@ async def _generate_for_task(
         char_limit=constraints.get("char_limit", "none"),
         required_elements=", ".join(constraints.get("required_elements", [])) or "none",
         prohibited_vocab=", ".join(constraints.get("prohibited_vocab", [])) or "none",
-        cta_pattern=constraints.get("cta_pattern", "a clear, brand-appropriate call to action"),
+        cta_pattern=cta_pattern,
         few_shot_examples="\n".join(f"- {ex}" for ex in few_shot) or NO_CONTEXT_AVAILABLE,
         objective=brief["objective"],
         target_audience=brief["target_audience"],
         key_messages=", ".join(brief["key_messages"]),
         segment=task["segment"],
         locale=SOURCE_LOCALE,
-        brand_guidance=_build_brand_guidance_text(state.get("rag_context")),
+        brand_guidance=brand_guidance,
     )
     if user_feedback:
         messages = messages + [
@@ -211,6 +322,8 @@ async def _generate_for_task(
     violations: list[str] = []
     retry_count = 0
 
+    grounding_violations: list[str] = []
+
     for attempt in range(MAX_RETRIES + 1):
         content, usage = await traced_llm_call(
             model=model,
@@ -221,10 +334,35 @@ async def _generate_for_task(
         )
         total_cost += usage["cost"]
         violations = _check_constraints(content, constraints)
-        if not violations or attempt == MAX_RETRIES:
+        # Only spend the grounding check once structural constraints already
+        # pass — no point fact-checking a draft that's about to be regenerated
+        # for a missing CTA/subject line anyway.
+        grounding_violations = []
+        if not violations:
+            try:
+                grounding_violations, grounding_cost = await _check_grounding(
+                    content, brand_guidance, state
+                )
+                total_cost += grounding_cost
+            except Exception as exc:  # noqa: BLE001
+                # Best-effort pre-judge fact-check — a transient LLM/provider
+                # failure here (e.g. a flaky free-tier model returning malformed
+                # JSON) must not discard an otherwise constraint-passing variant.
+                # Fail open, same posture as _parse_grounding_violations already
+                # takes on a parse error; the 3-judge panel still checks
+                # factual_grounding downstream.
+                log.warning(
+                    "content_generator_grounding_check_call_failed",
+                    campaign_id=state.get("campaign_id"),
+                    task_id=task["task_id"],
+                    channel=channel,
+                    error=str(exc),
+                )
+                grounding_violations = []
+        if (not violations and not grounding_violations) or attempt == MAX_RETRIES:
             break
         retry_count += 1
-        
+
         # Build detailed retry prompt with specific guidance
         violation_guidance = "\n".join(f"- {v}" for v in violations)
         retry_instruction = (
@@ -238,22 +376,51 @@ async def _generate_for_task(
                 retry_instruction += f"- Call-to-action: Use action verbs like 'Click', 'Learn more', 'Get started', etc.\n"
             elif elem == "hashtag":
                 retry_instruction += f"- Hashtags: Include relevant hashtags (e.g., #example)\n"
-        
+
+        if grounding_violations:
+            unsupported = "\n".join(f"- {v}" for v in grounding_violations)
+            retry_instruction += (
+                f"\nThese claims are NOT supported by the brand guide and must be "
+                f"removed or replaced with grounded/qualitative language:\n{unsupported}\n"
+            )
+
         retry_instruction += (
             f"\nRegenerate the full {channel} content now, ensuring ALL required elements are present."
         )
-        
+
         messages = messages + [
             {"role": "assistant", "content": content},
             {"role": "user", "content": retry_instruction},
         ]
 
+    # Grounding is a best-effort pre-filter, not a new hard gate: if it still
+    # flags something after MAX_RETRIES, the variant still goes to the judge
+    # panel as before — we've just spent a cheap call trying to catch it first.
     status = "generated" if not violations else "failed"
     failure_reason = (
         None
         if not violations
         else f"constraint violations after {retry_count} retries: {'; '.join(violations)}"
     )
+    if status == "failed":
+        # generated_content is nulled out below since it never satisfied
+        # constraints, so log the actual text here or the failure is
+        # undiagnosable from state/DB alone (2026-07-31).
+        log.warning(
+            "content_generator_constraint_failed",
+            campaign_id=state.get("campaign_id"),
+            task_id=task["task_id"],
+            channel=channel,
+            violations=violations,
+            content_preview=content[:500],
+        )
+    if status == "generated" and grounding_violations:
+        log.warning(
+            "content_generator_grounding_unresolved",
+            campaign_id=state.get("campaign_id"),
+            task_id=task["task_id"],
+            violations=grounding_violations,
+        )
     rag_context = state.get("rag_context")
 
     variant: ContentVariant = {
@@ -294,8 +461,13 @@ async def _regenerate_single_task(
     translated/final content and status back to "generated" lets
     personalization_agent/translation_agent's existing skip-if-already-
     processed checks naturally reprocess only this one variant, leaving every
-    sibling variant's status — and, critically, its already-checkpointed
-    retry_count/reflexion_applied — untouched.
+    sibling variant's status untouched.
+
+    Bumps ``user_edit_count`` (not ``retry_count``) — ``retry_count`` is
+    reflexion's round counter and is load-bearing for round-keyed dedup in
+    judges.py::_already_scored / reflexion.py::_latest_aggregate. A manual
+    edit here must not consume reflexion's one-retry budget before the
+    variant has even reached judging.
     """
     existing = next(
         (v for v in state.get("variants") or [] if v["task_id"] == task["task_id"]), None
@@ -315,7 +487,7 @@ async def _regenerate_single_task(
     existing["generation_model"] = variant["generation_model"]
     existing["prompt_version"] = variant["prompt_version"]
     existing["brand_guide_version"] = variant["brand_guide_version"]
-    existing["retry_count"] = int(existing.get("retry_count", 0)) + 1
+    existing["user_edit_count"] = int(existing.get("user_edit_count", 0)) + 1
     existing["reflexion_applied"] = False
     existing["failure_reason"] = variant["failure_reason"]
 

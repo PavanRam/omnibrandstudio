@@ -424,7 +424,19 @@ class BriefCollector:
         # them at the picker) but never write it into the brief.
         segments_patch = patch.get("audience_segments")
         if isinstance(segments_patch, list) and segments_patch:
-            rejected["audience_segments"] = [str(v) for v in segments_patch]
+            # Only flag values that aren't already a selected segment. The
+            # understanding engine re-echoes captured segments from history on
+            # later turns (incl. the bare "yes" confirmation), and re-flagging
+            # an already-valid picker selection fired the heads-up on every
+            # turn after selection.
+            already_selected = {
+                str(s).strip().lower() for s in data.get("audience_segments", []) if s
+            }
+            new_free_text = [
+                str(v) for v in segments_patch if str(v).strip().lower() not in already_selected
+            ]
+            if new_free_text:
+                rejected["audience_segments"] = new_free_text
 
         existing_raw = str(data.get("raw_text", "")).strip()
         if existing_raw:

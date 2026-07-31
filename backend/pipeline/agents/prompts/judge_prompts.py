@@ -82,8 +82,29 @@ JUDGE_SYSTEM_TEMPLATE = (
 
 JUDGE_USER_TEMPLATE = (
     "BRAND GUIDE (authoritative context):\n{brand_guide}\n\n"
+    "{cta_reference}"
     "CONTENT TO EVALUATE:\n{content}\n\n"
     "Evaluate the content now and return the JSON object."
+)
+
+# Injected into the user prompt (before the content) only when the caller
+# resolves an authoritative per-persona/channel CTA. Two jobs: (1) give the
+# judge the exact approved CTA string instead of hoping the RAG brand-guide
+# chunks happen to contain it, and (2) stop the systematic false negative
+# where a FAITHFULLY TRANSLATED CTA on a non-source-locale variant is scored
+# as non-compliant purely for being in the target language (e.g. Instagram
+# "Link in Bio" -> "Cliquez sur le lien dans notre bio"). A correct
+# translation of the approved CTA is compliant; only a DIFFERENT action /
+# destination / off-persona substitution should lower cta_style.
+CTA_REFERENCE_TEMPLATE = (
+    "APPROVED CALL-TO-ACTION (authoritative for cta_style):\n"
+    "The brand's approved CTA for this channel/persona is exactly: \"{canonical_cta}\".\n"
+    "Locale of the content is {locale}. If the locale is non-English, a faithful "
+    "translation of this exact CTA into that locale is FULLY COMPLIANT — score "
+    "cta_style as if the approved English phrase were used, and do NOT penalize the "
+    "CTA merely for being translated. Only lower cta_style if the call-to-action "
+    "expresses a different action, points to a different destination, or was replaced "
+    "by an unrelated or off-persona CTA.\n\n"
 )
 
 REFLEXION_SYSTEM_TEMPLATE = (
@@ -107,6 +128,11 @@ REFLEXION_SYSTEM_TEMPLATE = (
     "amount, rating, or guarantee is only allowed if it appears verbatim in the brand "
     "guide below. Re-introducing an unsourced number will cause the judges to reject "
     "the revision again.\n"
+    "- NO INVENTED PRODUCT ATTRIBUTES: when a flagged violation is an unsupported product "
+    "specific (aging/vintage period like 'aged 12 months'/'vieilli 12 mois', scarcity or "
+    "'limited edition'/'édition limitée' status, awards, certifications, origin, materials, "
+    "ingredients), DELETE that detail entirely rather than rephrasing or substituting "
+    "another. Such a claim is only allowed if it appears verbatim in the brand guide below.\n"
     "BRAND GUIDE (use for grounding):\n{brand_guide}"
 )
 
@@ -119,16 +145,28 @@ REFLEXION_USER_TEMPLATE = (
 
 
 def build_judge_messages(
-    *, brand_guide: str, channel: str, locale: str, content: str
+    *, brand_guide: str, channel: str, locale: str, content: str, canonical_cta: str | None = None
 ) -> list[dict]:
     """Code fallback for judge prompts (used when the registry has no version).
 
     ``str.format`` only parses the template's own braces; brace characters that
     happen to appear inside ``content``/``brand_guide`` values are substituted
     literally and are therefore safe.
+
+    ``canonical_cta`` (when supplied by the caller from the persona/channel CTA
+    library) grounds the cta_style criterion in the exact approved phrase and
+    tells the judge a faithful translation of it is compliant for non-source
+    locales — see CTA_REFERENCE_TEMPLATE.
     """
     system = JUDGE_SYSTEM_TEMPLATE.format(rubric=RUBRIC_TEXT, channel=channel, locale=locale)
-    user = JUDGE_USER_TEMPLATE.format(brand_guide=brand_guide, content=content)
+    cta_reference = (
+        CTA_REFERENCE_TEMPLATE.format(canonical_cta=canonical_cta, locale=locale)
+        if canonical_cta
+        else ""
+    )
+    user = JUDGE_USER_TEMPLATE.format(
+        brand_guide=brand_guide, content=content, cta_reference=cta_reference
+    )
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},

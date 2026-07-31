@@ -62,6 +62,14 @@ class TranslationCheckResult(TypedDict):
     value: float
     threshold: float
     passed: bool
+    # Only the confirmatory back_translation_cosine check sets this: False when
+    # the back-translation was NMT-collapsed/unusable, so the cosine is
+    # inconclusive and must not veto (passed is forced True in that case).
+    confident: NotRequired[bool]
+    # Set on semantic_similarity when a confident, strongly-passing
+    # back_translation_cosine authoritatively confirmed fidelity and rescued a
+    # marginal semantic miss — see _apply_backtranslation_reconciliation.
+    reconciled_by: NotRequired[str]
 
 
 class ContentVariant(TypedDict):
@@ -82,6 +90,11 @@ class ContentVariant(TypedDict):
     retry_count: int
     reflexion_applied: bool
     failure_reason: str | None
+    # Manual per-channel edits via content_generator._regenerate_single_task —
+    # kept separate from retry_count so a user-driven edit never consumes
+    # reflexion's one-retry budget (retry_count is load-bearing for round-keyed
+    # dedup in judges.py::_already_scored / reflexion.py::_latest_aggregate).
+    user_edit_count: NotRequired[int]
     translation_retry_count: NotRequired[int]
     translation_gate_status: NotRequired[str]
     translation_checks: NotRequired[list[TranslationCheckResult]]

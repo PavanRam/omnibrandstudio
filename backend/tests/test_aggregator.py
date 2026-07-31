@@ -49,7 +49,26 @@ def _state(brand_scores, *, variants=None, aggregated_scores=None, **overrides) 
 
 
 @pytest.mark.asyncio
-async def test_high_mean_with_critical_violation_auto_rejects():
+async def test_majority_critical_violation_auto_rejects():
+    scores = [
+        _bs("judge-1-free", 9.5, critical=["fabricated statistic"]),
+        _bs("judge-2-free", 9.5, critical=["fabricated statistic"]),
+        _bs("judge-3-free", 9.5),
+    ]
+    result = await confidence_aggregator(_state(scores))
+
+    agg = result["aggregated_scores"][0]
+    assert agg["routing_decision"] == "auto_reject"
+    assert agg["any_critical_violation"] is True
+    assert result["human_review_requested"] is True
+    assert len(result["review_requests"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_lone_dissenting_critical_violation_flags_not_rejects():
+    # A single judge out of three calling "critical" against an otherwise high,
+    # agreeing panel is exactly the disagreement case that should go to human
+    # review rather than an instant, whole-campaign-failing auto_reject.
     scores = [
         _bs("judge-1-free", 9.5, critical=["fabricated statistic"]),
         _bs("judge-2-free", 9.5),
@@ -58,7 +77,7 @@ async def test_high_mean_with_critical_violation_auto_rejects():
     result = await confidence_aggregator(_state(scores))
 
     agg = result["aggregated_scores"][0]
-    assert agg["routing_decision"] == "auto_reject"
+    assert agg["routing_decision"] == "flag"
     assert agg["any_critical_violation"] is True
     assert result["human_review_requested"] is True
     assert len(result["review_requests"]) == 1

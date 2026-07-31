@@ -19,6 +19,7 @@ import structlog
 
 from core.metrics import routing_decisions_total
 from pipeline.agents.base import publish_campaign_event, safe_agent_run
+from pipeline.agents.judges import _NON_SCOREABLE_STATUSES, _variant_content
 from pipeline.agents.prompts.judge_prompts import CRITERION_WEIGHTS
 from pipeline.state import AggregatedScore, BrandScore, OmniBrandState, ReviewRequest
 
@@ -66,6 +67,7 @@ def _route(
     variance_01: float,
     consensus: str,
     any_critical: bool,
+    critical_majority: bool,
     n_judges: int,
     thresholds: dict[str, float],
 ) -> tuple[str, str]:
@@ -77,8 +79,17 @@ def _route(
         auto_approve = min(1.0, auto_approve + _DEGRADED_DELTA)
         auto_reject = min(1.0, auto_reject + _DEGRADED_DELTA)
 
-    if any_critical:
+    if critical_majority:
         return "auto_reject", "critical violation present"
+    if any_critical:
+        # A lone judge's critical call, contradicted by the rest of the panel,
+        # is exactly the disagreement case this module's docstring says should
+        # go to human review rather than a confidently-wrong auto-decision —
+        # the code previously auto-rejected on ANY single judge's critical
+        # flag regardless of the other judges, making one strict/literal judge
+        # call enough to fail an otherwise-approved variant (and, under the
+        # worker's strict all-or-nothing policy, the whole campaign).
+        return "flag", "critical violation flagged by a minority of judges — routed to human review"
     if consensus == "disagreement":
         return "flag", "judge disagreement (score range > 3.0)"
     if n_judges < 2:
@@ -174,7 +185,21 @@ def _aggregate_variant(
             per_judge[bs["judge_model"]] = bs
     scores = list(per_judge.values())
     if not scores:
-        return None
+        # A variant with no content yet (still generating/translating) or in a
+        # terminal failure state was never eligible for judging in the first
+        # place — nothing to aggregate, same as before.
+        if variant.get("status") in _NON_SCOREABLE_STATUSES or not _variant_content(variant):
+            return None
+        # A scoreable variant with ZERO scores means every judge in the panel
+        # failed/errored/mis-parsed for this round (see judges.py's per-variant
+        # try/except — it isolates one bad call but stays silent when ALL of
+        # them fail). Previously this fell through to `return None` just like
+        # the "not yet judged" case, which left `aggregated_scores` empty,
+        # `human_review_requested` False, and the graph fell through
+        # reflexion/review_gate straight to publishing — an unreviewed variant
+        # silently "passing" because nobody actually judged it. Fail closed:
+        # force human review instead of treating missing data as approval.
+        return _judge_panel_failure(variant_id, round_, campaign_id)
 
     composites_10 = [_weighted_composite_10(bs["scores"]) for bs in scores]
     composites_01 = [c / 10.0 for c in composites_10]
@@ -186,12 +211,15 @@ def _aggregate_variant(
 
     critical_union = sorted({cv for bs in scores for cv in bs.get("critical_violations", [])})
     any_critical = bool(critical_union)
+    judges_with_critical = sum(1 for bs in scores if bs.get("critical_violations"))
+    critical_majority = judges_with_critical > n / 2
 
     decision, reason = _route(
         mean_01=mean_01,
         variance_01=variance_01,
         consensus=consensus,
         any_critical=any_critical,
+        critical_majority=critical_majority,
         n_judges=n,
         thresholds=thresholds,
     )
@@ -245,4 +273,46 @@ def _aggregate_variant(
         n_judges=n,
     )
 
+    return aggregate, review
+
+
+def _judge_panel_failure(
+    variant_id: str, round_: int, campaign_id: str
+) -> tuple[AggregatedScore, ReviewRequest]:
+    """Force human review when a scoreable variant got zero judge scores.
+
+    Distinct from the normal "flag"/"auto_reject" paths above: there is no
+    judge output at all to reason about, only the fact that the panel never
+    produced one.
+    """
+    reason = "judge panel returned no scores for this round"
+    routing_decisions_total.labels(decision="flag").inc()
+    log.warning(
+        "aggregator_judge_panel_failure",
+        campaign_id=campaign_id,
+        variant_id=variant_id,
+        round=round_,
+        routing_reason=reason,
+    )
+    aggregate: AggregatedScore = {
+        "variant_id": variant_id,
+        "judge_scores": [],
+        "weighted_mean": 0.0,
+        "variance": 0.0,
+        "consensus_level": "disagreement",
+        "any_critical_violation": False,
+        "critical_violations": [],
+        "routing_decision": "flag",
+        "routing_reason": reason,
+        "degraded_mode": True,
+        "evaluation_round": round_,
+    }
+    review: ReviewRequest = {
+        "review_request_id": f"rr_{uuid.uuid4().hex[:16]}",
+        "variant_id": variant_id,
+        "campaign_id": campaign_id,
+        "routing_reason": reason,
+        "scores_snapshot": [],
+        "status": "pending",
+    }
     return aggregate, review

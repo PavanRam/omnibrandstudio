@@ -1122,9 +1122,9 @@ _KNOWN_AGENTS: tuple[str, ...] = (
     "content_generator",
     "personalization_agent",
     "translation_agent",
-    "judge_claude",
-    "judge_gpt4o",
-    "judge_llama",
+    "judge_1",
+    "judge_2",
+    "judge_3",
     "confidence_aggregator",
     "review_gate",
     "publishing_agent",
@@ -1211,7 +1211,7 @@ async def _campaign_agent_output_reply(
             f"Overall status is '{summary['status']}' with {summary['total_variants']} variants."
         )
     return (
-        "Tell me which agent output you want (for example: content_generator, personalization_agent, or judge_claude — "
+        "Tell me which agent output you want (for example: content_generator, personalization_agent, or judge_1 — "
         "or say \"all of them\"), and I will summarize the latest campaign state around that step."
     )
 

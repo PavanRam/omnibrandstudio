@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # users no longer provide this — it's sized to cover the full multi-agent
 # pipeline (intake, content gen, translation per locale, 3 judges,
 # personalization, publishing) and actual usage is tracked end-to-end.
-DEFAULT_TOKEN_BUDGET = 200000
+DEFAULT_TOKEN_BUDGET = 500000
 
 
 class CreateCampaignRequest(BaseModel):

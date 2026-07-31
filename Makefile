@@ -53,12 +53,6 @@ smoke:
 poll-reviews:
 	uv run python scripts/airtable_poll_reviews.py
 
-# Validates all 50 RAG-grounded sample briefs (docs/sample-campaign-briefs.md)
-# against CreateCampaignRequest. Dry-run only — no network calls, no cost.
-# For a real submission: cd backend && uv run python scripts/submit_sample_campaigns.py --live --limit N
-check-sample-briefs:
-	cd backend && uv run python scripts/submit_sample_campaigns.py
-
 # ── Code quality ──────────────────────────────────────────────────────────────
 lint:
 	cd backend && uv run ruff check .
@@ -105,7 +99,7 @@ check-env:
 		exit 1; \
 	fi
 	@if docker compose ps postgres --format '{{.State}}' 2>/dev/null | grep -q running; then \
-		. ./.env; \
+		POSTGRES_PASSWORD=$$(grep -m1 '^POSTGRES_PASSWORD=' .env | cut -d= -f2-); \
 		if ! docker run --rm --network omnibrandstudio_default -e PGPASSWORD="$$POSTGRES_PASSWORD" postgres:16-alpine \
 			psql -h postgres -U omnibrand -d omnibrand -c "SELECT 1" >/dev/null 2>&1; then \
 			echo "ERROR: postgres rejected the password currently in .env. Your omnibrandstudio_postgres_data"; \
@@ -123,11 +117,16 @@ up: check-env
 	docker compose up -d createbuckets
 	# Re-check now that postgres is confirmed up (first run above may have
 	# skipped the password check if postgres wasn't running yet).
-	$(MAKE) check-env
+	# NOTE: intentionally the bare "make" word here, not a make-variable
+	# reference to the invoking binary. On Windows the GnuWin32 install path
+	# contains "Program Files (x86)"; substituting that path into the recipe
+	# (quoted or not) breaks both bash's parser and make's own recipe
+	# handling. Plain "make" avoids embedding that path at all.
+	make check-env
 	# Keep DB schema current in the same runtime context the API uses.
-	$(MAKE) migrate-docker
+	make migrate-docker
 	# Ensure org/brand/prompt rows exist before admin-seed depends on them.
-	$(MAKE) seed
+	make seed
 	# Ensure default dev admin exists after startup/migration.
 	docker compose exec -T api python scripts/seed_dev_admin.py
 

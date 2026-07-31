@@ -75,6 +75,27 @@ def test_cosine_orthogonal_vectors_is_zero():
     assert trans._cosine([1.0, 0.0], [0.0, 1.0]) == pytest.approx(0.0)
 
 
+def test_back_translation_reliable_flags_symbol_collapse():
+    # Helsinki-NLP opus-mt collapsing to an asterisk run on markdown-heavy
+    # input (the live campaign 019fb36e false negative).
+    assert trans._back_translation_reliable("* * * * * * * * * *") is False
+    assert trans._back_translation_reliable("---- •••• ----") is False
+    assert trans._back_translation_reliable("   ") is False
+    assert trans._back_translation_reliable("") is False
+    # A repetition loop (same token echoed) is equally unusable to embed.
+    assert trans._back_translation_reliable("buy buy buy buy buy buy buy buy") is False
+
+
+def test_back_translation_reliable_accepts_real_english_backtranslation():
+    assert (
+        trans._back_translation_reliable(
+            "Discover our exclusive reserve — limited stock, act now for 20% off."
+        )
+        is True
+    )
+    assert trans._back_translation_reliable("Buy now.") is True
+
+
 def test_is_per_token_distinguishes_matrix_from_flat_vector():
     assert trans._is_per_token([[0.1, 0.2], [0.3, 0.4]]) is True
     assert trans._is_per_token([0.1, 0.2, 0.3]) is False
@@ -252,7 +273,7 @@ async def test_gate_passes_on_first_attempt(stub_calls, monkeypatch):
         {"name": "back_translation_cosine", "value": 0.95, "threshold": 0.85, "passed": True},
     ]
 
-    async def fake_run_checks(candidate, reference, back_translation, source):
+    async def fake_run_checks(candidate, reference, back_translation, source, reliable=True):
         return passing_checks
 
     monkeypatch.setattr(trans, "_run_checks", fake_run_checks)
@@ -292,7 +313,7 @@ async def test_helsinki_reference_failure_falls_back_to_mbart(stub_calls, monkey
     async def failing_hf_reference(text, model):
         raise RuntimeError("Helsinki-NLP/opus-mt-en-es unavailable on hf-inference free tier")
 
-    async def fake_run_checks(candidate, reference, back_translation, source):
+    async def fake_run_checks(candidate, reference, back_translation, source, reliable=True):
         assert reference == "MBART_REFERENCE"  # came from the tier-2 mBART fallback
         return passing_checks
 
@@ -331,7 +352,7 @@ async def test_reference_translation_exhausts_to_validator_model(stub_calls, mon
             raise RuntimeError("Helsinki-NLP/opus-mt-en-es unavailable on hf-inference free tier")
         return "BACKTRANSLATED"
 
-    async def fake_run_checks(candidate, reference, back_translation, source):
+    async def fake_run_checks(candidate, reference, back_translation, source, reliable=True):
         assert reference == "TRANSLATED"  # came from the tier-3 LLM fallback
         assert back_translation == "BACKTRANSLATED"  # unaffected, still the real HF call
         return passing_checks
@@ -368,7 +389,7 @@ async def test_backtranslate_failure_falls_back_to_primary_model(stub_calls, mon
             raise RuntimeError("Helsinki-NLP/opus-mt-es-en unavailable on hf-inference free tier")
         return "REFERENCE"
 
-    async def fake_run_checks(candidate, reference, back_translation, source):
+    async def fake_run_checks(candidate, reference, back_translation, source, reliable=True):
         assert reference == "REFERENCE"  # unaffected, still the real HF call
         assert back_translation == "TRANSLATED"  # came from the fallback traced_llm_call
         return passing_checks
@@ -400,7 +421,7 @@ async def test_gate_retries_then_passes(stub_calls, monkeypatch):
     ]
     attempts = {"n": 0}
 
-    async def fake_run_checks(candidate, reference, back_translation, source):
+    async def fake_run_checks(candidate, reference, back_translation, source, reliable=True):
         attempts["n"] += 1
         return failing if attempts["n"] == 1 else passing
 
@@ -424,7 +445,7 @@ async def test_gate_exhausts_retries_and_fails_closed(stub_calls, monkeypatch):
         {"name": "back_translation_cosine", "value": 0.5, "threshold": 0.85, "passed": False},
     ]
 
-    async def fake_run_checks(candidate, reference, back_translation, source):
+    async def fake_run_checks(candidate, reference, back_translation, source, reliable=True):
         return failing
 
     monkeypatch.setattr(trans, "_run_checks", fake_run_checks)
@@ -453,7 +474,7 @@ async def test_content_safety_violation_blocks_gate_even_if_metrics_pass(stub_ca
         {"name": "back_translation_cosine", "value": 0.95, "threshold": 0.85, "passed": True},
     ]
 
-    async def fake_run_checks(candidate, reference, back_translation, source):
+    async def fake_run_checks(candidate, reference, back_translation, source, reliable=True):
         return passing_checks
 
     async def fake_safety_violation(text, locale, state):
@@ -477,7 +498,7 @@ async def test_personalized_content_preferred_over_generated_content(stub_calls,
         {"name": "back_translation_cosine", "value": 0.95, "threshold": 0.85, "passed": True},
     ]
 
-    async def fake_run_checks(candidate, reference, back_translation, source):
+    async def fake_run_checks(candidate, reference, back_translation, source, reliable=True):
         assert source == "Persona-tailored copy."
         return passing_checks
 
@@ -491,6 +512,272 @@ async def test_personalized_content_preferred_over_generated_content(stub_calls,
     )
     await trans._translate_variant(variant, _state([variant]))
     assert variant["status"] == "translated"
+
+
+async def test_backtranslate_degenerate_output_uses_validator_fallback(monkeypatch):
+    """Live 019fb36e root cause: HF back-translation returns a successful but
+    NMT-collapsed '* * * *' run (not an exception). _back_translate must detect
+    the unusable output and fall back to the validator LLM so the cosine check
+    runs against real English, and report reliable=True."""
+
+    async def degenerate_hf(text, model):
+        return "* * * * * * *"
+
+    async def fake_validator(model, messages, task, state, **kwargs):
+        assert task == "translation_agent_backtranslate_fallback"
+        return "Real English back-translation.", {"cost": 0.02}
+
+    monkeypatch.setattr(trans, "_hf_translate_call", degenerate_hf)
+    monkeypatch.setattr(trans, "traced_llm_call", fake_validator)
+
+    text, cost, reliable = await trans._back_translate("texto de mercadotecnia", "es", _state([]))
+
+    assert text == "Real English back-translation."
+    assert reliable is True
+    assert cost == pytest.approx(0.02)
+
+
+async def test_run_checks_non_confident_cosine_is_non_vetoing(monkeypatch):
+    """An unusable back-translation yields an inconclusive cosine that must NOT
+    veto — the check passes non-blockingly and is flagged confident=False, so
+    the gate decides on the two forward metrics alone."""
+
+    async def fake_embed(text):
+        return [1.0, 0.0] if text == "src" else [0.0, 1.0]  # orthogonal -> cosine 0.0
+
+    async def fake_semantic(candidate, reference):
+        return {
+            "name": "semantic_similarity",
+            "value": 0.9,
+            "threshold": trans.SEMANTIC_THRESHOLD,
+            "passed": True,
+        }
+
+    monkeypatch.setattr(trans, "_embed", fake_embed)
+    monkeypatch.setattr(trans, "_semantic_check", fake_semantic)
+
+    checks = await trans._run_checks(
+        "hola", "hola", "garbage", "src", back_translation_reliable=False
+    )
+    cosine = next(c for c in checks if c["name"] == "back_translation_cosine")
+    assert cosine["confident"] is False
+    assert cosine["value"] < trans.COSINE_THRESHOLD  # genuinely low
+    assert cosine["passed"] is True  # but non-vetoing
+
+
+async def test_run_checks_confident_low_cosine_still_vetoes(monkeypatch):
+    """A CONFIDENT (usable) back-translation with a low cosine is a genuine
+    meaning inversion the forward checks may miss — it must still veto."""
+
+    async def fake_embed(text):
+        return [1.0, 0.0] if text == "src" else [0.0, 1.0]
+
+    async def fake_semantic(candidate, reference):
+        return {
+            "name": "semantic_similarity",
+            "value": 0.9,
+            "threshold": trans.SEMANTIC_THRESHOLD,
+            "passed": True,
+        }
+
+    monkeypatch.setattr(trans, "_embed", fake_embed)
+    monkeypatch.setattr(trans, "_semantic_check", fake_semantic)
+
+    checks = await trans._run_checks(
+        "hola", "hola", "a real but semantically wrong sentence", "src",
+        back_translation_reliable=True,
+    )
+    cosine = next(c for c in checks if c["name"] == "back_translation_cosine")
+    assert cosine["confident"] is True
+    assert cosine["passed"] is False
+
+
+async def test_non_confident_cosine_tightens_semantic_threshold(monkeypatch):
+    """Losing the confirmatory round-trip signal must TIGHTEN, not loosen, the
+    gate: a semantic score that would pass at the normal 0.84 bar (0.87) is
+    rejected under the stricter 0.90 bar applied when cosine is non-confident."""
+
+    async def fake_embed(text):
+        return [1.0, 0.0]
+
+    async def marginal_semantic(candidate, reference):
+        return {
+            "name": "semantic_similarity",
+            "value": 0.87,  # passes 0.84, fails the stricter 0.90
+            "threshold": trans.SEMANTIC_THRESHOLD,
+            "passed": True,
+        }
+
+    monkeypatch.setattr(trans, "_embed", fake_embed)
+    monkeypatch.setattr(trans, "_semantic_check", marginal_semantic)
+
+    checks = await trans._run_checks(
+        "hola", "hola", "* * * *", "src", back_translation_reliable=False
+    )
+    semantic = next(c for c in checks if c["name"] == "semantic_similarity")
+    assert semantic["threshold"] == trans.SEMANTIC_THRESHOLD_NO_CONFIRMATION
+    assert semantic["passed"] is False
+
+
+def _baseline_checks(bleu, semantic, cosine, *, confident=True):
+    """Build a checks list as _run_checks would emit it at the informational
+    baseline (used to exercise _apply_channel_thresholds in isolation)."""
+    return [
+        {"name": "bleu", "value": bleu, "threshold": trans.BLEU_THRESHOLD,
+         "passed": bleu >= trans.BLEU_THRESHOLD},
+        {"name": "semantic_similarity", "value": semantic,
+         "threshold": trans.SEMANTIC_THRESHOLD, "passed": semantic >= trans.SEMANTIC_THRESHOLD},
+        {"name": "back_translation_cosine", "value": cosine,
+         "threshold": trans.COSINE_THRESHOLD, "confident": confident,
+         "passed": (not confident) or cosine >= trans.COSINE_THRESHOLD},
+    ]
+
+
+def test_apply_channel_thresholds_relaxes_short_form_social():
+    """Regression (campaign 019fb50a): a good transcreative fr social variant
+    scored bleu~0.0 / semantic 0.75 / cosine 0.80 — all failing the
+    informational baseline. On instagram the relaxed bar must pass all three."""
+    checks = _baseline_checks(0.002, 0.75, 0.80)
+    assert not all(c["passed"] for c in checks)  # fails at baseline
+
+    trans._apply_channel_thresholds(checks, "instagram")
+
+    assert all(c["passed"] for c in checks)
+    bleu = next(c for c in checks if c["name"] == "bleu")
+    assert bleu["threshold"] == trans.BLEU_THRESHOLD_SOCIAL
+
+
+def test_apply_channel_thresholds_noop_for_informational_channel():
+    """email/linkedin keep the stricter baseline — the same weak-fidelity
+    scores that pass on social must still fail on an informational channel."""
+    checks = _baseline_checks(0.002, 0.75, 0.80)
+    trans._apply_channel_thresholds(checks, "email")
+
+    assert not all(c["passed"] for c in checks)
+    semantic = next(c for c in checks if c["name"] == "semantic_similarity")
+    assert semantic["threshold"] == trans.SEMANTIC_THRESHOLD
+
+
+def test_apply_channel_thresholds_still_fails_genuinely_bad_social_translation():
+    """The relaxed bar is not a bypass — a translation whose meaning actually
+    collapsed (very low semantic + cosine) still fails on social channels."""
+    checks = _baseline_checks(0.0, 0.40, 0.45)
+    trans._apply_channel_thresholds(checks, "twitter")
+
+    assert not all(c["passed"] for c in checks)
+
+
+def test_apply_channel_thresholds_preserves_non_confident_tightening_on_social():
+    """When _run_checks tightened semantic to the no-confirmation bar (degenerate
+    back-translation), the social override maps it to the social no-confirmation
+    bar rather than the looser social bar, so a degenerate round-trip can't
+    loosen the one remaining meaning check even on social channels."""
+    checks = [
+        {"name": "bleu", "value": 0.0, "threshold": trans.BLEU_THRESHOLD, "passed": False},
+        {"name": "semantic_similarity", "value": 0.74,
+         "threshold": trans.SEMANTIC_THRESHOLD_NO_CONFIRMATION, "passed": False},
+        {"name": "back_translation_cosine", "value": 0.1,
+         "threshold": trans.COSINE_THRESHOLD, "confident": False, "passed": True},
+    ]
+    trans._apply_channel_thresholds(checks, "instagram")
+
+    semantic = next(c for c in checks if c["name"] == "semantic_similarity")
+    assert semantic["threshold"] == trans.SEMANTIC_THRESHOLD_SOCIAL_NO_CONFIRMATION
+    assert semantic["passed"] is False  # 0.74 < 0.76
+
+
+def test_reconciliation_rescues_marginal_semantic_when_roundtrip_strong():
+    """Regression (campaign 019fb527): es email failed all 3 attempts on
+    semantic 0.799-0.814 (< 0.84) while back_translation_cosine held 0.93-0.95.
+    A confident round-trip >= the authoritative bar must rescue the semantic
+    miss so the informational-channel gate passes."""
+    checks = _baseline_checks(33.3, 0.814, 0.953)
+    assert not all(c["passed"] for c in checks)  # semantic vetoes at baseline
+
+    trans._apply_backtranslation_reconciliation(checks)
+
+    assert all(c["passed"] for c in checks)
+    semantic = next(c for c in checks if c["name"] == "semantic_similarity")
+    assert semantic["passed"] is True
+    assert semantic["reconciled_by"] == "back_translation_cosine"
+
+
+def test_reconciliation_noop_when_roundtrip_below_authoritative_bar():
+    """A merely-passing cosine (>= 0.85 but < 0.90) is not strong enough to
+    override the semantic veto — the gate must still fail."""
+    checks = _baseline_checks(33.3, 0.814, 0.88)
+    trans._apply_backtranslation_reconciliation(checks)
+
+    semantic = next(c for c in checks if c["name"] == "semantic_similarity")
+    assert semantic["passed"] is False
+    assert "reconciled_by" not in semantic
+
+
+def test_reconciliation_noop_when_roundtrip_not_confident():
+    """A degenerate/collapsed back-translation (confident=False) can never
+    trigger reconciliation, even if its raw cosine value is numerically high."""
+    checks = [
+        {"name": "bleu", "value": 33.3, "threshold": trans.BLEU_THRESHOLD, "passed": True},
+        {"name": "semantic_similarity", "value": 0.814,
+         "threshold": trans.SEMANTIC_THRESHOLD, "passed": False},
+        {"name": "back_translation_cosine", "value": 0.95,
+         "threshold": trans.COSINE_THRESHOLD, "confident": False, "passed": True},
+    ]
+    trans._apply_backtranslation_reconciliation(checks)
+
+    semantic = next(c for c in checks if c["name"] == "semantic_similarity")
+    assert semantic["passed"] is False
+    assert "reconciled_by" not in semantic
+
+
+def test_reconciliation_does_not_rescue_bleu_or_safety():
+    """Reconciliation only touches the semantic meaning check — a failing BLEU
+    (lexical) must still veto even when the round-trip is authoritative."""
+    checks = _baseline_checks(5.0, 0.814, 0.953)  # bleu below 20 threshold
+    trans._apply_backtranslation_reconciliation(checks)
+
+    bleu = next(c for c in checks if c["name"] == "bleu")
+    assert bleu["passed"] is False
+    assert not all(c["passed"] for c in checks)
+
+
+async def test_gate_passes_when_backtranslation_unusable_but_forward_metrics_pass(
+    stub_calls, monkeypatch
+):
+    """End-to-end false-negative class from live campaign 019fb36e: even when
+    the back-translation is unusable after all fallbacks (reliable=False), a
+    translation whose forward metrics pass must NOT be failed by an
+    inconclusive cosine."""
+
+    async def unusable_back_translate(text, locale, state):
+        return "* * * *", 0.0, False
+
+    async def passing_semantic(candidate, reference):
+        return {
+            "name": "semantic_similarity",
+            "value": 0.95,
+            "threshold": trans.SEMANTIC_THRESHOLD,
+            "passed": True,
+        }
+
+    async def identity_reference(text, model):
+        return "TRANSLATED"  # equals the fake primary output -> bleu passes
+
+    monkeypatch.setattr(trans, "_back_translate", unusable_back_translate)
+    monkeypatch.setattr(trans, "_semantic_check", passing_semantic)
+    monkeypatch.setattr(trans, "_hf_translate_call", identity_reference)
+
+    variant = _variant("t-degenerate", "fr-FR", "Buy now.")
+    cost, error_msg = await trans._translate_variant(variant, _state([variant]))
+
+    assert variant["status"] == "translated"
+    assert variant["translation_gate_status"] == "pass"
+    assert error_msg is None
+    cosine = next(
+        c for c in variant["translation_checks"] if c["name"] == "back_translation_cosine"
+    )
+    assert cosine["confident"] is False
+    assert cosine["passed"] is True
 
 
 async def test_empty_variants_is_noop(stub_calls):

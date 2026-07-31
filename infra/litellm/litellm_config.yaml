@@ -35,7 +35,7 @@ model_list:
   model_info:
     id: "gen-free-gpt-oss-120b"
     input_cost_per_token: 1.5e-7
-    output_cost_per_token: 6e-7.00000000
+    output_cost_per_token: 6e-7
 
 # Free judge panel (Groq) — three DISTINCT families for cross-family
 # disagreement signal, no paid spend. judges.py keys judge-1/2/3 resolve to
@@ -58,7 +58,7 @@ model_list:
   model_info:
     id: "judge-1-free-gptoss"
     input_cost_per_token: 1.5e-7
-    output_cost_per_token: 6e-7.00000000
+    output_cost_per_token: 6e-7
 # gpt-oss-120b occasionally returns a transient 400 under Groq load; the
 # gpt-oss-20b sibling deployment below gives litellm a same-family retry target.
 - model_name: "judge-1-free"
@@ -67,7 +67,7 @@ model_list:
     api_key: "os.environ/GROQ_API_KEY"
   model_info:
     input_cost_per_token: 7.5e-8
-    output_cost_per_token: 3e-7.00000000
+    output_cost_per_token: 3e-7
 
 - model_name: "judge-2-free"
   litellm_params:
@@ -101,7 +101,7 @@ model_list:
   model_info:
     id: "judge-3-free-gpt-oss-20b"
     input_cost_per_token: 7.5e-8
-    output_cost_per_token: 3e-7.00000000
+    output_cost_per_token: 3e-7
 - model_name: "judge-3-free"
   litellm_params:
     model: "groq/llama-3.1-8b-instant"
@@ -126,7 +126,7 @@ model_list:
   model_info:
     id: "util-fast-free-gpt-oss-20b"
     input_cost_per_token: 7.5e-8
-    output_cost_per_token: 3e-7.00000000
+    output_cost_per_token: 3e-7
 
 # eval-model-free — intake "brand_truthfulness" + lightweight eval on free tier
 - model_name: "eval-model-free"
@@ -136,7 +136,7 @@ model_list:
   model_info:
     id: "eval-model-free-gpt-oss-20b"
     input_cost_per_token: 7.5e-8
-    output_cost_per_token: 3e-7.00000000
+    output_cost_per_token: 3e-7
 
 # understanding-free — chat understanding_engine ("understanding")
 - model_name: "understanding-free"
@@ -461,6 +461,11 @@ router_settings:
   - { "util-fast": [ "util-fast-gemini" ] }
   - { "brief-collector": [ "brief-collector-gemini" ] }
   - { "understanding": [ "understanding-gemini" ] }
+  # eval-model-free (groq/gpt-oss-20b) intermittently 400s with
+  # json_validate_failed in JSON mode on the content_generator grounding
+  # check; fall back to a cross-family llama deployment so the check can
+  # still run instead of always failing open.
+  - { "eval-model-free": [ "understanding-free" ] }
   retry_policy:
     BadRequestError: { num_retries: 0 }
     RateLimitError: { num_retries: 3, retry_after: 60 }

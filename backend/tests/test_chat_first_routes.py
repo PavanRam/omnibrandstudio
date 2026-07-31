@@ -761,7 +761,7 @@ def test_campaign_history_reply_includes_recent_agents() -> None:
         "status": "awaiting_review",
         "total_variants": 2,
         "variants_breakdown": "generated: 2",
-        "recent_agents": ["content_generator", "judge_claude"],
+        "recent_agents": ["content_generator", "judge_1"],
     }
 
     message = conversations._campaign_history_reply(
@@ -770,7 +770,7 @@ def test_campaign_history_reply_includes_recent_agents() -> None:
         summary,
     )
 
-    assert "Recent traced agents: content_generator, judge_claude" in message
+    assert "Recent traced agents: content_generator, judge_1" in message
 
 
 def test_complete_brief_followup_is_conversational_for_greeting() -> None:

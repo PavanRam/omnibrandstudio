@@ -33,12 +33,14 @@ def _state() -> dict:
 
 
 async def test_succeeds_on_first_try_without_retry(httpx_mock) -> None:
+    # Real LiteLLM proxy wire format: cost comes back as a response HEADER,
+    # never a `_hidden_params` key in the JSON body (that's SDK-only).
     httpx_mock.add_response(
+        headers={"x-litellm-response-cost": "0.001"},
         json={
             "choices": [{"message": {"content": "real answer"}}],
             "usage": {"prompt_tokens": 5, "completion_tokens": 3},
             "model": "gen-premium",
-            "_hidden_params": {"response_cost": 0.001},
         }
     )
 
@@ -54,11 +56,11 @@ async def test_succeeds_on_first_try_without_retry(httpx_mock) -> None:
 async def test_retries_on_429_then_succeeds(httpx_mock) -> None:
     httpx_mock.add_response(status_code=429)
     httpx_mock.add_response(
+        headers={"x-litellm-response-cost": "0.0"},
         json={
             "choices": [{"message": {"content": "recovered"}}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1},
             "model": "gen-premium",
-            "_hidden_params": {"response_cost": 0.0},
         }
     )
 
@@ -68,6 +70,24 @@ async def test_retries_on_429_then_succeeds(httpx_mock) -> None:
 
     assert content == "recovered"
     assert len(httpx_mock.get_requests()) == 2
+
+
+async def test_cost_defaults_to_zero_without_header_or_hidden_params(httpx_mock) -> None:
+    """Neither the cost header nor `_hidden_params` present -> cost is 0.0,
+    not an exception (covers the last-resort fallback path)."""
+    httpx_mock.add_response(
+        json={
+            "choices": [{"message": {"content": "no cost data"}}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 2},
+            "model": "gen-premium",
+        }
+    )
+
+    _, usage = await traced_llm_call(
+        model="gen-premium", messages=[{"role": "user", "content": "hi"}], task="test", state=_state()
+    )
+
+    assert usage["cost"] == 0.0
 
 
 async def test_raises_after_exhausting_retries_on_persistent_429(httpx_mock) -> None:

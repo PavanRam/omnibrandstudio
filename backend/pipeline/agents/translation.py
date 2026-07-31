@@ -165,6 +165,67 @@ MAX_RETRIES = 2
 BLEU_THRESHOLD = 20.0
 SEMANTIC_THRESHOLD = 0.84
 COSINE_THRESHOLD = 0.85
+# When back_translation_cosine is non-confident (degenerate back-translation,
+# see _back_translation_reliable) the gate loses its round-trip signal, so it
+# demands a HIGHER semantic-similarity bar from the one remaining meaning check
+# rather than loosening. BLEU is intentionally NOT raised here — it is
+# phrasing-sensitive (why it was lowered 25->20 above), so tightening it would
+# reintroduce false negatives on legitimately-reworded translations.
+SEMANTIC_THRESHOLD_NO_CONFIRMATION = 0.90
+
+# Channel/length-aware relaxation (2026-07-31, campaign 019fb50a): short-form
+# SOCIAL/creative channels are transcreative — punchy, emoji/hashtag-heavy copy
+# ("Shop smarter. Live better.", "Tap the Link in Bio", 🍷🍬 #WineAndSweets)
+# whose valid localizations legitimately diverge from an INDEPENDENT reference
+# MT, so the fidelity metrics land well below the informational-text baseline
+# even when the translation is perfectly good. 019fb50a hard-failed all 3 fr
+# variants (ig/fb/twitter) with fine French at semantic ~0.72-0.79 (< 0.84) and
+# back_translation_cosine ~0.78-0.81 (< 0.85). BLEU is worst of all here —
+# heavy but valid rewordings tanked it to ~0.002 while both embedding checks
+# said 0.82-0.86 — so it is DISABLED for these channels, deferring the decision
+# to the two meaning-preservation checks. Informational channels (email,
+# linkedin) keep the stricter baseline above.
+_SHORT_FORM_SOCIAL_CHANNELS = frozenset({"instagram", "twitter", "facebook", "sms", "whatsapp"})
+BLEU_THRESHOLD_SOCIAL = 0.0
+SEMANTIC_THRESHOLD_SOCIAL = 0.70
+COSINE_THRESHOLD_SOCIAL = 0.75
+SEMANTIC_THRESHOLD_SOCIAL_NO_CONFIRMATION = 0.76
+
+# Cross-check reconciliation (2026-07-31, campaign 019fb527): semantic_similarity
+# and back_translation_cosine are two INDEPENDENT estimates of meaning fidelity.
+# semantic_similarity scores the candidate against a separate reference MT
+# (Helsinki-NLP en->locale), which for longer informational copy (email/linkedin)
+# is frequently LOWER quality than the candidate itself — a cleaner, equally
+# valid translation legitimately diverges from it and lands ~0.80-0.81 (< 0.84).
+# back_translation_cosine instead round-trips through the ACTUAL source, so a
+# CONFIDENT, strongly-passing value is a strictly stronger fidelity signal: when
+# it clears this authoritative bar the meaning is proven preserved, and a marginal
+# semantic_similarity miss is a false negative that must not veto on its own.
+# 019fb527's es email hard-failed all 3 attempts on semantic 0.799-0.814 while
+# back_translation_cosine held 0.93-0.95 — genuinely faithful, wrongly gated,
+# which then failed the whole (otherwise-passing) campaign under all-or-nothing.
+# Deliberately narrow: only rescues semantic_similarity, only when the round-trip
+# is CONFIDENT (a collapsed back-translation can never trigger it, and the
+# non-confident path in _run_checks that raises the semantic bar to 0.90 already
+# forces confident=False), and BLEU + content-safety keep gating independently.
+COSINE_AUTHORITATIVE_THRESHOLD = 0.90
+
+# Reliability heuristics for a back-translation — see _back_translation_reliable.
+# Below this alphabetic-character ratio a back-translation is treated as
+# NMT-collapsed (e.g. Helsinki-NLP opus-mt returning a '* * * *' asterisk run
+# on markdown-heavy input). Its embedding is meaningless, so the resulting
+# back_translation_cosine is a false negative.
+# 2026-07-27: live campaign 019fb36e failed a fr variant this way
+# (bleu=40.2 PASS, semantic=0.94 PASS, back_translation_cosine=0.173 FAIL,
+# identical cosine across all 3 retries because the back-translation collapsed
+# to the same asterisk run every attempt). Real English back-translations sit
+# well above 0.30; a symbol run sits at 0.0.
+DEGENERATE_BACKTRANSLATION_ALPHA_RATIO = 0.30
+# A back-translation whose unique/total token ratio falls below this is a
+# collapsed NMT repetition loop (the same word echoed) — equally meaningless
+# to embed. Only applied once there are enough tokens to be meaningful.
+DEGENERATE_BACKTRANSLATION_UNIQUE_TOKEN_RATIO = 0.30
+_MIN_TOKENS_FOR_REPETITION_CHECK = 6
 
 # Terminal statuses — a checkpoint-resume re-invocation must not re-translate
 # (and re-bill / re-audit) a variant that already finished.
@@ -300,36 +361,56 @@ async def _semantic_check(candidate: str, reference: str) -> TranslationCheckRes
     }
 
 
-async def _back_translate(text: str, locale: str, state: OmniBrandState) -> tuple[str, float]:
+async def _back_translate(
+    text: str, locale: str, state: OmniBrandState
+) -> tuple[str, float, bool]:
+    """Returns (back_translation, cost, reliable). The HF NMT model can return
+    a successful but NMT-collapsed response (e.g. a '* * * *' asterisk run) —
+    not an exception — so a successful HF call is not trusted blindly: if its
+    output is unusable, fall back to the pooled validator LLM so the cosine
+    check runs against real English. ``reliable`` is False only when BOTH the
+    HF model and the LLM fallback produce unusable output, in which case the
+    caller treats back_translation_cosine as non-confident (non-vetoing)."""
+    cost = 0.0
     try:
         translated = await _hf_translate_call(text, _BACKTRANSLATION_MODEL[locale])
-        return translated, 0.0
     except Exception as exc:
         log.warning(
             "hf_back_translation_failed_using_validator_fallback", locale=locale, error=str(exc)
         )
-        # Validator/fallback path — deliberately a separate, pooled alias from
-        # the primary forward-translation model (see translation-validator in
-        # litellm_config.yaml): this only fires on HF back-translation failure,
-        # not on every retry attempt, so it doesn't carry the same
-        # cross-retry consistency requirement the primary alias has.
-        model = state["model_aliases"].get("translation_validator", "translation-validator")
-        content, usage = await traced_llm_call(
-            model=model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Translate the user's text into English. Return only the translation."
-                    ),
-                },
-                {"role": "user", "content": text},
-            ],
-            task="translation_agent_backtranslate_fallback",
-            state=cast(dict[str, Any], state),
-            agent="translation_agent",
+        translated = ""
+
+    if _back_translation_reliable(translated):
+        return translated, cost, True
+
+    # HF output missing or NMT-collapsed — fall back to the pooled validator
+    # LLM (a separate alias from the primary forward translator, see
+    # translation-validator in litellm_config.yaml) so the round-trip cosine
+    # is computed on real English rather than a meaningless symbol run.
+    if translated:
+        log.warning(
+            "back_translation_unreliable_using_validator_fallback",
+            locale=locale,
+            back_translation_preview=translated[:80],
         )
-        return content, usage.get("cost", 0.0)
+    model = state["model_aliases"].get("translation_validator", "translation-validator")
+    content, usage = await traced_llm_call(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Translate the user's text into English. Return only the translation."
+                ),
+            },
+            {"role": "user", "content": text},
+        ],
+        task="translation_agent_backtranslate_fallback",
+        state=cast(dict[str, Any], state),
+        agent="translation_agent",
+    )
+    cost += usage.get("cost", 0.0)
+    return content, cost, _back_translation_reliable(content)
 
 
 # ── Brand rules — retrieved via the pipeline's shared RAG retriever (Chroma
@@ -425,8 +506,34 @@ def _build_retry_feedback(
     return "\n".join(lines)
 
 
+def _back_translation_reliable(text: str) -> bool:
+    """Whether a back-translation is real English usable for the round-trip
+    cosine check. Returns False for NMT collapse — an empty/whitespace string,
+    a repeated non-letter run (e.g. '* * * *' on markdown-heavy input), or a
+    repetition loop (the same token echoed). Such output embeds to a
+    near-constant vector, so its cosine is a false negative; the caller falls
+    back to the LLM validator and, failing that, treats the cosine as
+    non-confident (non-vetoing)."""
+    non_space = [ch for ch in text if not ch.isspace()]
+    if not non_space:
+        return False
+    alpha = sum(1 for ch in non_space if ch.isalpha())
+    if alpha / len(non_space) < DEGENERATE_BACKTRANSLATION_ALPHA_RATIO:
+        return False
+    tokens = text.split()
+    if len(tokens) >= _MIN_TOKENS_FOR_REPETITION_CHECK:
+        unique_ratio = len({t.lower() for t in tokens}) / len(tokens)
+        if unique_ratio < DEGENERATE_BACKTRANSLATION_UNIQUE_TOKEN_RATIO:
+            return False
+    return True
+
+
 async def _run_checks(
-    candidate: str, reference: str, back_translation: str, source: str
+    candidate: str,
+    reference: str,
+    back_translation: str,
+    source: str,
+    back_translation_reliable: bool = True,
 ) -> list[TranslationCheckResult]:
     bleu_value = sacrebleu.sentence_bleu(candidate, [reference]).score
     bleu_check: TranslationCheckResult = {
@@ -440,13 +547,103 @@ async def _run_checks(
     bt_vec = await _embed(back_translation)
     src_vec = await _embed(source)
     cosine_value = _cosine(_mean_pool(bt_vec), _mean_pool(src_vec))
+    # back_translation_cosine is confirmatory, not authoritative: the two
+    # forward checks (bleu vs an independent reference + semantic_similarity)
+    # already prove the translation's quality. A round-trip through the free
+    # NMT back-translation model is the noisiest signal, so it may only VETO
+    # when it is a CONFIDENT measurement — i.e. computed on a genuinely usable
+    # back-translation. An unreliable (collapsed/degenerate) back-translation
+    # is inconclusive, not a failure, so its check passes non-blockingly.
+    if not back_translation_reliable:
+        # Lost the confirmatory round-trip signal — tighten the remaining
+        # meaning check so a degenerate back-translation can't loosen the gate.
+        semantic_check["threshold"] = SEMANTIC_THRESHOLD_NO_CONFIRMATION
+        semantic_check["passed"] = semantic_check["value"] >= SEMANTIC_THRESHOLD_NO_CONFIRMATION
+        log.warning(
+            "back_translation_cosine_non_confident",
+            cosine_value=cosine_value,
+            back_translation_preview=back_translation[:80],
+        )
     cosine_check: TranslationCheckResult = {
         "name": "back_translation_cosine",
         "value": cosine_value,
         "threshold": COSINE_THRESHOLD,
-        "passed": cosine_value >= COSINE_THRESHOLD,
+        "confident": back_translation_reliable,
+        "passed": (not back_translation_reliable) or cosine_value >= COSINE_THRESHOLD,
     }
     return [bleu_check, semantic_check, cosine_check]
+
+
+def _apply_channel_thresholds(
+    checks: list[TranslationCheckResult], channel: str | None
+) -> list[TranslationCheckResult]:
+    """Re-gate ``checks`` against the channel-appropriate fidelity bar.
+
+    No-op for informational channels (email/linkedin) — they keep the baseline
+    computed by ``_run_checks``. For short-form social/creative channels
+    (``_SHORT_FORM_SOCIAL_CHANNELS``) the transcreative fidelity relaxation
+    applies: BLEU disabled, semantic/back-translation-cosine lowered. The
+    non-confident semantic tightening done inside ``_run_checks`` is preserved
+    (mapped to the social no-confirmation bar) so a degenerate back-translation
+    still can't loosen the one remaining meaning check.
+    """
+    if not channel or channel.lower() not in _SHORT_FORM_SOCIAL_CHANNELS:
+        return checks
+
+    for check in checks:
+        name = check["name"]
+        if name == "bleu":
+            check["threshold"] = BLEU_THRESHOLD_SOCIAL
+            check["passed"] = check["value"] >= BLEU_THRESHOLD_SOCIAL
+        elif name in ("semantic_similarity", "bertscore_f1"):
+            tightened = check["threshold"] == SEMANTIC_THRESHOLD_NO_CONFIRMATION
+            new_threshold = (
+                SEMANTIC_THRESHOLD_SOCIAL_NO_CONFIRMATION
+                if tightened
+                else SEMANTIC_THRESHOLD_SOCIAL
+            )
+            check["threshold"] = new_threshold
+            check["passed"] = check["value"] >= new_threshold
+        elif name == "back_translation_cosine":
+            confident = check.get("confident", True)
+            check["threshold"] = COSINE_THRESHOLD_SOCIAL
+            check["passed"] = (not confident) or check["value"] >= COSINE_THRESHOLD_SOCIAL
+    return checks
+
+
+def _apply_backtranslation_reconciliation(
+    checks: list[TranslationCheckResult],
+) -> list[TranslationCheckResult]:
+    """Let a confident, strongly-passing round-trip rescue a marginal semantic miss.
+
+    See ``COSINE_AUTHORITATIVE_THRESHOLD``. When ``back_translation_cosine`` is
+    confident and >= that bar, it authoritatively confirms meaning fidelity, so a
+    failing ``semantic_similarity``/``bertscore_f1`` check (which only measures
+    agreement with an independent, often lower-quality reference MT) is a false
+    negative and is flipped to passed. No-op otherwise; BLEU and content safety
+    are untouched. Runs AFTER ``_apply_channel_thresholds`` so it reconciles
+    against whatever channel-appropriate bar was applied.
+    """
+    cosine = next((c for c in checks if c["name"] == "back_translation_cosine"), None)
+    if (
+        cosine is None
+        or not cosine.get("confident", True)
+        or cosine["value"] < COSINE_AUTHORITATIVE_THRESHOLD
+    ):
+        return checks
+
+    for check in checks:
+        if check["name"] in ("semantic_similarity", "bertscore_f1") and not check["passed"]:
+            check["passed"] = True
+            check["reconciled_by"] = "back_translation_cosine"
+            log.info(
+                "translation_semantic_reconciled",
+                semantic_check=check["name"],
+                semantic_value=check["value"],
+                semantic_threshold=check["threshold"],
+                back_translation_cosine=cosine["value"],
+            )
+    return checks
 
 
 # ── Escalation — best-effort write_audit(); never blocks the terminal outcome
@@ -594,10 +791,16 @@ async def _run_translation_gate(
         )
         total_cost += usage.get("cost", 0.0)
 
-        back_translation, bt_cost = await _back_translate(translated_text, locale, state)
+        back_translation, bt_cost, bt_reliable = await _back_translate(
+            translated_text, locale, state
+        )
         total_cost += bt_cost
 
-        checks = await _run_checks(translated_text, reference, back_translation, source)
+        checks = await _run_checks(
+            translated_text, reference, back_translation, source, bt_reliable
+        )
+        checks = _apply_channel_thresholds(checks, variant.get("channel"))
+        checks = _apply_backtranslation_reconciliation(checks)
         safety_violations = await _check_content_safety(translated_text, locale, state)
         gate_passed = all(c["passed"] for c in checks) and not safety_violations
 

@@ -523,11 +523,11 @@ export function CampaignDetailModal({ campaignId, onClose, onChanged, initialTas
     }
   };
 
-  const handleDecide = async (reviewRequestId, decision) => {
+  const handleDecide = async (reviewRequestId, decision, { reviewerNote = null } = {}) => {
     setDecisionBusyId(reviewRequestId);
     setError('');
     try {
-      await decideReview(reviewRequestId, decision);
+      await decideReview(reviewRequestId, decision, { reviewerNote });
       await load();
       onChanged();
     } catch (err) {
@@ -873,9 +873,9 @@ const STAGE_DONUT_COLORS = {
   content_generator: '#f97316',
   personalization_agent: '#22c55e',
   translation_agent: '#eab308',
-  judge_claude: '#8b5cf6',
-  judge_gpt4o: '#8b5cf6',
-  judge_llama: '#8b5cf6',
+  judge_1: '#8b5cf6',
+  judge_2: '#8b5cf6',
+  judge_3: '#8b5cf6',
   judge_gate: '#8b5cf6',
   confidence_aggregator: '#8b5cf6',
   reflexion: '#ec4899',

@@ -62,9 +62,9 @@ import {
 const RERUN_NODES = [
   'content_generator',
   'personalization_agent',
-  'judge_claude',
-  'judge_gpt4o',
-  'judge_llama',
+  'judge_1',
+  'judge_2',
+  'judge_3',
   'confidence_aggregator',
   'review_gate',
   'publishing_agent',
@@ -103,6 +103,13 @@ function computeBriefSteps(brief) {
 // Objective stays free-text — it was never in scope for a picker.
 // token_budget is auto-set, hidden from user (2026-07-29): tracking consumption end-to-end.
 const PICKER_STEP_KEYS = new Set(['channels', 'locales', 'audience_segments']);
+
+// Errors shown only because the socket was down; auto-cleared on reconnect.
+const SOCKET_DISCONNECTED_ERRORS = new Set([
+  'Chat is reconnecting. Please try again in a moment.',
+  'Chat socket is not connected yet',
+  'Socket is not connected yet',
+]);
 
 // Structured brief-input pickers (next_tasks.md item 23, 2026-07-27) — a
 // pill/dropdown/tier selection patches the brief directly via
@@ -498,8 +505,8 @@ const RUN_STAGES = [
 // maps mode -> this exact node list, so it's safe to mirror here rather than
 // add a redundant backend field just to say the same thing twice.
 const JUDGE_MODEL_NAMES = {
-  full: ['judge_claude', 'judge_gpt4o', 'judge_llama'],
-  lite: ['judge_claude'],
+  full: ['judge_1', 'judge_2', 'judge_3'],
+  lite: ['judge_1'],
   skip: [],
 };
 
@@ -1699,9 +1706,9 @@ const STAGE_DONUT_COLORS = {
   content_generator: '#f97316',
   personalization_agent: '#22c55e',
   translation_agent: '#eab308',
-  judge_claude: '#8b5cf6',
-  judge_gpt4o: '#8b5cf6',
-  judge_llama: '#8b5cf6',
+  judge_1: '#8b5cf6',
+  judge_2: '#8b5cf6',
+  judge_3: '#8b5cf6',
   judge_gate: '#8b5cf6',
   confidence_aggregator: '#8b5cf6',
   reflexion: '#ec4899',
@@ -2050,9 +2057,9 @@ const AGENT_ICON = {
   personalization_agent: UserCog,
   translation_agent: Languages,
   judge_gate: Filter,
-  judge_claude: Scale,
-  judge_gpt4o: BadgeCheck,
-  judge_llama: Gavel,
+  judge_1: Scale,
+  judge_2: BadgeCheck,
+  judge_3: Gavel,
   confidence_aggregator: BarChart3,
   reflexion: RotateCcw,
   review_gate: Eye,
@@ -2251,9 +2258,9 @@ function buildAgentDetails(agent, payload) {
     content_generator: contentGeneratorDetails,
     personalization_agent: personalizationDetails,
     translation_agent: translationDetails,
-    judge_claude: judgeDetails,
-    judge_gpt4o: judgeDetails,
-    judge_llama: judgeDetails,
+    judge_1: judgeDetails,
+    judge_2: judgeDetails,
+    judge_3: judgeDetails,
     confidence_aggregator: confidenceDetails,
     review_gate: reviewGateDetails,
     publishing_agent: publishingDetails,
@@ -2561,6 +2568,7 @@ function handleSendPromptAction({ prompt, canChat, send, setError, setMessages, 
     setError('Socket is not connected yet');
     return;
   }
+  setError(''); // clear any stale banner now that a message actually went through
   setMessages((prev) => [...prev, { role: 'user', content: prompt }]);
   setStatusStage('');
   setWaitingForReply(true);
@@ -2592,6 +2600,7 @@ function handleSendMessageAction({
     setError('Chat socket is not connected yet');
     return;
   }
+  setError(''); // clear any stale banner now that a message actually went through
   setMessages((prev) => [...prev, { role: 'user', content: trimmed }]);
   setStatusStage('');
   setMessage('');
@@ -2890,11 +2899,11 @@ export function ConversationView() {
     onMessage: handleSocketMessage,
   });
 
-  // The "reconnecting" banner is only meaningful while the socket is down —
-  // clear it once the socket comes back so it doesn't linger indefinitely.
+  // Connection-related errors are only meaningful while the socket is down —
+  // clear them once the socket comes back so they don't linger indefinitely.
   useEffect(() => {
     if (!wsConnected) return;
-    setError((prev) => (prev === 'Chat is reconnecting. Please try again in a moment.' ? '' : prev));
+    setError((prev) => (SOCKET_DISCONNECTED_ERRORS.has(prev) ? '' : prev));
   }, [wsConnected]);
 
   const createCampaignStream = useCallback(
@@ -3305,7 +3314,7 @@ export function ConversationView() {
       setStatusStage,
     });
 
-  const decideReviewAction = (reviewRequestId, decision, { editedContent = null } = {}) => {
+  const decideReviewAction = (reviewRequestId, decision, { editedContent = null, reviewerNote = null } = {}) => {
     if (!wsConnected) {
       setError('Chat is reconnecting. Please try again in a moment.');
       return;
@@ -3314,6 +3323,7 @@ export function ConversationView() {
     const sent = send({
       review_request_id: reviewRequestId,
       decision,
+      reviewer_note: reviewerNote,
       edited_content: editedContent,
     });
     if (!sent) {
