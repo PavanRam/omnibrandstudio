@@ -76,6 +76,7 @@ async def test_upload_customer_segments_returns_indexed_payload(monkeypatch: pyt
         "ingest_customer_segments",
         AsyncMock(
             return_value={
+                "status": "indexed",
                 "brand_id": "brand-a",
                 "locale": "en-US",
                 "version": "v1",
@@ -166,7 +167,7 @@ async def test_list_segments_retries_without_version_when_requested_version_is_e
     async def _fake_get_db():
         yield _FakeConn(exists=True)
 
-    async def _fake_list_customer_segments(*, brand_id: str, locale: str, version: str | None = None, limit: int = 50):
+    async def _fake_list_customer_segments(*, brand_id: str, locale: str, version: str | None = None, limit: int = 50, offset: int = 0, db=None):
         if version == "v1":
             return []
         return [{"id": "s2", "text": "segment: Enterprise", "metadata": {"segment": "Enterprise"}}]

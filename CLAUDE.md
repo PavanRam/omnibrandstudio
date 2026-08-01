@@ -85,7 +85,7 @@ publication_receipts · failed_task_ids · errors
 
 **6. Model aliases only** — never hardcode `"claude-sonnet-4-6"` or `"gpt-4o"` in agent code. Always read from `state["model_aliases"]`.
 
-**7. Auth is API key only** — HS256 is removed. No JWT bearer tokens, no RS256, no PEM files.
+**7. Auth supports both RS256 JWT and API key** — Bearer JWT tokens (RS256, PEM keys in `certs/`) and `X-API-Key` header are both supported. Generate keys with `make certs` before first run. Never hardcode raw model names or skip the cert generation step.
 
 ---
 

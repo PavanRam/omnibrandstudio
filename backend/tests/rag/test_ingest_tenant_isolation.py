@@ -155,6 +155,7 @@ async def test_ingest_customer_segments_scopes_segments_collection(
     content = "segment,size\nSMB,120\nEnterprise,20\n".encode("utf-8")
     result = await ingest_mod.ingest_customer_segments(
         db=fake_db,
+        org_id="org-1",
         brand_id="brand-a",
         org_id="org-a",
         file_bytes=content,
