@@ -1,21 +1,21 @@
 from __future__ import annotations
 
-from io import BytesIO
 import json
-from pathlib import Path
 import re
+from io import BytesIO
+from pathlib import Path
 from uuid import uuid4
 
 import pandas as pd
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncConnection
 import structlog
-
 from core.config import settings
 from pipeline.agents.base import traced_llm_call
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
+
 from services.rag import get_vector_store
 from services.rag.chunking import chunk_text
-from services.rag.embeddings import embed_texts
+from services.rag.embeddings import embed_texts, embedding_collection_name
 from services.rag.vector_store import VectorPoint
 
 log = structlog.get_logger()
@@ -78,7 +78,7 @@ _BLOCK_PATTERNS = [
 
 
 def _collection_name(brand_id: str, kind: str) -> str:
-    return f"brand_{brand_id}_{kind}"
+    return embedding_collection_name(brand_id, kind)
 
 
 def _sanitize_text(raw: str) -> str:

@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
-
 from pipeline.agents import stubs
 from services.rag.retriever import RAGRetriever, RetrievedChunk
 from services.rag.vector_store import SearchResult
@@ -159,7 +158,7 @@ async def test_retrieve_scopes_collection_and_filters_by_brand() -> None:
         n_results=3,
     )
 
-    assert store.last_collection == "brand_brand-a_guidelines"
+    assert store.last_collection == "brand_brand-a_guidelines_litellm_v1_384"
     assert store.last_filters is not None
     assert store.last_filters["brand_id"] == "brand-a"
     assert len(chunks) == 1
@@ -195,7 +194,7 @@ async def test_query_customer_segments_uses_brand_scoped_collection() -> None:
         n_results=2,
     )
 
-    assert store.last_collection == "brand_brand-a_segments"
+    assert store.last_collection == "brand_brand-a_segments_litellm_v1_384"
     assert store.last_filters is not None
     assert store.last_filters["brand_id"] == "brand-a"
     assert store.last_filters["locale"] == "en-US"

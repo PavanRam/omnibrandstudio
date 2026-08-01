@@ -5,7 +5,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from services.rag import ingest as ingest_mod
 from services.rag.vector_store import VectorPoint
 
@@ -60,14 +59,14 @@ async def test_ingest_brand_guide_scopes_collection_metadata_and_sql(monkeypatch
         version="v1",
     )
 
-    assert result["collection"] == "brand_brand-a_guidelines"
+    assert result["collection"] == "brand_brand-a_guidelines_litellm_v1_384"
     assert result["brand_id"] == "brand-a"
     assert result["locale"] == "en-US"
     assert fake_db.committed is True
 
     assert len(fake_store.upserts) == 1
     collection, points = fake_store.upserts[0]
-    assert collection == "brand_brand-a_guidelines"
+    assert collection == "brand_brand-a_guidelines_litellm_v1_384"
     assert len(points) == 2
     for point in points:
         assert point.metadata["brand_id"] == "brand-a"
@@ -122,10 +121,10 @@ async def test_ingest_seed_datasets_scopes_all_collections_by_brand(
     assert counts["sentiment"] >= 1
 
     collections = [c for c, _ in fake_store.upserts]
-    assert "brand_brand-a_guidelines" in collections
-    assert "brand_brand-a_segments" in collections
-    assert "brand_brand-a_campaigns" in collections
-    assert "brand_brand-a_sentiment" in collections
+    assert "brand_brand-a_guidelines_litellm_v1_384" in collections
+    assert "brand_brand-a_segments_litellm_v1_384" in collections
+    assert "brand_brand-a_campaigns_litellm_v1_384" in collections
+    assert "brand_brand-a_sentiment_litellm_v1_384" in collections
 
     for _, points in fake_store.upserts:
         for point in points:
@@ -139,6 +138,7 @@ async def test_ingest_customer_segments_scopes_segments_collection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_store = _FakeVectorStore()
+    fake_db = _FakeDB()
 
     monkeypatch.setattr(ingest_mod, "get_vector_store", lambda: fake_store)
     monkeypatch.setattr(ingest_mod, "chunk_text", lambda text: [text])
@@ -146,21 +146,27 @@ async def test_ingest_customer_segments_scopes_segments_collection(
     async def _fake_embed_texts(texts: list[str]) -> list[list[float]]:
         return [[0.3] for _ in texts]
 
+    async def _not_quarantined(*_args, **_kwargs) -> tuple[bool, None]:
+        return False, None
+
     monkeypatch.setattr(ingest_mod, "embed_texts", _fake_embed_texts)
+    monkeypatch.setattr(ingest_mod, "_evaluate_for_quarantine", _not_quarantined)
 
     content = "segment,size\nSMB,120\nEnterprise,20\n".encode("utf-8")
     result = await ingest_mod.ingest_customer_segments(
+        db=fake_db,
         brand_id="brand-a",
+        org_id="org-a",
         file_bytes=content,
         filename="segments.csv",
         locale="en-US",
         version="v1",
     )
 
-    assert result["collection"] == "brand_brand-a_segments"
+    assert result["collection"] == "brand_brand-a_segments_litellm_v1_384"
     assert result["records_indexed"] == 2
     assert len(fake_store.deletes) == 1
-    assert fake_store.deletes[0][0] == "brand_brand-a_segments"
+    assert fake_store.deletes[0][0] == "brand_brand-a_segments_litellm_v1_384"
 
     assert len(fake_store.upserts) == 1
     _, points = fake_store.upserts[0]

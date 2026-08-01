@@ -52,7 +52,6 @@ class Settings(BaseSettings):
     PINECONE_INDEX: str = "omnibrand-guides"
     HYBRID_FETCH_K: int = 20
     RRF_K: int = 60
-    RERANKER_MODEL: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     MMR_LAMBDA: float = 0.7
 
     # MCP integration (optional interoperability layer)
@@ -65,6 +64,9 @@ class Settings(BaseSettings):
 
     # LLM
     LITELLM_BASE_URL: str = "http://localhost:4000"
+    EMBEDDING_MODEL_ALIAS: str = "embedding"
+    EMBEDDING_DIMENSIONS: int = 384
+    EMBEDDING_SPACE_ID: str = "litellm-v1"
     # If true, estimate cost from LiteLLM model pricing when response cost is
     # missing but tokens are present. Defaults to false so provider-reported
     # cost remains the single source of truth.

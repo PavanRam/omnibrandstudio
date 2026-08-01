@@ -20,6 +20,7 @@ from pipeline.state import OmniBrandState
 log = structlog.get_logger()
 
 __all__ = [
+    "traced_embedding_call",
     "traced_llm_call",
     "traced_llm_call_stream",
     "write_audit",
@@ -87,6 +88,109 @@ def _scrub_output_pii(content: str, *, agent: str, task: str) -> str:
         )
         return redacted
     return content
+
+
+async def traced_embedding_call(
+    model: str,
+    texts: list[str],
+    task: str,
+    state: dict[str, Any] | None = None,
+    *,
+    dimensions: int,
+) -> tuple[list[list[float]], dict[str, Any]]:
+    """Call LiteLLM's embedding endpoint with standard tracing signals.
+
+    The caller owns fallback behavior so a semantic embedding failure cannot
+    be mistaken for a successful hosted response.
+    """
+    if not texts:
+        return [], {
+            "cost": 0.0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "latency_ms": 0,
+            "model_resolved": model,
+        }
+
+    context = state or {}
+    campaign_id = context.get("campaign_id")
+    request_id = str(context.get("request_id", ""))
+    scrubbed_texts = [_scrub_pii(text)[0] for text in texts]
+    tracer = get_tracer("omnibrand.embeddings")
+    trace = start_langfuse_trace(
+        name=task,
+        session_id=campaign_id,
+        metadata={
+            "model": model,
+            "request_id": request_id,
+            "org_id": context.get("org_id"),
+            "input_count": len(scrubbed_texts),
+            "dimensions": dimensions,
+        },
+    )
+
+    start = time.perf_counter()
+    with tracer.start_as_current_span("embeddings.call") as span:
+        span.set_attribute("llm.model", model)
+        span.set_attribute("llm.task", task)
+        span.set_attribute("embedding.input_count", len(scrubbed_texts))
+        span.set_attribute("embedding.dimensions", dimensions)
+        async with httpx.AsyncClient(base_url=settings.LITELLM_BASE_URL, timeout=60) as client:
+            response = await client.post(
+                "/embeddings",
+                json={
+                    "model": model,
+                    "input": scrubbed_texts,
+                    "dimensions": dimensions,
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            span.set_attribute("http.status_code", response.status_code)
+
+    ordered = sorted(payload.get("data", []), key=lambda item: int(item.get("index", 0)))
+    vectors = [[float(value) for value in item["embedding"]] for item in ordered]
+    if len(vectors) != len(scrubbed_texts):
+        raise ValueError(
+            f"embedding response count mismatch: expected {len(scrubbed_texts)}, got {len(vectors)}"
+        )
+    if any(len(vector) != dimensions for vector in vectors):
+        lengths = sorted({len(vector) for vector in vectors})
+        raise ValueError(f"embedding dimension mismatch: expected {dimensions}, got {lengths}")
+
+    latency_ms = int((time.perf_counter() - start) * 1000)
+    usage = payload.get("usage", {})
+    input_tokens = int(usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0)
+    cost = float(payload.get("_hidden_params", {}).get("response_cost", 0.0) or 0.0)
+    resolved_model = str(payload.get("model") or model)
+
+    llm_call_duration.labels(agent="embeddings", model=model, task=task).observe(
+        latency_ms / 1000
+    )
+    llm_tokens_total.labels(agent="embeddings", model=model, type="input").inc(input_tokens)
+    llm_cost_usd_total.labels(agent="embeddings", model=model).inc(cost)
+
+    try:
+        trace.update(
+            output={
+                "vector_count": len(vectors),
+                "dimensions": dimensions,
+                "model_resolved": resolved_model,
+            }
+        )
+        end_fn = getattr(trace, "end", None)
+        if callable(end_fn):
+            end_fn()
+    finally:
+        get_langfuse().flush()
+
+    return vectors, {
+        "cost": cost,
+        "input_tokens": input_tokens,
+        "output_tokens": 0,
+        "latency_ms": latency_ms,
+        "model_resolved": resolved_model,
+    }
 
 
 async def publish_campaign_event(

@@ -3,13 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "description": "OmniBrand Studio — a Firefly-style generative AI studio UI (Vite + Astro + React + Tailwind).",
   "scripts": {
-    "dev": "astro dev",
-    "start": "astro dev",
-    "build": "astro build",
-    "preview": "astro preview",
-    "astro": "astro",
+    "dev": "bash ../scripts/run_frontend.sh dev",
+    "start": "bash ../scripts/run_frontend.sh dev",
+    "build": "bash ../scripts/run_frontend.sh build",
+    "preview": "bash ../scripts/run_frontend.sh preview",
+    "astro": "bash ../scripts/run_frontend.sh cli",
     "test": "node --test src/lib/api.test.js"
   },
   "dependencies": {

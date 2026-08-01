@@ -4,7 +4,7 @@ Status: approved for implementation planning
 Date: 2026-07-23
 Related code: `backend/services/airtable_service.py`, `backend/services/review_service.py`,
 `backend/api/routers/reviews.py`, `backend/pipeline/schemas.py` (`ReviewDecision`),
-`docs/t11-review-testing-guide.html`
+`docs/review-gate-testing-guide.md`
 
 ## 1. Problem
 
@@ -152,7 +152,7 @@ append-only design.
 
 ## 5. Testing plan
 
-**Tier 1 — Postman only** (extends `docs/t11-review-testing-guide.html` with a new numbered
+**Tier 1 — Postman only** (extends `docs/review-gate-testing-guide.md` with a new numbered
 request, same style as the existing Requests 1–5): call
 `POST {{base_url}}/reviews/{{review_request_id}}/airtable-decide` with
 `{"airtable_record_id": "recFAKE123", "decision": "rejected", "reviewer_note": ""}` → expect a
@@ -207,7 +207,7 @@ caller-supplied `reviewer_email` anywhere (regression guard for §8).
    itself resolves `reviewer_email` (rejecting if unresolvable) *before* calling
    `apply_decision()`, passing the resolved id as a plain `actor_id` override. `decide_review()`
    (the human route) is otherwise unchanged and never reads `body.reviewer_email`.
-5. `docs/t11-review-testing-guide.html` — new Postman request for the Tier-1 test, updated
+5. `docs/review-gate-testing-guide.md` — new Postman request for the Tier-1 test, updated
    Airtable field table (§4), and a new "Automation + tunnel" setup section for Tier 2, including
    how to mint the `airtable:sync`-scoped integration key.
 6. Tests per §5.

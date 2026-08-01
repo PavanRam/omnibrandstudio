@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import hashlib
-from pathlib import Path
 import tempfile
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import structlog
-
 from core.config import settings
+
+from services.rag.embeddings import embedding_collection_name
 from services.rag.hybrid import HybridBM25Index, reciprocal_rank_fusion
-from services.rag.reranker import CrossEncoderReranker, MMRReranker, TFIDFReranker
+from services.rag.reranker import MMRReranker, TFIDFReranker
 from services.rag.vector_store import SearchResult, VectorStoreAdapter
 
 log = structlog.get_logger()
@@ -33,7 +34,6 @@ class RAGRetriever:
     def __init__(self, store: VectorStoreAdapter) -> None:
         self._store = store
         self._bm25_cache: dict[str, HybridBM25Index] = {}
-        self._cross = CrossEncoderReranker()
         self._tfidf = TFIDFReranker()
         self._mmr = MMRReranker()
         self._bm25_cache_dir = self._resolve_writable_cache_dir()
@@ -57,7 +57,7 @@ class RAGRetriever:
 
     @staticmethod
     def _collection_name(brand_id: str, kind: str) -> str:
-        return f"brand_{brand_id}_{kind}"
+        return embedding_collection_name(brand_id, kind)
 
     @staticmethod
     def _to_doc(r: SearchResult) -> dict[str, Any]:
@@ -225,39 +225,22 @@ class RAGRetriever:
         use_mmr: bool,
     ) -> list[dict[str, Any]]:
         if use_reranker and use_mmr:
-            scored = await self._score_all(query, candidates)
-            if scored == candidates:
-                scored = await self._tfidf_score_all(query, candidates)
+            scored = await self._tfidf_score_all(query, candidates)
             return await self._mmr_rerank(query, scored, n_results)
 
         if use_reranker:
-            ranked = await self._cross_rerank(query, candidates, n_results)
-            if ranked == candidates:
-                return await self._tfidf_rerank(query, candidates, n_results)
-            return ranked
+            return await self._tfidf_rerank(query, candidates, n_results)
 
         if use_mmr:
             return await self._mmr_rerank(query, candidates, n_results)
 
         return candidates[:n_results]
 
-    async def _score_all(self, query: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        score_all = getattr(self._cross, "score_all", None)
-        if callable(score_all):
-            return await score_all(query, candidates)
-        return await self._cross_rerank(query, candidates, len(candidates))
-
     async def _tfidf_score_all(self, query: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
         score_all = getattr(self._tfidf, "score_all", None)
         if callable(score_all):
             return await score_all(query, candidates)
         return await self._tfidf_rerank(query, candidates, len(candidates))
-
-    async def _cross_rerank(self, query: str, candidates: list[dict[str, Any]], top_n: int) -> list[dict[str, Any]]:
-        try:
-            return await self._cross.rerank(query, candidates, top_n=top_n)
-        except TypeError:
-            return await self._cross.rerank(query, candidates)
 
     async def _tfidf_rerank(self, query: str, candidates: list[dict[str, Any]], top_n: int) -> list[dict[str, Any]]:
         try:

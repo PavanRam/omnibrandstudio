@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net" modified="2026-07-25T00:00:00.000Z" agent="claude-code" version="24.0.0" type="device">
+  <diagram name="Actual Implementation Architecture" id="actual-arch">
+    <mxGraphModel dx="2200" dy="1400" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="2200" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- LEGEND -->
+        <mxCell id="legend" value="Legend" style="text;html=1;fontStyle=1;fontSize=16;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="150" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend1" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;" vertex="1" parent="1">
+          <mxGeometry x="40" y="45" width="24" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="legend1t" value="AI reasoning (LangGraph) — IMPLEMENTED" style="text;html=1;align=left;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="72" y="45" width="320" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="legend2" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;" vertex="1" parent="1">
+          <mxGeometry x="40" y="75" width="24" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="legend2t" value="Human approval / review — IMPLEMENTED" style="text;html=1;align=left;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="72" y="75" width="320" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="legend3" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;" vertex="1" parent="1">
+          <mxGeometry x="40" y="105" width="24" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="legend3t" value="Infra / data stores — IMPLEMENTED" style="text;html=1;align=left;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="72" y="105" width="320" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="legend4" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;dashed=1;dashPattern=6 4;" vertex="1" parent="1">
+          <mxGeometry x="40" y="135" width="24" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="legend4t" value="Planned in original design — NOT IMPLEMENTED (0 code refs)" style="text;html=1;align=left;fontSize=12;fontColor=#999999;" vertex="1" parent="1">
+          <mxGeometry x="72" y="135" width="420" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="legend5" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;dashed=1;dashPattern=6 4;" vertex="1" parent="1">
+          <mxGeometry x="40" y="165" width="24" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="legend5t" value="Built as demo/stand-in only, not the real target integration" style="text;html=1;align=left;fontSize=12;fontColor=#7f6000;" vertex="1" parent="1">
+          <mxGeometry x="72" y="165" width="420" height="24" as="geometry" />
+        </mxCell>
+
+        <!-- Requester / Reviewer UI -->
+        <mxCell id="ui" value="Requester + Reviewer UI&#10;(Astro + React frontend)&#10;api.js -&gt; FastAPI directly" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontStyle=1;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="700" y="220" width="300" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- FastAPI layer -->
+        <mxCell id="api" value="FastAPI API (backend/api)&#10;POST /campaigns · GET /campaigns/{id}/stream (SSE)&#10;POST /reviews/{id}/decide&#10;POST /reviews/{id}/airtable-decide (webhook)&#10;Auth: API key AND JWT/RS256 both live&#10;(CLAUDE.md invariant #7 is stale)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="640" y="340" width="420" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e_ui_api" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="ui" target="api">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Redis queue -->
+        <mxCell id="redis" value="Redis&#10;campaigns:queue (BLPOP)&#10;campaigns:dead_letter (DLQ)&#10;JWT jti revocation · login lockout&#10;LiteLLM response cache" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="330" width="260" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="e_api_redis" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="api" target="redis">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Worker -->
+        <mxCell id="worker" value="Worker (backend/worker/main.py)&#10;while True: BLPOP -&gt; build_graph(checkpointer).ainvoke()&#10;on failure -&gt; push to DLQ&#10;runs Prometheus + OTel" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="470" width="260" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="e_redis_worker" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="redis" target="worker">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- LangGraph Orchestrator group -->
+        <mxCell id="lg_group" value="LangGraph Orchestrator — real 12-node graph (backend/pipeline/graph.py)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;verticalAlign=top;fontStyle=1;fontSize=15;" vertex="1" parent="1">
+          <mxGeometry x="120" y="600" width="1260" height="440" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n_intake" value="intake_agent&#10;(brief parsing, RAG retrieval)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5C6E0;strokeColor=#9673A6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="150" y="650" width="180" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="n_content" value="content_generator" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5C6E0;strokeColor=#9673A6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="360" y="650" width="180" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="n_pers" value="personalization_agent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5C6E0;strokeColor=#9673A6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="570" y="650" width="180" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="n_trans" value="translation_agent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5C6E0;strokeColor=#9673A6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="780" y="650" width="180" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="n_jgate" value="judge_gate / judge_planner&#10;(panel sizing)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5C6E0;strokeColor=#9673A6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="990" y="650" width="180" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n_j1" value="judge_claude" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5C6E0;strokeColor=#9673A6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="150" y="740" width="170" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="n_j2" value="judge_gpt4o" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5C6E0;strokeColor=#9673A6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="340" y="740" width="170" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="n_j3" value="judge_llama" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5C6E0;strokeColor=#9673A6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="530" y="740" width="170" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="n_agg" value="confidence_aggregator" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5C6E0;strokeColor=#9673A6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="730" y="740" width="180" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="n_refl" value="reflexion&#10;(self-correction / quality gate)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5C6E0;strokeColor=#9673A6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="940" y="740" width="200" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n_review" value="review_gate&#10;interrupt_before=[&quot;review_gate&quot;]&#10;LangGraph checkpoint pause/resume" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="150" y="830" width="240" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="n_pub" value="publishing_agent&#10;(see Publishing box below)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5C6E0;strokeColor=#9673A6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="420" y="830" width="200" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n_chroma" value="ChromaDB RAG store&#10;(brand-filtered collections)&#10;used by intake_agent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="700" y="830" width="220" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="n_pgcheckpoint" value="Postgres AsyncPostgresSaver&#10;(LangGraph state checkpoint)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="950" y="830" width="220" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="n_litellm" value="LiteLLM proxy (infra/litellm)&#10;traced_llm_call() -&gt; httpx&#10;model aliases: gen-premium/free,&#10;judge-1/2/3(+free), util-fast(+gemini),&#10;understanding(+gemini), eval-model,&#10;translation-primary (Groq, TODO: switch&#10;to Anthropic before prod), embedding" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="150" y="920" width="1000" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e_intake_content" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="n_intake" target="n_content"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_content_pers" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="n_content" target="n_pers"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_pers_trans" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="n_pers" target="n_trans"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_trans_jgate" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="n_trans" target="n_jgate"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_jgate_j1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="n_jgate" target="n_j1"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_jgate_j2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="n_jgate" target="n_j2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_jgate_j3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="n_jgate" target="n_j3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_j1_agg" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="n_j1" target="n_agg"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_j2_agg" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="n_j2" target="n_agg"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_j3_agg" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="n_j3" target="n_agg"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_agg_refl" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="n_agg" target="n_refl"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_refl_review" value="approve" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="n_refl" target="n_review"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_refl_content" value="retry (capped by MAX_REVIEW_ROUNDS)" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;dashed=1;fontSize=10;" edge="1" parent="1" source="n_refl" target="n_content"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1050" y="770"/><mxPoint x="1050" y="600"/><mxPoint x="450" y="600"/></Array></mxGeometry></mxCell>
+        <mxCell id="e_review_pub" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="n_review" target="n_pub"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <!-- Airtable -->
+        <mxCell id="airtable" value="Airtable sync (backend/services/airtable_service.py)&#10;outbound: sync_review() performUpsert on review creation&#10;inbound: Airtable Automation -&gt; POST /reviews/{id}/airtable-decide&#10;Postgres review_requests = source of truth; Airtable = mirror" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="150" y="1090" width="560" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="approvers" value="Approvers&#10;(Brand / Legal / Localization)&#10;review + decide in Airtable UI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="760" y="1090" width="220" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="e_review_airtable" value="write pending review" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="n_review" target="airtable"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_airtable_approvers" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;startArrow=block;" edge="1" parent="1" source="airtable" target="approvers"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_ui_decide" value="also: reviewer decides directly via UI/API (bypasses Airtable)" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;dashed=1;fontSize=10;fontColor=#666666;" edge="1" parent="1" source="ui" target="n_review"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1450" y="260"/><mxPoint x="1450" y="865"/></Array></mxGeometry></mxCell>
+
+        <!-- Publishing box -->
+        <mxCell id="pub" value="Publishing (backend/pipeline/agents/publishing.py)&#10;DEMO ONLY: SMTP via MailHog (docker-compose &quot;mailhog&quot;)&#10;all channels rendered as HTML email, channel-styled&#10;(e.g. fake &quot;LinkedIn card&quot; template) — no real channel API calls" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;dashed=1;dashPattern=6 4;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="1090" width="520" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="e_pub_smtp" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="n_pub" target="pub"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="520" y="1050"/></Array></mxGeometry></mxCell>
+
+        <!-- NOT IMPLEMENTED: n8n -->
+        <mxCell id="n8n" value="n8n — Integration &amp; Distribution Layer&#10;&#10;NOT IMPLEMENTED ✗&#10;0 references anywhere in repo (code, config, docs).&#10;Gate bridging, approver notifications, and&#10;multi-channel fan-out described in the original&#10;design were never built; Airtable webhook +&#10;FastAPI cover only the review-decision path." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;dashed=1;dashPattern=6 4;fontSize=12;fontColor=#999999;" vertex="1" parent="1">
+          <mxGeometry x="150" y="1230" width="560" height="140" as="geometry" />
+        </mxCell>
+
+        <!-- NOT IMPLEMENTED channels -->
+        <mxCell id="linkedin" value="LinkedIn API&#10;NOT IMPLEMENTED ✗" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;dashed=1;dashPattern=6 4;fontColor=#999999;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="740" y="1230" width="150" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="webcms" value="Web CMS&#10;NOT IMPLEMENTED ✗" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;dashed=1;dashPattern=6 4;fontColor=#999999;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="910" y="1230" width="150" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="social" value="Social schedulers&#10;NOT IMPLEMENTED ✗" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;dashed=1;dashPattern=6 4;fontColor=#999999;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1230" width="150" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="analytics" value="Analytics dashboard&#10;NOT IMPLEMENTED ✗" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;dashed=1;dashPattern=6 4;fontColor=#999999;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1250" y="1230" width="150" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="mailhog" value="MailHog\n(actual SMTP sink, port 8025)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;dashed=1;dashPattern=6 4;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1330" width="220" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="e_pub_mailhog" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;" edge="1" parent="1" source="pub" target="mailhog"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <!-- Note callout -->
+        <mxCell id="note" value="Note: original design routed distribution through n8n as a middleware layer between Airtable and the channel APIs.&#10;In the real system, Airtable Automation calls the FastAPI webhook directly, and publishing is a same-process&#10;LangGraph node (publishing_agent) — no separate integration/distribution service exists." style="text;html=1;align=left;fontSize=11;fontColor=#B85450;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="150" y="1400" width="1100" height="50" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

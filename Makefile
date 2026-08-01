@@ -1,4 +1,6 @@
-.PHONY: install install-dev run worker dev frontend dev-full run-local-eval test-local-eval check-local-eval test test-unit test-integration smoke lint format migrate migrate-docker migrate-down migrate-history seed seed-admin check-env up down down-reset fresh-start restart logs certs setup poll-reviews urls
+LOG_FILE ?= logs/omnibrand.log
+
+.PHONY: install install-dev run worker dev frontend dev-full run-local-eval test-local-eval check-local-eval test test-unit test-integration smoke smoke-full lint format migrate migrate-docker migrate-down migrate-history seed seed-admin check-env up up-full down down-reset fresh-start restart logs certs setup poll-reviews urls
 
 # ── Dependencies ─────────────────────────────────────────────────────────────
 install:
@@ -18,7 +20,7 @@ dev:
 	honcho start -f Procfile.backend
 
 frontend:
-	cd frontend && npm run dev
+	bash scripts/run_frontend.sh dev
 
 dev-full:
 	honcho start
@@ -46,7 +48,10 @@ test-integration:
 	cd backend && uv run pytest tests/integration/ -v --timeout=120
 
 smoke:
-	uv run python scripts/smoke_test.py
+	uv run python scripts/smoke_test.py --lite
+
+smoke-full:
+	uv run python scripts/smoke_test.py --full
 
 # Free-plan-friendly alternative to an Airtable webhook Automation: polls the
 # Reviews table for reviewer decisions and applies them via /airtable-decide.
@@ -108,10 +113,8 @@ check-env:
 	fi
 
 up: check-env
-	# Bring up long-running services and wait for health/readiness.
-	docker compose up -d --wait postgres redis minio litellm langfuse prometheus grafana jaeger redis-exporter postgres-exporter mailhog api worker
-	# One-shot init job exits 0 by design; run it separately so --wait does not fail.
-	docker compose up -d createbuckets
+	# Default lightweight stack: queue, worker, LLM proxy, API/UI backend, and email sink.
+	COMPOSE_OTEL_ENABLED=0 docker compose up -d --wait postgres redis litellm mailhog api worker
 	# Re-check now that postgres is confirmed up (first run above may have
 	# skipped the password check if postgres wasn't running yet).
 	$(MAKE) check-env
@@ -122,18 +125,30 @@ up: check-env
 	# Ensure default dev admin exists after startup/migration.
 	docker compose exec -T api python scripts/seed_dev_admin.py
 
+up-full: check-env
+	# Opt-in dashboards/tracing plus currently-unused object storage.
+	COMPOSE_OTEL_ENABLED=1 docker compose --profile observability --profile storage up -d --wait postgres redis minio litellm langfuse prometheus grafana jaeger redis-exporter postgres-exporter mailhog api worker
+	# One-shot MinIO initialization exits 0 by design.
+	docker compose --profile storage up -d createbuckets
+	$(MAKE) check-env
+	$(MAKE) migrate-docker
+	$(MAKE) seed
+	docker compose exec -T api python scripts/seed_dev_admin.py
+
 down:
-	docker compose down
+	docker compose --profile observability --profile storage down
 
 down-reset:
-	docker compose down -v
+	docker compose --profile observability --profile storage down -v
 
 fresh-start: install certs up
 
 restart: down up
 
 logs:
-	docker compose logs -f api worker
+	@mkdir -p "$(dir $(LOG_FILE))"
+	@echo "Streaming lightweight stack logs to $(LOG_FILE) (Ctrl+C stops following only)"
+	docker compose logs -f --tail=200 --timestamps postgres redis litellm mailhog api worker 2>&1 | tee -a "$(LOG_FILE)"
 
 # ── Observability access ──────────────────────────────────────────────────────
 # Print the URLs + login credentials for every local observability tool. Reads

@@ -12,7 +12,35 @@ This project has two execution paths:
 - **API process** — FastAPI on port 8000. `POST /campaigns` is implemented and
   enqueues a campaign to Redis, returning a UUIDv7 `campaign_id`.
 - **Worker process** — BLPOP consumer that drives the LangGraph pipeline.
-  Every campaign run emits Prometheus metrics and OTel spans to Jaeger.
+  The app always exposes its own Prometheus metrics; OTel export to Jaeger is
+  enabled by the full Compose profile.
+
+`make up` starts the lightweight application stack: Postgres, Redis, LiteLLM,
+MailHog, API, and worker. Use `make up-full` when you also need Langfuse,
+Prometheus, Grafana, Jaeger, exporters, and MinIO.
+
+## Re-index After The Embedding Change
+
+Hosted embeddings use the versioned collection suffix
+`litellm_v1_384`. Existing local Chroma collections are intentionally left
+untouched, so old local-model vectors cannot mix with the new embedding space.
+Re-ingest retained guides through the upload API, or reload the bundled seed
+data:
+
+```bash
+cd backend
+uv run python scripts/ingest_seed_datasets.py \
+  --seed-dir data/datasets/processed \
+  --org-id 00000000-0000-0000-0000-000000000001 \
+  --brand-id 00000000-0000-0000-0000-000000000002 \
+  --locale en-US \
+  --version litellm-v1
+```
+
+Configure `OPENAI_API_KEY` (or repoint LiteLLM's `embedding` alias to another
+embedding provider) before re-ingesting. Otherwise the operation succeeds in
+explicit degraded hash mode and does not provide semantic retrieval. Pinecone
+users must ensure their target index accepts 384-dimensional vectors.
 
 ## Prerequisites
 
@@ -128,10 +156,10 @@ What this does:
 `POST /campaigns` is now implemented. This path gives full request-ID
 propagation and produces Jaeger traces.
 
-Terminal 1 — infrastructure:
+Terminal 1 — full infrastructure (required for the Jaeger links below):
 
 ```bash
-make up
+make up-full
 ```
 
 Terminal 2 — worker (Prometheus metrics on :9091, OTel to Jaeger):
@@ -170,18 +198,20 @@ Then open:
 
 ## Run E2E — structured validation (smoke test)
 
-Sends 20 dummy campaigns through the queue, then verifies all observability
-signals are present:
+The default smoke gate inserts a valid campaign row, enqueues its worker task,
+and waits for a persisted `published` or `awaiting_review` status. It checks
+only services in the lightweight stack:
 
 ```bash
 make smoke
 # or with custom parameters:
-uv run python scripts/smoke_test.py --count 20 --wait-secs 60
+uv run python scripts/smoke_test.py --lite --count 3 --wait-secs 300
 ```
 
-The script checks: API health, Prometheus targets UP, alert rules loaded,
-Grafana dashboards provisioned, Jaeger reachable, campaign processing,
-and metric series populated.
+Use `make smoke-full` to additionally require Prometheus, Grafana, Jaeger,
+scrape targets, alert rules, and post-run metric series. Add
+`--require-publishing` for a strict CP4 run that must reach `published` and
+appear in MailHog; an ordinary run may legitimately pause for human review.
 
 ## Run E2E — queue bypass (pipeline-only)
 

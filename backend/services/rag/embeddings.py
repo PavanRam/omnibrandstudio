@@ -1,57 +1,55 @@
 from __future__ import annotations
 
 import hashlib
-from functools import lru_cache
-import os
-import tempfile
 
-import anyio
+import httpx
+import structlog
+from core.config import settings
+from pipeline.agents.base import traced_embedding_call
 
-
-def _ensure_writable_model_cache() -> None:
-    """Route model caches to writable temp locations in restricted containers."""
-    temp_root = tempfile.gettempdir()
-    os.environ.setdefault("HF_HOME", os.path.join(temp_root, "hf_home"))
-    os.environ.setdefault(
-        "SENTENCE_TRANSFORMERS_HOME",
-        os.path.join(temp_root, "sentence_transformers"),
-    )
+log = structlog.get_logger()
 
 
-@lru_cache(maxsize=1)
-def _get_sentence_transformer():
-    try:
-        from sentence_transformers import SentenceTransformer
-    except Exception:
-        return None
-    try:
-        _ensure_writable_model_cache()
-        return SentenceTransformer("all-MiniLM-L6-v2")
-    except Exception:
-        return None
+def embedding_collection_name(brand_id: str, kind: str) -> str:
+    """Namespace collections so incompatible embedding spaces never mix."""
+    space = settings.EMBEDDING_SPACE_ID.replace("-", "_")
+    return f"brand_{brand_id}_{kind}_{space}_{settings.EMBEDDING_DIMENSIONS}"
 
 
-def _hash_embedding(text: str, dimensions: int = 384) -> list[float]:
-    """Fallback deterministic embedding used when model loading is unavailable."""
+def _hash_embedding(
+    text: str,
+    dimensions: int = settings.EMBEDDING_DIMENSIONS,
+) -> list[float]:
+    """Return a deterministic degraded-mode vector of the canonical size."""
     digest = hashlib.sha256(text.encode("utf-8", errors="ignore")).digest()
-    out: list[float] = []
-    for i in range(dimensions):
-        byte = digest[i % len(digest)]
-        out.append((byte / 255.0) * 2.0 - 1.0)
-    return out
-
-
-def _embed_sync(texts: list[str]) -> list[list[float]]:
-    model = _get_sentence_transformer()
-    if model is None:
-        return [_hash_embedding(t) for t in texts]
-
-    vectors = model.encode(texts, normalize_embeddings=True)
-    return [list(map(float, row)) for row in vectors]
+    return [
+        ((digest[index % len(digest)] / 255.0) * 2.0) - 1.0
+        for index in range(dimensions)
+    ]
 
 
 async def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Embed text with local sentence-transformers using thread offload."""
+    """Embed through LiteLLM, with an explicit deterministic degraded mode."""
     if not texts:
         return []
-    return await anyio.to_thread.run_sync(_embed_sync, texts)
+
+    try:
+        vectors, _usage = await traced_embedding_call(
+            model=settings.EMBEDDING_MODEL_ALIAS,
+            texts=texts,
+            task="rag_embedding",
+            dimensions=settings.EMBEDDING_DIMENSIONS,
+        )
+        return vectors
+    except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+        log.warning(
+            "embedding_hosted_failed_using_degraded_hash",
+            model=settings.EMBEDDING_MODEL_ALIAS,
+            dimensions=settings.EMBEDDING_DIMENSIONS,
+            input_count=len(texts),
+            error=str(exc),
+        )
+        return [
+            _hash_embedding(text, dimensions=settings.EMBEDDING_DIMENSIONS)
+            for text in texts
+        ]

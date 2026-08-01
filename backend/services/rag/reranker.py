@@ -1,118 +1,18 @@
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import anyio
 import numpy as np
+from core.config import settings
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-import structlog
 
-from core.config import settings
 from services.rag.embeddings import embed_texts
-
-log = structlog.get_logger()
-
-
-class CrossEncoderReranker:
-    """Neural reranker with cache-first loading and graceful fallback path."""
-
-    def __init__(self, model_name: str | None = None) -> None:
-        self._model_name = model_name or settings.RERANKER_MODEL
-        self._model = None
-        self._load_attempted = False
-        self._allow_remote_download = os.getenv("RERANKER_ALLOW_REMOTE_DOWNLOAD", "0").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-
-    def _get_model(self):
-        if self._load_attempted:
-            return self._model
-        self._load_attempted = True
-
-        try:
-            from sentence_transformers import CrossEncoder
-
-            self._model = CrossEncoder(self._model_name, local_files_only=True)
-            log.info("reranker_loaded_from_cache", model=self._model_name)
-            return self._model
-        except Exception as cache_exc:
-            if self._allow_remote_download:
-                log.warning(
-                    "reranker_cache_load_failed_try_download",
-                    model=self._model_name,
-                    error=str(cache_exc),
-                )
-            else:
-                log.info(
-                    "reranker_cache_load_miss",
-                    model=self._model_name,
-                    error=str(cache_exc),
-                )
-
-        if not self._allow_remote_download:
-            log.info(
-                "reranker_cache_miss_remote_download_disabled",
-                model=self._model_name,
-            )
-            self._model = None
-            return self._model
-
-        try:
-            from sentence_transformers import CrossEncoder
-
-            # Keep compatibility with setups that provide HF_TOKEN instead of
-            # the canonical huggingface_hub env variable.
-            token = os.getenv("HUGGINGFACE_HUB_TOKEN") or os.getenv("HF_TOKEN")
-            if token and not os.getenv("HUGGINGFACE_HUB_TOKEN"):
-                os.environ["HUGGINGFACE_HUB_TOKEN"] = token
-
-            try:
-                self._model = CrossEncoder(self._model_name, token=token)
-            except TypeError:
-                # Older sentence-transformers may still use use_auth_token.
-                self._model = CrossEncoder(self._model_name, use_auth_token=token)
-            log.info("reranker_downloaded", model=self._model_name)
-        except Exception as exc:
-            log.warning("reranker_unavailable", model=self._model_name, error=str(exc))
-            self._model = None
-        return self._model
-
-    async def score_all(self, query: str, docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not docs:
-            return docs
-        model = self._get_model()
-        if model is None:
-            return docs
-
-        pairs = [(query, d["text"]) for d in docs]
-
-        def _predict() -> list[float]:
-            scores = model.predict(pairs)
-            return [float(s) for s in scores]
-
-        scores = await anyio.to_thread.run_sync(_predict)
-        return [{**doc, "rerank_score": round(score, 4)} for doc, score in zip(docs, scores, strict=False)]
-
-    async def rerank(
-        self,
-        query: str,
-        docs: list[dict[str, Any]],
-        top_n: int | None = None,
-    ) -> list[dict[str, Any]]:
-        scored = await self.score_all(query, docs)
-        ranked = sorted(scored, key=lambda d: float(d.get("rerank_score", d.get("rrf_score", 0.0))), reverse=True)
-        if top_n is None:
-            return ranked
-        return ranked[:top_n]
 
 
 class TFIDFReranker:
-    """Offline reranker fallback using TF-IDF cosine similarity."""
+    """Lightweight primary reranker using TF-IDF cosine similarity."""
 
     async def score_all(self, query: str, docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not docs:
@@ -127,7 +27,10 @@ class TFIDFReranker:
             return [float(s) for s in scores]
 
         scores = await anyio.to_thread.run_sync(_score)
-        return [{**doc, "rerank_score": round(score, 4)} for doc, score in zip(docs, scores, strict=False)]
+        return [
+            {**doc, "rerank_score": round(score, 4)}
+            for doc, score in zip(docs, scores, strict=False)
+        ]
 
     async def rerank(
         self,
@@ -136,7 +39,11 @@ class TFIDFReranker:
         top_n: int | None = None,
     ) -> list[dict[str, Any]]:
         scored = await self.score_all(query, docs)
-        ranked = sorted(scored, key=lambda d: float(d.get("rerank_score", d.get("rrf_score", 0.0))), reverse=True)
+        ranked = sorted(
+            scored,
+            key=lambda doc: float(doc.get("rerank_score", doc.get("rrf_score", 0.0))),
+            reverse=True,
+        )
         if top_n is None:
             return ranked
         return ranked[:top_n]
@@ -177,9 +84,15 @@ class MMRReranker:
             if hi - lo > 1e-6:
                 relevance = (raw - lo) / (hi - lo)
             else:
-                relevance = np.array([self._cosine(query_emb, emb) for emb in doc_embs], dtype=float)
+                relevance = np.array(
+                    [self._cosine(query_emb, emb) for emb in doc_embs],
+                    dtype=float,
+                )
         else:
-            relevance = np.array([self._cosine(query_emb, emb) for emb in doc_embs], dtype=float)
+            relevance = np.array(
+                [self._cosine(query_emb, emb) for emb in doc_embs],
+                dtype=float,
+            )
 
         selected: list[int] = []
         remaining: list[int] = list(range(len(docs)))
@@ -188,7 +101,10 @@ class MMRReranker:
             best_idx = -1
             best_score = float("-inf")
             for i in remaining:
-                max_sim = max((self._cosine(doc_embs[i], doc_embs[j]) for j in selected), default=0.0)
+                max_sim = max(
+                    (self._cosine(doc_embs[i], doc_embs[j]) for j in selected),
+                    default=0.0,
+                )
                 mmr = lam * relevance[i] - (1.0 - lam) * max_sim
                 if mmr > best_score:
                     best_score = mmr

@@ -24,6 +24,7 @@ services:
       interval: 10s
 
   minio:
+    profiles: ["storage"]
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
@@ -36,6 +37,7 @@ services:
       interval: 10s
 
   createbuckets:
+    profiles: ["storage"]
     image: minio/mc:latest
     depends_on:
       minio: {condition: service_healthy}
@@ -52,6 +54,7 @@ services:
   # idempotently creates the `langfuse` DB before Langfuse starts. Exits 0 both
   # when it creates the DB and when it already exists.
   langfuse-db-init:
+    profiles: ["observability"]
     image: postgres:16-alpine
     depends_on:
       postgres: {condition: service_healthy}
@@ -77,6 +80,7 @@ services:
       interval: 15s
 
   langfuse:
+    profiles: ["observability"]
     image: langfuse/langfuse:2
     environment:
       DATABASE_URL: postgresql://omnibrand:${POSTGRES_PASSWORD}@postgres:5432/langfuse
@@ -105,6 +109,7 @@ services:
     restart: unless-stopped
 
   prometheus:
+    profiles: ["observability"]
     image: prom/prometheus:v2.52.0
     volumes:
       - "./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"
@@ -119,6 +124,7 @@ services:
     restart: unless-stopped
 
   grafana:
+    profiles: ["observability"]
     image: grafana/grafana:10.4.2
     environment:
       GF_SECURITY_ADMIN_USER: admin
@@ -136,6 +142,7 @@ services:
     restart: unless-stopped
 
   jaeger:
+    profiles: ["observability"]
     image: jaegertracing/all-in-one:1.58
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
@@ -148,6 +155,7 @@ services:
     restart: unless-stopped
 
   redis-exporter:
+    profiles: ["observability"]
     image: oliver006/redis_exporter:v1.62.0
     environment:
       REDIS_ADDR: redis://redis:6379
@@ -157,6 +165,7 @@ services:
     restart: unless-stopped
 
   postgres-exporter:
+    profiles: ["observability"]
     image: prometheuscommunity/postgres-exporter:v0.15.0
     environment:
       DATA_SOURCE_NAME: "postgresql://omnibrand:${POSTGRES_PASSWORD_ENCODED}@postgres:5432/omnibrand?sslmode=disable"
@@ -187,6 +196,7 @@ services:
       LITELLM_BASE_URL: http://litellm:4000
       LANGFUSE_HOST: http://langfuse:3000
       S3_ENDPOINT_URL: http://minio:9000
+      OTEL_ENABLED: ${COMPOSE_OTEL_ENABLED:-0}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
       JWT_PRIVATE_KEY_PATH: /app/certs/private_key.pem
       JWT_PUBLIC_KEY_PATH: /app/certs/public_key.pem
@@ -209,6 +219,7 @@ services:
       CHROMA_PERSIST_PATH: /app/data/chroma
       LITELLM_BASE_URL: http://litellm:4000
       LANGFUSE_HOST: http://langfuse:3000
+      OTEL_ENABLED: ${COMPOSE_OTEL_ENABLED:-0}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
       JWT_PRIVATE_KEY_PATH: /app/certs/private_key.pem
       JWT_PUBLIC_KEY_PATH: /app/certs/public_key.pem

@@ -1,0 +1,224 @@
+<mxfile host="Electron" modified="2026-07-31T17:01:31.095Z" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/21.6.1 Chrome/112.0.5615.204 Electron/24.6.1 Safari/537.36" version="21.6.1" etag="l5NKlYOQZWO4w8oayW8W" type="device">
+  <diagram name="Actual Implementation Architecture" id="actual-arch">
+    <mxGraphModel dx="1238" dy="856" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="2200" background="#FFFFFF" math="0" shadow="1">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="legend" value="Legend" style="text;html=1;fontStyle=1;fontSize=16;align=left;rounded=1;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="40" y="450" width="150" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend1" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="40" y="485" width="24" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="legend1t" value="AI reasoning (LangGraph) — IMPLEMENTED" style="text;html=1;align=left;fontSize=12;rounded=1;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="72" y="485" width="320" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="legend2" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="40" y="515" width="24" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="legend2t" value="Human approval / review — IMPLEMENTED" style="text;html=1;align=left;fontSize=12;rounded=1;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="72" y="515" width="320" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="legend3" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="40" y="545" width="24" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="legend3t" value="Infra / data stores — IMPLEMENTED" style="text;html=1;align=left;fontSize=12;rounded=1;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="72" y="545" width="320" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="legend4" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;dashed=1;dashPattern=6 4;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="40" y="575" width="24" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="legend4t" value="Planned in original design — NOT IMPLEMENTED (0 code refs)" style="text;html=1;align=left;fontSize=12;fontColor=#143642;rounded=1;labelBackgroundColor=none;" parent="1" vertex="1">
+          <mxGeometry x="72" y="575" width="420" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="legend5" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;dashed=1;dashPattern=6 4;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="40" y="605" width="24" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="legend5t" value="Built as demo/stand-in only, not the real target integration" style="text;html=1;align=left;fontSize=12;fontColor=#143642;rounded=1;labelBackgroundColor=none;" parent="1" vertex="1">
+          <mxGeometry x="72" y="605" width="420" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="ui" value="Requester + Reviewer UI&#xa;(Astro + React frontend)&#xa;api.js -&gt; FastAPI directly" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontStyle=1;fontSize=13;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="82" y="150" width="300" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="api" value="FastAPI API (backend/api)&#xa;POST /campaigns · GET /campaigns/{id}/stream (SSE)&#xa;POST /reviews/{id}/decide&#xa;POST /reviews/{id}/airtable-decide (webhook)&#xa;Auth: API key AND JWT/RS256 both live&#xa;(CLAUDE.md invariant #7 is stale)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=12;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="450" y="135" width="420" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="e_ui_api" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" parent="1" source="ui" target="api" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="redis" value="Redis&#xa;campaigns:queue (BLPOP)&#xa;campaigns:dead_letter (DLQ)&#xa;JWT jti revocation · login lockout&#xa;LiteLLM response cache" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=12;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="900" y="135" width="260" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="e_api_redis" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" parent="1" source="api" target="redis" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="0hJvqgXBgZ9JY0e-tSSH-11" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" edge="1" parent="1" source="worker" target="lg_group">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="worker" value="Worker (backend/worker/main.py)&#xa;while True: BLPOP -&gt; build_graph(checkpointer).ainvoke()&#xa;on failure -&gt; push to DLQ&#xa;runs Prometheus + OTel" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=12;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="1220" y="140" width="260" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="e_redis_worker" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" parent="1" source="redis" target="worker" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="lg_group" value="LangGraph Orchestrator — real 12-node graph (backend/pipeline/graph.py)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;verticalAlign=top;fontStyle=1;fontSize=15;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="440" y="280" width="990" height="670" as="geometry" />
+        </mxCell>
+        <mxCell id="n_intake" value="intake_agent&#xa;(brief parsing, RAG retrieval)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=11;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="460" y="350" width="180" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="n_content" value="content_generator" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=11;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="670" y="350" width="180" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="n_pers" value="personalization_agent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=11;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="880" y="350" width="180" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="n_trans" value="translation_agent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=11;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="1100" y="350" width="180" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="0hJvqgXBgZ9JY0e-tSSH-1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" edge="1" parent="1" source="n_jgate" target="n_j1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="887" y="510" />
+              <mxPoint x="692" y="510" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="0hJvqgXBgZ9JY0e-tSSH-2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" edge="1" parent="1" source="n_jgate" target="n_j2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="0hJvqgXBgZ9JY0e-tSSH-19" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" edge="1" parent="1" source="n_jgate" target="n_j3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="n_jgate" value="judge_gate / judge_planner&#xa;(panel sizing)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=11;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="797" y="430" width="180" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="0hJvqgXBgZ9JY0e-tSSH-8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.299;entryY=-0.053;entryDx=0;entryDy=0;entryPerimeter=0;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" edge="1" parent="1" target="n_agg">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="688" y="569" as="sourcePoint" />
+            <mxPoint x="850" y="614" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="688" y="594" />
+              <mxPoint x="851" y="594" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="n_j1" value="judge_claude" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=11;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="607" y="525" width="170" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="0hJvqgXBgZ9JY0e-tSSH-7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" edge="1" parent="1" source="n_j2" target="n_agg">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="n_j2" value="judge_gpt4o" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=11;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="802" y="532" width="170" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="0hJvqgXBgZ9JY0e-tSSH-20" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.75;entryY=0;entryDx=0;entryDy=0;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" edge="1" parent="1" source="n_j3" target="n_agg">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1085" y="600" />
+              <mxPoint x="932" y="600" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="n_j3" value="judge_llama" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=11;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="1000" y="532" width="170" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="n_agg" value="confidence_aggregator" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=11;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="797" y="620" width="180" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="n_refl" value="reflexion&#xa;(self-correction / quality gate)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=11;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="1040" y="620" width="200" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="n_review" value="review_gate&#xa;interrupt_before=[&quot;review_gate&quot;]&#xa;LangGraph checkpoint pause/resume" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=11;fontStyle=1;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="530" y="680" width="240" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="n_pub" value="publishing_agent&#xa;(see Publishing box below)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=11;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="592" y="790" width="200" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="n_chroma" value="ChromaDB RAG store&#xa;(brand-filtered collections)&#xa;used by intake_agent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=11;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="870" y="750" width="210" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="n_pgcheckpoint" value="Postgres AsyncPostgresSaver&#xa;(LangGraph state checkpoint)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=11;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="1120" y="750" width="200" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="n_litellm" value="LiteLLM proxy (infra/litellm)&#xa;traced_llm_call() -&gt; httpx&#xa;model aliases: gen-premium/free,&#xa;judge-1/2/3(+free), util-fast(+gemini),&#xa;understanding(+gemini), eval-model,&#xa;translation-primary (Groq, TODO: switch&#xa;to Anthropic before prod), embedding" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=11;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="930" y="820" width="280" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="e_intake_content" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" parent="1" source="n_intake" target="n_content" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_content_pers" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" parent="1" source="n_content" target="n_pers" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_pers_trans" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" parent="1" source="n_pers" target="n_trans" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_trans_jgate" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;entryX=1;entryY=0.5;entryDx=0;entryDy=0;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" parent="1" source="n_trans" target="n_jgate" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1240" y="460" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e_agg_refl" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" parent="1" source="n_agg" target="n_refl" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_refl_review" value="approve" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" parent="1" source="n_refl" target="n_review" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1202" y="770" as="sourcePoint" />
+            <mxPoint x="581.9999999999995" y="940" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="1140" y="715" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e_refl_content" value="retry (capped by MAX_REVIEW_ROUNDS)" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;dashed=1;fontSize=10;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" parent="1" source="n_refl" target="n_content" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1190" y="610" />
+              <mxPoint x="1340" y="610" />
+              <mxPoint x="1340" y="330" />
+              <mxPoint x="760" y="330" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e_review_pub" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" parent="1" source="n_review" target="n_pub" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="airtable" value="Airtable sync (backend/services/airtable_service.py)&#xa;outbound: sync_review() performUpsert on review creation&#xa;inbound: Airtable Automation -&gt; POST /reviews/{id}/airtable-decide&#xa;Postgres review_requests = source of truth; Airtable = mirror" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=12;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="300" y="990" width="560" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="approvers" value="Approvers&#xa;(Brand / Legal / Localization)&#xa;review + decide in Airtable UI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;fontSize=12;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="70" y="990" width="190" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="e_airtable_approvers" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;startArrow=block;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" parent="1" source="airtable" target="approvers" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pub" value="Publishing (backend/pipeline/agents/publishing.py)&#xa;DEMO ONLY: SMTP via MailHog (docker-compose &quot;mailhog&quot;)&#xa;all channels rendered as HTML email, channel-styled&#xa;(e.g. fake &quot;LinkedIn card&quot; template) — no real channel API calls" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;dashed=1;dashPattern=6 4;fontSize=12;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="920" y="990" width="520" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="e_pub_smtp" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;entryX=0.482;entryY=0.007;entryDx=0;entryDy=0;entryPerimeter=0;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" parent="1" source="n_pub" target="pub" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="707" y="960" />
+              <mxPoint x="1171" y="960" />
+            </Array>
+            <mxPoint x="1170" y="1110" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="mailhog" value="MailHog\n(actual SMTP sink, port 8025)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAE5C7;strokeColor=#0F8B8D;dashed=1;dashPattern=6 4;fontSize=11;labelBackgroundColor=none;fontColor=#143642;" parent="1" vertex="1">
+          <mxGeometry x="1480" y="1015" width="220" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="e_pub_mailhog" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" parent="1" source="pub" target="mailhog" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="0hJvqgXBgZ9JY0e-tSSH-17" value="" style="endArrow=classic;html=1;rounded=1;exitX=0.207;exitY=1.01;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;labelBackgroundColor=none;strokeColor=#A8201A;fontColor=default;" edge="1" parent="1" source="n_review" target="airtable">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="580" y="1180" as="sourcePoint" />
+            <mxPoint x="630" y="1130" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

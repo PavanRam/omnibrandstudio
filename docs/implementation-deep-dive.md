@@ -139,10 +139,6 @@ dependencies = [
     "opentelemetry-sdk>=1.29",
     "opentelemetry-exporter-otlp>=1.29",
 
-    # security / pii
-    "presidio-analyzer>=2.2",
-    "presidio-anonymizer>=2.2",
-
     # config
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
@@ -189,7 +185,12 @@ strict = true
 ignore_missing_imports = true
 ```
 
-- **`dependencies`** is a single flat array grouped by inline `#` comments (`web`, `database`, `cache / queue`, `vector store`, `auth`, `ai / llm`, `observability`, `security / pii`, `config`, `utilities`) — there is no PEP 621 `[project.optional-dependencies]` split; every package listed is unconditionally installed.
+- **`dependencies`** is a single flat array grouped by inline `#` comments
+  (`web`, `database`, `cache / queue`, `vector store`, `auth`, `ai / llm`,
+  `observability`, `config`, `utilities`) — there is no PEP 621
+  `[project.optional-dependencies]` split. Presidio and
+  `sentence-transformers` were removed after usage analysis; hosted embeddings
+  now go through LiteLLM and TF-IDF is the primary lightweight reranker.
 - **`[tool.hatch.build.targets.wheel] packages = ["backend"]`** is the one non-default build-system override. Without it, `hatchling` (the configured build backend) cannot locate an importable package to ship in the wheel, because the project is named `omnibrand` but the actual Python package tree lives under `backend/` (i.e. `backend/api`, `backend/core`, `backend/pipeline`, ...) rather than a top-level `omnibrand/` directory.
 - **`[dependency-groups] dev`** (PEP 735 syntax, not the legacy `[tool.uv] dev-dependencies` key) holds test/lint/type tooling, installed only via `uv sync --dev`.
 - **`[tool.pytest.ini_options] testpaths = ["backend/tests"]`** lets `pytest` be invoked from the repo root and still discover `backend/tests/test_pipeline_skeleton.py` without needing `cd backend` first (this is independent of the Makefile's `cd backend &&` convention, which exists for other reasons — see §1).
@@ -209,7 +210,11 @@ Root cause: `hatchling`'s default wheel-packaging heuristic looks for a director
 
 ### Why (uv vs. pip/poetry)
 
-- **Single resolved lockfile (`uv.lock`)** committed to the repo is the deliberate replacement for `requirements.txt` + no-lock pip installs, or Poetry's `poetry.lock`. `uv.lock` pins exact versions and hashes for the *entire* dependency graph (166 packages resolved from ~35 direct dependencies, including transitive dependencies like `spacy`/`thinc`/`tokenizers` pulled in by `presidio-analyzer`), so `uv sync` on any machine reproduces byte-for-byte the same environment.
+- **Single resolved lockfile (`uv.lock`)** committed to the repo is the
+  deliberate replacement for `requirements.txt` + no-lock pip installs, or
+  Poetry's `poetry.lock`. Removing Presidio and `sentence-transformers` also
+  removes the spaCy and torch/transformers/CUDA dependency trees from the
+  resolved runtime.
 - **`uv sync --frozen`** (used in `backend/Dockerfile`'s builder stage) fails the build outright if `uv.lock` is stale relative to `pyproject.toml`, rather than silently re-resolving — this converts "lockfile drift" from a runtime surprise into a build-time hard failure.
 - **Rust-backed resolver speed**: `uv`'s dependency resolver and installer are compiled, not a Python script — full resolution of this project's ~35 direct dependencies into a locked graph completes in low single-digit seconds, and `uv sync` on a warm cache (unchanged lockfile) completes in under 2 seconds, as observed during this build (`Resolved 166 packages in 2ms` on a re-run with no changes).
 - **No manual venv activation**: every command in this repo is prefixed `uv run`, which transparently creates/uses `.venv/` and resolves the correct interpreter — eliminating the class of bugs where a developer's shell has stale `PATH`/`VIRTUAL_ENV` state from a different project's venv.
@@ -228,36 +233,20 @@ Root cause: `hatchling`'s default wheel-packaging heuristic looks for a director
 
 ### What
 
-`docker-compose.yml` defines 12 services plus one init container, in this order: `postgres`, `redis`, `qdrant`, `minio`, `createbuckets`, `litellm`, `langfuse`, `prometheus`, `grafana`, `jaeger`, `mailhog`, `api`, `worker`.
+`docker-compose.yml` now uses profiles to keep the normal development runtime
+small:
 
-| Service | Image | Purpose | Healthcheck |
-|---|---|---|---|
-| `postgres` | `postgres:16-alpine` | primary relational store | `pg_isready -U omnibrand` |
-| `redis` | `redis:7-alpine` | queue (`campaigns:queue`/`campaigns:dead_letter`) + cache (prompt cache, lockout counters, revoked-JTI set) | `redis-cli ping` |
-| `qdrant` | `qdrant/qdrant:latest` | vector store for brand-guide RAG retrieval | `bash -c '</dev/tcp/localhost/6333'` |
-| `minio` | `minio/minio:latest` | S3-compatible object storage for brand assets | `curl -sf http://localhost:9000/minio/health/live` |
-| `createbuckets` | `minio/mc:latest` | one-shot: creates the `brand-assets` bucket | none (runs to completion) |
-| `litellm` | `ghcr.io/berriai/litellm:main-latest` | LLM gateway/router (model aliasing, caching, budget) | `curl -sf http://localhost:4000/health` |
-| `langfuse` | `langfuse/langfuse:latest` | LLM trace/observability UI | none declared |
-| `prometheus` | `prom/prometheus:latest` | metrics scraping | none declared |
-| `grafana` | `grafana/grafana:latest` | metrics dashboards | none declared |
-| `jaeger` | `jaegertracing/all-in-one:latest` | distributed tracing (OTLP collector) | none declared |
-| `mailhog` | `mailhog/mailhog:latest` | SMTP test sink | none declared |
-| `api` | built from `backend/Dockerfile` (`runtime` target) | FastAPI app | none declared |
-| `worker` | built from `backend/Dockerfile` (`runtime` target) | Redis BLPOP consumer / LangGraph runner | none declared |
+| Profile | Services | Command |
+|---|---|---|
+| default | `postgres`, `redis`, `litellm`, `mailhog`, `api`, `worker` | `make up` |
+| `observability` | `langfuse-db-init`, `langfuse`, `prometheus`, `grafana`, `jaeger`, `redis-exporter`, `postgres-exporter` | `make up-full` |
+| `storage` | `minio`, `createbuckets` | `make up-full` |
 
-`createbuckets`'s exact entrypoint:
-
-```yaml
-entrypoint: >
-  /bin/sh -c "
-  mc alias set local http://minio:9000 omnibrand ${MINIO_PASSWORD};
-  mc mb -p local/brand-assets;
-  exit 0;
-  "
-```
-
-`depends_on: condition: service_healthy` chains: `createbuckets` → `minio`; `litellm` → `redis`; `langfuse` → `postgres`; `api`/`worker` → `postgres` AND `redis`. `grafana` depends on `prometheus` but with a plain list (`depends_on: [prometheus]`), not a health condition — because `prometheus` has no healthcheck defined, Compose can only wait for the container to *start*, not for Prometheus to actually be serving.
+The default target sets `COMPOSE_OTEL_ENABLED=0`, preventing background
+exports to an absent Jaeger service. `make up-full` sets it to `1` and enables
+both optional profiles. `api` and `worker` still depend only on healthy
+Postgres and Redis; LiteLLM depends on healthy Redis. MailHog remains in the
+default set because SMTP publishing is part of the application flow.
 
 `api`/`worker` build config: `build: {context: ., dockerfile: backend/Dockerfile, target: runtime}` — the build **context is the repo root** (`.`), not `./backend`, with an explicit `dockerfile:` pointer into `backend/`. This is necessary because `pyproject.toml`/`uv.lock` (which the Dockerfile's `COPY pyproject.toml uv.lock ./` step needs) live at the repo root, not inside `backend/`.
 
@@ -1003,7 +992,14 @@ All 5 tests pass against a live Postgres instance (verified — `5 passed in 1.9
 
 `scripts/seed_prompts.py` — idempotent seed script (importable as a standalone script, inserts `sys.path` entry for `backend/` manually since it's outside the package). Seeds exactly 7 `prompt_registry` rows (6 channel-generation prompts for `email`, `sms`, `social_post`, `display_ad`, `landing_page`, `push_notification`, plus 1 `judge_rubric` prompt) via `ON CONFLICT (name, version, org_id) DO UPDATE`, one `orgs` row (`Test Org` / slug `test-org`, hardcoded UUID `00000000-0000-0000-0000-000000000001`) and one `brands` row (`Test Brand`, hardcoded UUID `...002`) via `ON CONFLICT DO NOTHING`, and re-applies the same conditional `audit_log` REVOKE/GRANT block found in the migration (belt-and-suspenders in case a role is added after the initial migration ran).
 
-`scripts/smoke_test.py` — end-to-end verification: enqueues a synthetic campaign task directly onto `campaigns:queue` (bypassing the not-yet-implemented `/campaigns` API), polls `checkpointer.alist(config)` for up to 60 seconds waiting for `checkpoint_count > 5`, then asserts the dead-letter queue length is `0`. Prints `PASS`/`FAIL` and exits with the corresponding process exit code (`0`/`1`) — designed to be CI/Makefile-target-friendly (`make smoke`).
+`scripts/smoke_test.py` — end-to-end verification with explicit lite/full
+modes. It inserts valid `campaigns` rows before enqueuing worker payloads,
+polls persisted campaign status, checks only matching dead-letter entries, and
+accepts `published` or the intentional `awaiting_review` pause. Lite mode keeps
+API health and application `/metrics` checks while skipping external
+observability. Full mode additionally validates Prometheus, Grafana, Jaeger,
+targets, rules, and metric series. `--require-publishing` makes MailHog delivery
+mandatory for a strict CP4 run.
 
 `scripts/generate_certs.sh` / `scripts/generate_certs.ps1` — RSA keypair generation, both idempotent (skip if `certs/private_key.pem` already exists). The bash version shells out to `openssl genrsa`/`openssl rsa -pubout`. The PowerShell version prefers `openssl` if found on `PATH`, otherwise falls back to a temp Python script using `cryptography.hazmat.primitives.asymmetric.rsa` (2048-bit key, PKCS8 private / SubjectPublicKeyInfo public PEM encoding), invoked via `uv run python`.
 
@@ -1011,7 +1007,11 @@ All 5 tests pass against a live Postgres instance (verified — `5 passed in 1.9
 
 - **`test_agent_write_permissions` invoking real stub functions rather than static-analyzing them**: guarantees the test fails the moment any stub is edited to return an unauthorized key, regardless of how the violation was introduced — a purely static check (e.g. grepping return statements) would be far more brittle to refactors.
 - **`test_fan_out_fan_in_accumulation` asserting node *names* rather than running the graph to completion**: this test's actual job is to prove `build_graph()` compiles without raising and produces the expected topology — it deliberately does not exercise the fan-in `operator.add` behavior at runtime (that's covered by the smoke test's live worker run instead), keeping the pytest suite fast and independent of the worker/Redis being up.
-- **`scripts/smoke_test.py` bypassing the API entirely**: since `/campaigns` is still a 501 stub (§8), the only way to exercise the full pipeline end-to-end today is to enqueue directly onto Redis the same way a real `/campaigns/{id}/run` handler eventually will — this makes the smoke test a genuine rehearsal of the worker's consumption contract, not a fake shortcut.
+- **`scripts/smoke_test.py` enqueuing directly after persistence**: this
+  exercises the worker's real queue contract while preserving the database
+  lifecycle the API normally establishes. Polling the database avoids the old
+  false positive where an empty Redis queue merely meant the worker had
+  dequeued a still-running campaign.
 - **Idempotent cert/seed scripts**: both are designed to be safely re-run as part of `make setup` on a machine that's already been set up once, without regenerating keys (which would invalidate any already-issued tokens) or duplicating seed rows.
 
 ### Implications
